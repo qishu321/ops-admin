@@ -138,6 +138,21 @@ func seedMonitorAlertTemplatesTx(db *gorm.DB) error {
 	if err := db.Where("source = ? AND collector = ?", "platform", "agent").Delete(&model.MonitorAlertTemplate{}).Error; err != nil {
 		return err
 	}
+	if err := db.Where("source = ? AND collector = ?", "platform", "datasource-health").Delete(&model.MonitorAlertTemplate{}).Error; err != nil {
+		return err
+	}
+	var platformGroup, datasourceHealthGroup model.MonitorAlertTemplateGroup
+	if err := db.Where("parent_id = ? AND name = ?", 0, "平台").First(&platformGroup).Error; err == nil {
+		if err := db.Where("parent_id = ? AND name = ?", platformGroup.ID, "datasource-health").First(&datasourceHealthGroup).Error; err == nil {
+			var remaining int64
+			if err := db.Model(&model.MonitorAlertTemplate{}).Where("group_id = ?", datasourceHealthGroup.ID).Count(&remaining).Error; err != nil {
+				return err
+			}
+			if remaining == 0 {
+				_ = db.Delete(&datasourceHealthGroup).Error
+			}
+		}
+	}
 	var linuxGroup, agentGroup model.MonitorAlertTemplateGroup
 	if err := db.Where("parent_id = ? AND name = ?", 0, "Linux").First(&linuxGroup).Error; err == nil {
 		if err := db.Where("parent_id = ? AND name = ?", linuxGroup.ID, "agent").First(&agentGroup).Error; err == nil {

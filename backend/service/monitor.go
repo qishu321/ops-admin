@@ -311,6 +311,8 @@ func isMonitorTraceDatasource(value string) bool {
 
 func normalizeAlertType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "datasource_health", "datasource-health":
+		return "datasource_health"
 	case "victorialogs", "victoria-logs", "vl":
 		return "victorialogs"
 	case "log", "elasticsearch", "es":
@@ -546,7 +548,7 @@ func (s *Service) initMonitorScheduler() {
 		// window closes, so a short cadence is needed even when no rule happens
 		// to be evaluated at that exact moment.
 		_, _ = s.monitorScheduler.cron.AddFunc("@every 15s", s.flushDueMonitorAggregationNotifications)
-		entryID, err := s.monitorScheduler.cron.AddFunc("@every 60s", s.checkAllMonitorDatasources)
+		entryID, err := s.monitorScheduler.cron.AddFunc("@every 15s", s.checkAllMonitorDatasources)
 		if err == nil {
 			s.monitorScheduler.healthEntry = entryID
 		}
@@ -740,19 +742,75 @@ func (s *Service) checkMonitorDatasourceHealth(ds model.MonitorDatasource) error
 }
 
 func (s *Service) persistMonitorDatasourceHealth(id uint, healthErr error, latencyMs int64) {
+	var datasource model.MonitorDatasource
+	if err := s.db.First(&datasource, id).Error; err != nil {
+		return
+	}
 	now := time.Now()
 	updates := map[string]any{"last_check_at": &now, "latency_ms": latencyMs}
+	failures, successes := 0, 0
 	if healthErr == nil {
+		successes = datasource.ConsecutiveSuccesses + 1
 		updates["health_status"] = "healthy"
 		updates["last_success_at"] = &now
 		updates["last_error"] = ""
 		updates["consecutive_failures"] = 0
+		updates["consecutive_successes"] = successes
 	} else {
+		failures = datasource.ConsecutiveFailures + 1
 		updates["health_status"] = "unhealthy"
 		updates["last_error"] = healthErr.Error()
-		updates["consecutive_failures"] = gorm.Expr("consecutive_failures + ?", 1)
+		updates["consecutive_failures"] = failures
+		updates["consecutive_successes"] = 0
 	}
 	_ = s.db.Model(&model.MonitorDatasource{}).Where("id = ?", id).Updates(updates).Error
+	s.syncMonitorDatasourceHealthAlert(datasource, healthErr, failures, successes, now)
+}
+
+func (s *Service) syncMonitorDatasourceHealthAlert(ds model.MonitorDatasource, healthErr error, failures, successes int, now time.Time) {
+	var rules []model.MonitorAlertRule
+	if s.db.Where("alert_type = ? AND datasource_id = ? AND status = ?", "datasource_health", ds.ID, 1).Find(&rules).Error != nil {
+		return
+	}
+	for _, rule := range rules {
+		failureThreshold := int(rule.Threshold)
+		if failureThreshold < 1 {
+			failureThreshold = 2
+		}
+		fingerprint := fmt.Sprintf("datasource-health:%d:%d", rule.ID, ds.ID)
+		var event model.MonitorAlertEvent
+		err := s.db.Where("fingerprint = ? AND status IN ?", fingerprint, []string{"firing", "claimed", "silenced"}).First(&event).Error
+		if healthErr != nil && failures >= failureThreshold {
+			labels, _ := json.Marshal(map[string]string{"datasource": ds.Name, "type": ds.Type, "environment": ds.Env, "url": ds.URL})
+			summary := fmt.Sprintf("%s：%s（连续失败 %d 次）", rule.Name, ds.Name, failures)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				event = model.MonitorAlertEvent{RuleID: rule.ID, RuleName: rule.Name, DatasourceID: ds.ID, DatasourceName: ds.Name, Fingerprint: fingerprint, Severity: rule.Severity, Status: "firing", Metric: "datasource_health", LabelsJSON: string(labels), AnnotationsJSON: rule.AnnotationsJSON, CurrentValue: float64(failures), Threshold: rule.Threshold, Summary: summary, FirstTriggerAt: now, LastTriggerAt: now}
+				if s.db.Create(&event).Error == nil {
+					s.appendMonitorAlertTimeline(event.ID, "firing", fmt.Sprintf("数据源连续 %d 次连接失败", failureThreshold), healthErr.Error(), "系统", nil)
+				}
+			} else if err == nil {
+				_ = s.db.Model(&model.MonitorAlertEvent{}).Where("id = ?", event.ID).Updates(map[string]any{"last_trigger_at": now, "current_value": failures, "summary": summary}).Error
+			}
+			continue
+		}
+		if healthErr == nil && successes >= 3 && err == nil {
+			_ = s.db.Model(&model.MonitorAlertEvent{}).Where("id = ?", event.ID).Updates(map[string]any{"status": "recovered", "recovered_at": &now, "last_trigger_at": now}).Error
+			event.RecoveredAt = &now
+			event.Status = "recovered"
+			s.appendMonitorAlertTimeline(event.ID, "recovered", "数据源连续三次检测成功，告警恢复", "数据源连接已稳定恢复", "系统", nil)
+			s.dispatchDatasourceHealthNotification(event, "recovered")
+		}
+	}
+}
+
+func (s *Service) dispatchDatasourceHealthNotification(event model.MonitorAlertEvent, status string) {
+	var rules []model.NotifyRule
+	if s.db.Where("scope = ? AND status = ?", "monitor", 1).Find(&rules).Error != nil {
+		return
+	}
+	for _, rule := range rules {
+		s.DispatchNotifyRule(rule.ID, NotifyEvent{Scope: "monitor", Event: status, TargetID: event.ID, TargetName: event.RuleName, Status: status, Summary: event.Summary, Detail: event.LabelsJSON, StartedAt: &event.FirstTriggerAt, FinishedAt: event.RecoveredAt, Extra: map[string]string{"alertName": event.RuleName, "severity": event.Severity, "datasourceName": event.DatasourceName}})
+	}
 }
 
 func (s *Service) checkAllMonitorDatasources() {
@@ -2873,7 +2931,10 @@ func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
 	alertType := normalizeAlertType(payload.AlertType)
 	datasourceScope := normalizeDatasourceScope(payload.DatasourceScope)
 	queryText := firstNonEmpty(strings.TrimSpace(payload.Query), strings.TrimSpace(payload.PromQL))
-	if queryText == "" {
+	if alertType == "datasource_health" {
+		datasourceScope = "specific"
+		queryText = "datasource_health"
+	} else if queryText == "" {
 		if isMonitorLogAlertType(alertType) {
 			return errors.New("Elasticsearch 查询语句不能为空")
 		}
@@ -2951,6 +3012,11 @@ func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
 		"env":                            normalizeEnvCode(payload.Env),
 		"status":                         normalizeMonitorStatus(payload.Status),
 		"description":                    Trimmed(payload.Description),
+	}
+	if alertType == "datasource_health" {
+		updates["threshold"] = 2.0
+		updates["for_seconds"] = 0
+		updates["eval_interval_seconds"] = 15
 	}
 	var current model.MonitorAlertRule
 	err = s.db.Transaction(func(tx *gorm.DB) error {

@@ -77,6 +77,8 @@ export const updateK8sWorkloadImages = (data) => http.post('/api/v1/k8s/workload
 
 export const updateK8sWorkloadResources = (data) => http.put('/api/v1/k8s/workload/resources', data)
 
+export const createK8sWorkloadBundle = (data) => http.post('/api/v1/k8s/workload/create', data)
+
 export const updateK8sIstioTraffic = (data) => http.post('/api/v1/k8s/istio/traffic', data)
 
 export const updateK8sHTTPRouteTraffic = (data) => http.post('/api/v1/k8s/httproute/traffic', data)

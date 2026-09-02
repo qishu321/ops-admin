@@ -7,6 +7,7 @@ import K8sConsoleLayout from './k8s/K8sConsoleLayout.vue'
 import K8sSectionContent from './k8s/K8sSectionContent.vue'
 import K8sDrawers from './k8s/K8sDrawers.vue'
 import K8sDialogs from './k8s/K8sDialogs.vue'
+import K8sWorkloadCreate from './k8s/K8sWorkloadCreate.vue'
 import './k8s/k8s-page.css'
 import {
   queryK8sClusterList,
@@ -31,7 +32,8 @@ import {
   scaleK8sWorkload,
   restartK8sWorkload,
   updateK8sWorkloadImages,
-	updateK8sWorkloadResources,
+  updateK8sWorkloadResources,
+  createK8sWorkloadBundle,
   updateK8sIstioTraffic,
   updateK8sHTTPRouteTraffic,
   createK8sResourceYAML,
@@ -120,6 +122,16 @@ const workloadDetail = ref(null)
 const workloadResourceDialogVisible = ref(false)
 const workloadResourceSaving = ref(false)
 const workloadResourceForm = reactive({ namespace: '', workloadType: '', workloadName: '', containers: [] })
+const workloadCreateVisible = ref(false)
+const workloadCreateSaving = ref(false)
+const workloadCreateActiveTab = ref('basic')
+const workloadCreateForm = reactive({
+  namespace: '', name: '', workloadType: 'Deployment', replicas: 1,
+  image: '', containerName: 'app', containerPort: 8080, imagePullPolicy: 'IfNotPresent',
+  requestCPU: '', requestMemory: '', limitCPU: '', limitMemory: '',
+  createService: true, serviceName: '', serviceType: 'ClusterIP', servicePort: 80, targetPort: '',
+  createIngress: false, ingressName: '', ingressClassName: '', ingressHost: '', ingressPath: '/', ingressPathType: 'Prefix'
+})
 
 const podDrawerVisible = ref(false)
 const podDrawerLoading = ref(false)
@@ -185,10 +197,16 @@ const serviceEditForm = reactive({
   annotations: [],
   ports: []
 })
+const serviceCreateVisible = ref(false)
+const serviceCreateSaving = ref(false)
+const serviceCreateForm = reactive({ name: '', namespace: '', type: 'ClusterIP', selectorKey: 'app.kubernetes.io/name', selectorValue: '', portName: 'http', port: 80, targetPort: '8080' })
 
 const ingressDrawerVisible = ref(false)
 const ingressDrawerLoading = ref(false)
 const ingressDetail = ref(null)
+const ingressCreateVisible = ref(false)
+const ingressCreateSaving = ref(false)
+const ingressCreateForm = reactive({ name: '', namespace: '', ingressClassName: '', host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: 80 })
 
 const istioDrawerVisible = ref(false)
 const istioDrawerLoading = ref(false)
@@ -230,6 +248,7 @@ const trafficForm = reactive({
 
 const yamlDialogVisible = ref(false)
 const yamlSaving = ref(false)
+const yamlCreating = ref(false)
 const yamlTextareaRef = ref()
 const yamlEditor = reactive({
   title: '',
@@ -887,6 +906,7 @@ function setYAMLEditor(payload) {
   yamlEditor.workloadType = payload.workloadType || ''
   yamlEditor.originalYAML = payload.yaml || ''
   yamlEditor.yaml = payload.yaml || ''
+  yamlCreating.value = Boolean(payload.creating)
   yamlSearch.keyword = ''
   yamlSearch.matches = []
   yamlSearch.activeIndex = -1
@@ -1106,6 +1126,9 @@ async function handleClusterChange(clusterId) {
 }
 
 function handleTabChange(tabKey) {
+  // The embedded creator belongs only to the workload view. A navigation event
+  // must always return the content slot to the destination resource list.
+  workloadCreateVisible.value = false
   const target = sectionTabs.find((item) => item.key === tabKey)
   if (target && target.path !== route.path) {
     router.push(target.path)
@@ -1454,6 +1477,149 @@ async function submitServiceEdit() {
     }
   } finally {
     serviceEditSaving.value = false
+  }
+}
+
+function openServiceCreate() {
+  if (!cluster.value?.id) return
+  const namespace = namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || 'default')
+  setYAMLEditor({ title: '新增 Service', resourceType: 'service', namespace, creating: true, yaml: `apiVersion: v1\nkind: Service\nmetadata:\n  name: example-service\n  namespace: ${namespace}\nspec:\n  selector:\n    app.kubernetes.io/name: example\n  ports:\n    - name: http\n      protocol: TCP\n      port: 80\n      targetPort: 8080\n` })
+}
+
+function openIngressCreate() {
+  if (!cluster.value?.id) return
+  const namespace = namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || 'default')
+  setYAMLEditor({ title: '新增 Ingress', resourceType: 'ingress', namespace, creating: true, yaml: `apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: example-ingress\n  namespace: ${namespace}\nspec:\n  rules:\n    - host: example.local\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: example-service\n                port:\n                  number: 80\n` })
+}
+
+function openServiceFormCreate() {
+  Object.assign(serviceCreateForm, { name: '', namespace: namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || 'default'), type: 'ClusterIP', selectorKey: 'app.kubernetes.io/name', selectorValue: '', portName: 'http', port: 80, targetPort: '8080' })
+  serviceCreateVisible.value = true
+}
+
+async function submitServiceCreate() {
+  const form = serviceCreateForm
+  if (!cluster.value?.id || !validK8sResourceName(form.name) || !form.namespace || !form.selectorKey || !form.selectorValue || !form.port || !form.targetPort) return ElMessage.warning('请完整填写服务名称、命名空间、选择器和端口映射')
+  serviceCreateSaving.value = true
+  try {
+    const manifest = { apiVersion: 'v1', kind: 'Service', metadata: { name: form.name.trim(), namespace: form.namespace }, spec: { type: form.type, selector: { [form.selectorKey.trim()]: form.selectorValue.trim() }, ports: [{ name: form.portName.trim() || 'http', protocol: 'TCP', port: Number(form.port), targetPort: String(form.targetPort).trim() }] } }
+    await createK8sResourceYAML({ clusterId: cluster.value.id, resourceType: 'service', namespace: form.namespace, name: form.name.trim(), yaml: JSON.stringify(manifest, null, 2) })
+    ElMessage.success('Service 已创建'); serviceCreateVisible.value = false; await refreshCurrentClusterData()
+  } finally { serviceCreateSaving.value = false }
+}
+
+function openIngressFormCreate() {
+  Object.assign(ingressCreateForm, { name: '', namespace: namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || 'default'), ingressClassName: '', host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: 80 })
+  ingressCreateVisible.value = true
+}
+
+async function submitIngressCreate() {
+  const form = ingressCreateForm
+  if (!cluster.value?.id || !validK8sResourceName(form.name) || !form.namespace || !form.host.trim() || !form.serviceName.trim() || !form.servicePort) return ElMessage.warning('请完整填写 Ingress 名称、命名空间、域名和后端服务')
+  ingressCreateSaving.value = true
+  try {
+    const spec = { rules: [{ host: form.host.trim(), http: { paths: [{ path: form.path || '/', pathType: form.pathType, backend: { service: { name: form.serviceName.trim(), port: { number: Number(form.servicePort) } } } }] } }] }
+    if (form.ingressClassName.trim()) spec.ingressClassName = form.ingressClassName.trim()
+    const manifest = { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata: { name: form.name.trim(), namespace: form.namespace }, spec }
+    await createK8sResourceYAML({ clusterId: cluster.value.id, resourceType: 'ingress', namespace: form.namespace, name: form.name.trim(), yaml: JSON.stringify(manifest, null, 2) })
+    ElMessage.success('Ingress 已创建'); ingressCreateVisible.value = false; await refreshCurrentClusterData()
+  } finally { ingressCreateSaving.value = false }
+}
+
+function resetWorkloadCreateForm() {
+  Object.assign(workloadCreateForm, {
+    namespace: namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || ''),
+    name: '', workloadType: 'Deployment', replicas: 1, image: '', containerName: 'app', containerPort: 8080, imagePullPolicy: 'IfNotPresent',
+    requestCPU: '', requestMemory: '', limitCPU: '', limitMemory: '', createService: true, serviceName: '', serviceType: 'ClusterIP', servicePort: 80, targetPort: '',
+    createIngress: false, ingressName: '', ingressClassName: '', ingressHost: '', ingressPath: '/', ingressPathType: 'Prefix'
+  })
+  workloadCreateActiveTab.value = 'basic'
+}
+
+function openWorkloadCreate() {
+  if (!cluster.value?.id) return
+  resetWorkloadCreateForm()
+  workloadCreateVisible.value = true
+}
+
+function yamlValue(value) {
+  return JSON.stringify(String(value ?? ''))
+}
+
+function workloadCreateNames() {
+  const name = workloadCreateForm.name.trim()
+  return {
+    name,
+    serviceName: workloadCreateForm.serviceName.trim() || name,
+    ingressName: workloadCreateForm.ingressName.trim() || `${name}-ingress`
+  }
+}
+
+function buildWorkloadCreateYamls() {
+  const form = workloadCreateForm
+  const { name, serviceName, ingressName } = workloadCreateNames()
+  const labels = `      labels:\n        app.kubernetes.io/name: ${yamlValue(name)}`
+  const container = [
+    `      containers:`, `        - name: ${yamlValue(form.containerName.trim() || 'app')}`,
+    `          image: ${yamlValue(form.image.trim())}`, `          imagePullPolicy: ${form.imagePullPolicy}`,
+    `          ports:`, `            - name: http`, `              containerPort: ${Number(form.containerPort)}`
+  ]
+  const resources = []
+  if (form.requestCPU || form.requestMemory) {
+    resources.push('            requests:')
+    if (form.requestCPU) resources.push(`              cpu: ${yamlValue(form.requestCPU)}`)
+    if (form.requestMemory) resources.push(`              memory: ${yamlValue(form.requestMemory)}`)
+  }
+  if (form.limitCPU || form.limitMemory) {
+    if (!resources.length) resources.push('            limits:')
+    else resources.push('            limits:')
+    if (form.limitCPU) resources.push(`              cpu: ${yamlValue(form.limitCPU)}`)
+    if (form.limitMemory) resources.push(`              memory: ${yamlValue(form.limitMemory)}`)
+  }
+  if (resources.length) container.push('          resources:', ...resources)
+  const podSpec = [`    metadata:`, ...labels.split('\n'), `    spec:`, ...container]
+  let workloadYaml
+  if (form.workloadType === 'CronJob') {
+    workloadYaml = [`apiVersion: batch/v1`, `kind: CronJob`, `metadata:`, `  name: ${yamlValue(name)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, `  schedule: "0 * * * *"`, `  jobTemplate:`, `    spec:`, `      template:`, ...podSpec.map((line) => `    ${line}`)].join('\n')
+  } else if (form.workloadType === 'Job') {
+    workloadYaml = [`apiVersion: batch/v1`, `kind: Job`, `metadata:`, `  name: ${yamlValue(name)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, `  template:`, ...podSpec].join('\n')
+  } else {
+    const kind = form.workloadType
+    const spec = [`apiVersion: apps/v1`, `kind: ${kind}`, `metadata:`, `  name: ${yamlValue(name)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`]
+    if (kind !== 'DaemonSet') spec.push(`  replicas: ${Number(form.replicas)}`)
+    if (kind === 'StatefulSet') spec.push(`  serviceName: ${yamlValue(serviceName)}`)
+    spec.push(`  selector:`, `    matchLabels:`, `      app.kubernetes.io/name: ${yamlValue(name)}`, `  template:`, ...podSpec)
+    workloadYaml = spec.join('\n')
+  }
+  const serviceYaml = form.createService ? [`apiVersion: v1`, `kind: Service`, `metadata:`, `  name: ${yamlValue(serviceName)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, `  type: ${form.serviceType}`, `  selector:`, `    app.kubernetes.io/name: ${yamlValue(name)}`, `  ports:`, `    - name: http`, `      protocol: TCP`, `      port: ${Number(form.servicePort)}`, `      targetPort: ${yamlValue(form.targetPort || form.containerPort)}`].join('\n') : ''
+  const ingressYaml = form.createIngress ? [`apiVersion: networking.k8s.io/v1`, `kind: Ingress`, `metadata:`, `  name: ${yamlValue(ingressName)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, ...(form.ingressClassName.trim() ? [`  ingressClassName: ${yamlValue(form.ingressClassName.trim())}`] : []), `  rules:`, `    - host: ${yamlValue(form.ingressHost.trim())}`, `      http:`, `        paths:`, `          - path: ${yamlValue(form.ingressPath || '/')}`, `            pathType: ${form.ingressPathType}`, `            backend:`, `              service:`, `                name: ${yamlValue(serviceName)}`, `                port:`, `                  number: ${Number(form.servicePort)}`].join('\n') : ''
+  return { workloadYaml, serviceYaml, ingressYaml }
+}
+
+const workloadCreatePreview = computed(() => {
+  const yamls = buildWorkloadCreateYamls()
+  return [yamls.workloadYaml, yamls.serviceYaml, yamls.ingressYaml].filter(Boolean).join('\n---\n')
+})
+
+async function submitWorkloadCreate() {
+  const form = workloadCreateForm
+  if (!cluster.value?.id || !form.namespace || !form.name.trim() || !form.image.trim()) {
+    ElMessage.warning('请填写命名空间、工作负载名称和容器镜像')
+    return
+  }
+  if (form.createIngress && (!form.createService || !form.ingressHost.trim())) {
+    ElMessage.warning('创建路由时必须同时创建服务，并填写访问域名')
+    return
+  }
+  workloadCreateSaving.value = true
+  try {
+    const yamls = buildWorkloadCreateYamls()
+    await createK8sWorkloadBundle({ clusterId: cluster.value.id, namespace: form.namespace, workloadType: form.workloadType, ...yamls })
+    ElMessage.success('工作负载及关联资源已创建')
+    workloadCreateVisible.value = false
+    await refreshCurrentClusterData()
+  } finally {
+    workloadCreateSaving.value = false
   }
 }
 
@@ -2373,17 +2539,23 @@ async function submitYAMLUpdate() {
   )
   yamlSaving.value = true
   try {
-    await updateK8sResourceYAML({
+    const payload = {
       clusterId: cluster.value.id,
       resourceType: yamlEditor.resourceType,
       namespace: yamlEditor.namespace,
       name: yamlEditor.name,
       workloadType: yamlEditor.workloadType,
       yaml: yamlEditor.yaml
-    })
-    ElMessage.success(t('k8sYamlUpdatedSuccess'))
+    }
+    if (yamlCreating.value) {
+      await createK8sResourceYAML(payload)
+      ElMessage.success(`${yamlEditor.resourceType === 'service' ? 'Service' : 'Ingress'} 已创建`)
+    } else {
+      await updateK8sResourceYAML(payload)
+      ElMessage.success(t('k8sYamlUpdatedSuccess'))
+    }
     yamlDialogVisible.value = false
-    await refreshCurrentYAMLResource()
+    await refreshCurrentClusterData()
   } finally {
     yamlSaving.value = false
   }
@@ -2529,7 +2701,11 @@ const page = reactive({
   workloadDetail,
 	workloadResourceDialogVisible,
 	workloadResourceSaving,
-	workloadResourceForm,
+  workloadResourceForm,
+  workloadCreateVisible,
+  workloadCreateSaving,
+  workloadCreateActiveTab,
+  workloadCreateForm,
   selectedWorkloads,
   podDrawerVisible,
   podDrawerLoading,
@@ -2548,9 +2724,15 @@ const page = reactive({
   serviceEditLoading,
   serviceEditSaving,
   serviceEditForm,
+  serviceCreateVisible,
+  serviceCreateSaving,
+  serviceCreateForm,
   ingressDrawerVisible,
   ingressDrawerLoading,
   ingressDetail,
+  ingressCreateVisible,
+  ingressCreateSaving,
+  ingressCreateForm,
   istioDrawerVisible,
   istioDrawerLoading,
   istioDetail,
@@ -2571,6 +2753,7 @@ const page = reactive({
   trafficForm,
   yamlDialogVisible,
   yamlSaving,
+  yamlCreating,
   yamlTextareaRef,
   yamlEditor,
   yamlSearch,
@@ -2580,6 +2763,7 @@ const page = reactive({
   hasCluster,
   statusType,
   namespaceOptions,
+  workloadCreatePreview,
   podWorkloadOptions,
   configStorageCreateTitle,
   storageAccessModeOptions,
@@ -2654,6 +2838,10 @@ const page = reactive({
   removeConfigStorageEntry,
   submitConfigStorageCreate,
   openWorkloadDetail,
+  openWorkloadCreate,
+  openServiceCreate,
+  openIngressCreate,
+  submitWorkloadCreate,
 	openWorkloadResourceSettings,
 	submitWorkloadResourceSettings,
 	addWorkloadEnvironment,
@@ -2678,6 +2866,8 @@ const page = reactive({
   handleDeletePod,
   refreshPodLogs,
   openServiceDetail,
+  openServiceFormCreate,
+  submitServiceCreate,
   openServiceYAML,
   openServiceEdit,
   addServiceSelector,
@@ -2689,6 +2879,8 @@ const page = reactive({
   submitServiceEdit,
   copyServiceName,
   openIngressDetail,
+  openIngressFormCreate,
+  submitIngressCreate,
   openIngressYAML,
   openIstioResourceDetail,
   openIstioResourceYAML,
@@ -2739,12 +2931,19 @@ watch(filteredPods, () => {
     podPage.value = maxPage
   }
 })
+
+watch(() => route.path, () => {
+  if (currentTab.value !== 'workloads') {
+    workloadCreateVisible.value = false
+  }
+})
 </script>
 
 <template>
   <div class="k8s-page" :class="`k8s-page--${page.currentTab}`" v-loading="page.loading">
     <K8sConsoleLayout :page="page">
-      <K8sSectionContent :page="page" />
+      <K8sWorkloadCreate v-if="page.workloadCreateVisible" :page="page" />
+      <K8sSectionContent v-else :page="page" />
     </K8sConsoleLayout>
     <K8sDrawers :page="page" />
     <K8sDialogs :page="page" />

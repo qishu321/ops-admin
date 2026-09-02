@@ -420,6 +420,20 @@ func (ctl *Controller) CreateK8sResourceYAML(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+func (ctl *Controller) CreateK8sWorkloadBundle(c *gin.Context) {
+	var payload model.K8sWorkloadBundlePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid workload payload")
+		return
+	}
+	data, err := ctl.service.CreateK8sWorkloadBundle(payload)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) DeleteK8sResource(c *gin.Context) {
 	var payload model.K8sResourceDeletePayload
 	if err := c.ShouldBindJSON(&payload); err != nil {

@@ -141,6 +141,11 @@ const iconMap = {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <el-button v-if="page.currentTab === 'workloads'" type="primary" @click="page.openWorkloadCreate">
+            新增工作负载
+          </el-button>
+          <template v-if="page.currentTab === 'services'"><el-button @click="page.openServiceCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openServiceFormCreate">新增服务</el-button></template>
+          <template v-if="page.currentTab === 'ingresses'"><el-button @click="page.openIngressCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openIngressFormCreate">新增 Ingress</el-button></template>
           <el-button v-if="page.currentTab === 'namespaces'" type="primary" @click="page.openNamespaceCreate">
             {{ page.t('k8sCreateNamespace') }}
           </el-button>

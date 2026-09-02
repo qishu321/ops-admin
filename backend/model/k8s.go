@@ -87,6 +87,17 @@ type K8sResourceYAMLPayload struct {
 	YAML         string `json:"yaml"`
 }
 
+// K8sWorkloadBundlePayload creates a workload and its optional access resources atomically.
+// If Service or Ingress creation fails, resources created earlier in this request are removed.
+type K8sWorkloadBundlePayload struct {
+	ClusterID    uint   `json:"clusterId"`
+	Namespace    string `json:"namespace"`
+	WorkloadType string `json:"workloadType"`
+	WorkloadYAML string `json:"workloadYaml"`
+	ServiceYAML  string `json:"serviceYaml"`
+	IngressYAML  string `json:"ingressYaml"`
+}
+
 type K8sResourceDeletePayload struct {
 	ClusterID    uint   `json:"clusterId"`
 	ResourceType string `json:"resourceType"`

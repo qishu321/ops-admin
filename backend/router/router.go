@@ -484,6 +484,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.POST("/k8s/workload/restart", ctl.RestartK8sWorkload)
 		authGroup.POST("/k8s/workload/images", ctl.UpdateK8sWorkloadImages)
 		authGroup.PUT("/k8s/workload/resources", ctl.UpdateK8sWorkloadResources)
+		authGroup.POST("/k8s/workload/create", ctl.CreateK8sWorkloadBundle)
 		authGroup.POST("/k8s/istio/traffic", ctl.UpdateK8sIstioTraffic)
 		authGroup.POST("/k8s/httproute/traffic", ctl.UpdateK8sHTTPRouteTraffic)
 		authGroup.POST("/k8s/resource/yaml/create", ctl.CreateK8sResourceYAML)

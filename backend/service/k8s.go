@@ -1468,6 +1468,68 @@ func (s *Service) CreateK8sResourceYAML(payload model.K8sResourceYAMLPayload) (m
 	}, nil
 }
 
+// CreateK8sWorkloadBundle creates the workload first, then its optional Service and
+// Ingress. Kubernetes has no transaction across these APIs, so later failures roll
+// back only the resources created by this request.
+func (s *Service) CreateK8sWorkloadBundle(payload model.K8sWorkloadBundlePayload) (map[string]any, error) {
+	if payload.ClusterID == 0 || Trimmed(payload.Namespace) == "" || Trimmed(payload.WorkloadType) == "" || Trimmed(payload.WorkloadYAML) == "" {
+		return nil, errors.New("invalid workload payload")
+	}
+
+	workload, err := validateBundleManifest(payload.WorkloadYAML, payload.Namespace, strings.ToLower(Trimmed(payload.WorkloadType)))
+	if err != nil {
+		return nil, fmt.Errorf("invalid workload: %w", err)
+	}
+	var service k8sManifestIdentity
+	if Trimmed(payload.ServiceYAML) != "" {
+		service, err = validateBundleManifest(payload.ServiceYAML, payload.Namespace, "service")
+		if err != nil {
+			return nil, fmt.Errorf("invalid service: %w", err)
+		}
+	}
+	var ingress k8sManifestIdentity
+	if Trimmed(payload.IngressYAML) != "" {
+		if Trimmed(payload.ServiceYAML) == "" {
+			return nil, errors.New("ingress requires a service in the same request")
+		}
+		ingress, err = validateBundleManifest(payload.IngressYAML, payload.Namespace, "ingress")
+		if err != nil {
+			return nil, fmt.Errorf("invalid ingress: %w", err)
+		}
+	}
+
+	workloadResult, err := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{
+		ClusterID: payload.ClusterID, ResourceType: "workload", Namespace: payload.Namespace,
+		Name: workload.Metadata.Name, WorkloadType: payload.WorkloadType, YAML: payload.WorkloadYAML,
+	})
+	if err != nil {
+		return nil, err
+	}
+	rollbackWorkload := func() {
+		_, _ = s.DeleteK8sResource(model.K8sResourceDeletePayload{ClusterID: payload.ClusterID, ResourceType: "workload", Namespace: payload.Namespace, Name: workload.Metadata.Name, WorkloadType: payload.WorkloadType})
+	}
+	result := map[string]any{"workload": workloadResult}
+
+	if Trimmed(payload.ServiceYAML) != "" {
+		serviceResult, createErr := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{ClusterID: payload.ClusterID, ResourceType: "service", Namespace: payload.Namespace, Name: service.Metadata.Name, YAML: payload.ServiceYAML})
+		if createErr != nil {
+			rollbackWorkload()
+			return nil, fmt.Errorf("service creation failed; workload was rolled back: %w", createErr)
+		}
+		result["service"] = serviceResult
+		if Trimmed(payload.IngressYAML) != "" {
+			ingressResult, createErr := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{ClusterID: payload.ClusterID, ResourceType: "ingress", Namespace: payload.Namespace, Name: ingress.Metadata.Name, YAML: payload.IngressYAML})
+			if createErr != nil {
+				_, _ = s.DeleteK8sResource(model.K8sResourceDeletePayload{ClusterID: payload.ClusterID, ResourceType: "service", Namespace: payload.Namespace, Name: service.Metadata.Name})
+				rollbackWorkload()
+				return nil, fmt.Errorf("ingress creation failed; service and workload were rolled back: %w", createErr)
+			}
+			result["ingress"] = ingressResult
+		}
+	}
+	return result, nil
+}
+
 func (s *Service) DeleteK8sResource(payload model.K8sResourceDeletePayload) (map[string]any, error) {
 	if payload.ClusterID == 0 || Trimmed(payload.ResourceType) == "" || Trimmed(payload.Name) == "" {
 		return nil, errors.New("invalid delete payload")
@@ -4777,6 +4839,27 @@ func parseK8sManifestIdentity(body []byte) (k8sManifestIdentity, error) {
 	}
 	if Trimmed(manifest.Kind) == "" {
 		return manifest, errors.New("resource kind is required")
+	}
+	return manifest, nil
+}
+
+func validateBundleManifest(raw, namespace, expectedKind string) (k8sManifestIdentity, error) {
+	body, err := ksyaml.YAMLToJSON([]byte(raw))
+	if err != nil {
+		return k8sManifestIdentity{}, errors.New("invalid yaml content")
+	}
+	manifest, err := parseK8sManifestIdentity(body)
+	if err != nil {
+		return manifest, err
+	}
+	if !strings.EqualFold(Trimmed(manifest.Kind), expectedKind) {
+		return manifest, fmt.Errorf("resource kind must be %s", expectedKind)
+	}
+	if Trimmed(manifest.Metadata.Name) == "" {
+		return manifest, errors.New("metadata.name is required")
+	}
+	if manifest.Metadata.Namespace != "" && Trimmed(manifest.Metadata.Namespace) != Trimmed(namespace) {
+		return manifest, errors.New("metadata.namespace must match the selected namespace")
 	}
 	return manifest, nil
 }

@@ -33,6 +33,17 @@ function channelTypeLabel(value) {
   return channelTypes.find((item) => item.value === value)?.label || value
 }
 
+function formatDateTime(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/)
+  if (match) return `${match[1]} ${match[2]}`
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return raw
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 function resetForm() {
   Object.assign(form, {
     id: undefined,
@@ -129,7 +140,7 @@ onMounted(loadData)
           <el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '启用' : '禁用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="updateTime" label="更新时间" width="180" />
+      <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDateTime(row.updateTime) }}</template></el-table-column>
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>

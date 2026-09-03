@@ -99,6 +99,17 @@ const filteredTemplates = computed(() => {
   return templates.value.filter((item) => item.category === selectedCategory.value || item.techStack === selectedCategory.value)
 })
 
+function formatDateTime(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/)
+  if (match) return `${match[1]} ${match[2]}`
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return raw
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 function resetForm() {
   Object.assign(form, {
     id: undefined,
@@ -715,7 +726,7 @@ onBeforeUnmount(stopRunRefresh)
           <el-table-column label="耗时" width="120">
             <template #default="{ row }">{{ durationText(row.durationMs) }}</template>
           </el-table-column>
-          <el-table-column prop="createTime" label="开始时间" min-width="180" />
+          <el-table-column label="开始时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.createTime) }}</template></el-table-column>
           <el-table-column label="操作" width="110" fixed="right">
             <template #default="{ row }"><el-button link type="primary" @click="openRunDetail(row.id)">详情/日志</el-button></template>
           </el-table-column>

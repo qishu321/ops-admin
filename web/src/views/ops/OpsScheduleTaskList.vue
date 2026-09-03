@@ -74,6 +74,14 @@ const selectedScriptVariables = computed(() => {
   return current?.variables || []
 })
 
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 function syncScriptVariables(values = {}) {
   const next = {}
   selectedScriptVariables.value.forEach((variable) => {
@@ -411,14 +419,14 @@ onMounted(async () => {
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border @selection-change="handleSelectionChange">
-      <el-table-column type="selection" width="48" />
-      <el-table-column prop="name" label="任务名称" min-width="180" />
+    <el-table v-loading="loading" :data="rows" border class="schedule-task-table" @selection-change="handleSelectionChange">
+      <el-table-column type="selection" width="38" />
+      <el-table-column prop="name" label="任务名称" min-width="150" />
       <el-table-column label="任务类型" width="120">
         <template #default="{ row }">{{ taskTypeLabel(row.taskType) }}</template>
       </el-table-column>
-      <el-table-column prop="cronExpr" label="Cron 表达式" min-width="160" />
-      <el-table-column prop="scriptName" label="脚本 / 地址" min-width="240" show-overflow-tooltip>
+      <el-table-column prop="cronExpr" label="Cron 表达式" min-width="150" />
+      <el-table-column prop="scriptName" label="脚本 / 地址" min-width="200" show-overflow-tooltip>
         <template #default="{ row }">{{ row.taskType === 'http' ? row.url : row.scriptName }}</template>
       </el-table-column>
       <el-table-column label="状态" width="100" align="center">
@@ -426,11 +434,11 @@ onMounted(async () => {
           <el-tag :type="row.status === 1 ? 'success' : 'info'" effect="light">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="lastStatus" label="最近结果" width="110" />
-      <el-table-column prop="lastSummary" label="最近摘要" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="lastRunAt" label="最近执行" width="180" />
-      <el-table-column prop="nextRunAt" label="下次执行" width="180" />
-      <el-table-column label="操作" width="350" fixed="right">
+      <el-table-column prop="lastStatus" label="最近结果" width="100" />
+      <el-table-column prop="lastSummary" label="最近摘要" min-width="200" show-overflow-tooltip />
+      <el-table-column label="最近执行" width="170"><template #default="{ row }">{{ formatDateTime(row.lastRunAt) }}</template></el-table-column>
+      <el-table-column label="下次执行" width="170"><template #default="{ row }">{{ formatDateTime(row.nextRunAt) }}</template></el-table-column>
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button link type="success" @click="handleRun(row)">立即执行</el-button>
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -636,5 +644,7 @@ onMounted(async () => {
 .schedule-action-disable { color: #c87506 !important; font-weight: 600; }
 .schedule-action-disable:hover { color: #9a5a00 !important; }
 .schedule-action-enable { color: #49a828 !important; font-weight: 600; }
+.schedule-task-table :deep(th.el-table-fixed-column--right),
+.schedule-task-table :deep(td.el-table-fixed-column--right) { border-left: 1px solid #dfe6f1 !important; }
 @media (max-width: 720px) { .variable-grid { grid-template-columns: 1fr; } }
 </style>

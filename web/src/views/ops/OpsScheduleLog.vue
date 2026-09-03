@@ -67,6 +67,14 @@ function statusTagType(value) {
   return 'danger'
 }
 
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 async function copyText(value, message) {
   try {
     await navigator.clipboard.writeText(value || '')
@@ -111,7 +119,7 @@ onMounted(loadData)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border>
+    <el-table v-loading="loading" :data="rows" border class="schedule-log-table">
       <el-table-column prop="taskName" label="任务名称" min-width="180" />
       <el-table-column label="任务类型" width="120">
         <template #default="{ row }">{{ taskTypeLabel(row.taskType) }}</template>
@@ -126,8 +134,8 @@ onMounted(loadData)
       </el-table-column>
       <el-table-column prop="summary" label="执行摘要" min-width="260" show-overflow-tooltip />
       <el-table-column prop="durationMs" label="耗时(ms)" width="100" />
-      <el-table-column prop="startedAt" label="开始时间" width="180" />
-      <el-table-column prop="finishedAt" label="结束时间" width="180" />
+      <el-table-column label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.startedAt) }}</template></el-table-column>
+      <el-table-column label="结束时间" width="180"><template #default="{ row }">{{ formatDateTime(row.finishedAt) }}</template></el-table-column>
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
@@ -154,8 +162,8 @@ onMounted(loadData)
             <div><span>任务类型</span><strong>{{ taskTypeLabel(detail.taskType) }}</strong></div>
             <div><span>执行状态</span><strong>{{ detail.status }}</strong></div>
             <div><span>触发方式</span><strong>{{ triggerLabel(detail.triggerType) }}</strong></div>
-            <div><span>开始时间</span><strong>{{ detail.startedAt || '-' }}</strong></div>
-            <div><span>结束时间</span><strong>{{ detail.finishedAt || '-' }}</strong></div>
+            <div><span>开始时间</span><strong>{{ formatDateTime(detail.startedAt) }}</strong></div>
+            <div><span>结束时间</span><strong>{{ formatDateTime(detail.finishedAt) }}</strong></div>
             <div><span>耗时</span><strong>{{ detail.durationMs }} ms</strong></div>
             <div><span>关联执行任务</span><strong>{{ detail.execTaskId || '-' }}</strong></div>
             <div><span>期望状态码</span><strong>{{ detail.expectedStatus || '-' }}</strong></div>
@@ -189,6 +197,8 @@ onMounted(loadData)
 .page-title { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: #14213d; }
 .page-desc { margin: 0; color: #7282a0; }
 .toolbar-left { display: flex; gap: 12px; flex-wrap: wrap; }
+.schedule-log-table :deep(th.el-table-fixed-column--right),
+.schedule-log-table :deep(td.el-table-fixed-column--right) { border-left: 1px solid #dfe6f1 !important; }
 .pager { display: flex; justify-content: flex-end; }
 .log-detail { min-height: 280px; display: flex; flex-direction: column; gap: 16px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }

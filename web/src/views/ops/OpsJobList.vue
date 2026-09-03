@@ -66,6 +66,14 @@ function statusLabel(status) {
   return Number(status) === 1 ? '启用' : '禁用'
 }
 
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 onMounted(loadData)
 </script>
 
@@ -91,7 +99,7 @@ onMounted(loadData)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border>
+    <el-table v-loading="loading" :data="rows" border class="job-list-table">
       <el-table-column prop="name" label="作业名称" min-width="220" />
       <el-table-column prop="description" label="描述" min-width="260" show-overflow-tooltip />
       <el-table-column prop="templateId" label="来源模板" width="100" align="center">
@@ -102,7 +110,7 @@ onMounted(loadData)
           <el-tag :type="row.status === 1 ? 'success' : 'info'" effect="light">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="updateTime" label="更新时间" width="180" />
+      <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDateTime(row.updateTime) }}</template></el-table-column>
       <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button link type="success" @click="handleRun(row)">运行</el-button>
@@ -130,6 +138,8 @@ onMounted(loadData)
 .ops-page { display: flex; flex-direction: column; gap: 18px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .page-title { margin: 0 0 8px; font-size: 24px; font-weight: 700; color: #14213d; }
+.job-list-table :deep(th.el-table-fixed-column--right),
+.job-list-table :deep(td.el-table-fixed-column--right) { border-left: 1px solid #dfe6f1 !important; }
 .page-desc { margin: 0; color: #7282a0; }
 .toolbar-left { display: flex; gap: 12px; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; }

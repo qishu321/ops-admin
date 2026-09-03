@@ -36,6 +36,16 @@ async function upload(file) {
   return false
 }
 function preview(content) { return (content || '').replace(/\s+/g, ' ').slice(0, 140) || '暂无内容' }
+function formatDateTime(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/)
+  if (match) return `${match[1]} ${match[2]}`
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return raw
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
 const contentLines = computed(() => (form.content || '').split('\n'))
 onMounted(load)
 </script>
@@ -53,7 +63,7 @@ onMounted(load)
         <el-table-column label="内容摘要" min-width="380" show-overflow-tooltip><template #default="{ row }">{{ preview(row.content) }}</template></el-table-column>
         <el-table-column label="来源" width="100"><template #default="{ row }"><el-tag size="small" effect="plain">{{ row.sourceType === 'upload' ? '上传' : '新建' }}</el-tag></template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag></template></el-table-column>
-        <el-table-column prop="updateTime" label="更新时间" min-width="170"/>
+        <el-table-column label="更新时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.updateTime) }}</template></el-table-column>
         <el-table-column label="操作" width="160"><template #default="{ row }"><div class="doc-actions"><el-button link type="primary" :icon="Edit" @click="editDocument(row)">编辑</el-button><el-button link type="danger" :icon="Delete" @click="remove(row)">删除</el-button></div></template></el-table-column>
       </el-table>
     </section>

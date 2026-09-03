@@ -69,6 +69,14 @@ function statusTagType(status) {
   }
 }
 
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 onMounted(loadData)
 </script>
 
@@ -96,7 +104,7 @@ onMounted(loadData)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border>
+    <el-table v-loading="loading" :data="rows" border class="job-history-table">
       <el-table-column prop="jobName" label="作业名称" min-width="220" />
       <el-table-column prop="triggerType" label="触发方式" width="100" />
       <el-table-column label="状态" width="120" align="center">
@@ -106,8 +114,8 @@ onMounted(loadData)
       </el-table-column>
       <el-table-column prop="summary" label="摘要" min-width="260" show-overflow-tooltip />
       <el-table-column prop="currentStepName" label="当前步骤" width="180" show-overflow-tooltip />
-      <el-table-column prop="startedAt" label="开始时间" width="180" />
-      <el-table-column prop="finishedAt" label="结束时间" width="180" />
+      <el-table-column label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.startedAt) }}</template></el-table-column>
+      <el-table-column label="结束时间" width="180"><template #default="{ row }">{{ formatDateTime(row.finishedAt) }}</template></el-table-column>
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
@@ -134,7 +142,7 @@ onMounted(loadData)
           <div class="summary-item"><span>摘要</span><strong>{{ detail.history.summary || '-' }}</strong></div>
         </div>
 
-        <el-table :data="detail.steps" border>
+        <el-table :data="detail.steps" border class="job-history-detail-table">
           <el-table-column prop="stepName" label="步骤名称" min-width="180" />
           <el-table-column prop="stepType" label="步骤类型" width="120" />
           <el-table-column label="状态" width="140" align="center">
@@ -160,6 +168,10 @@ onMounted(loadData)
 .ops-page { display: flex; flex-direction: column; gap: 18px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .page-title { margin: 0 0 8px; font-size: 24px; font-weight: 700; color: #14213d; }
+.job-history-table :deep(th.el-table-fixed-column--right),
+.job-history-table :deep(td.el-table-fixed-column--right),
+.job-history-detail-table :deep(th.el-table-fixed-column--right),
+.job-history-detail-table :deep(td.el-table-fixed-column--right) { border-left: 1px solid #dfe6f1 !important; }
 .page-desc { margin: 0; color: #7282a0; }
 .toolbar-left { display: flex; gap: 12px; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; }

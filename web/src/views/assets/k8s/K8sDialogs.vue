@@ -9,7 +9,74 @@ defineProps({
 
 <template>
   <el-dialog v-model="page.serviceCreateVisible" title="新增服务" width="760px" destroy-on-close><el-form label-position="top" class="service-edit-form"><div class="service-metadata-grid"><el-form-item label="服务名称" required><el-input v-model.trim="page.serviceCreateForm.name" placeholder="例如 orders-api" /></el-form-item><el-form-item label="命名空间" required><el-select v-model="page.serviceCreateForm.namespace"><el-option v-for="item in page.namespaceOptions.filter((option) => option.value !== '__all__')" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></div><section class="service-edit-section"><div class="service-edit-section-head"><strong>服务类型</strong></div><el-radio-group v-model="page.serviceCreateForm.type" class="service-type-radio-group"><el-radio-button value="ClusterIP">ClusterIP</el-radio-button><el-radio-button value="NodePort">NodePort</el-radio-button><el-radio-button value="LoadBalancer">LoadBalancer</el-radio-button></el-radio-group></section><section class="service-edit-section"><div class="service-edit-section-head"><strong>选择器</strong><span>匹配标签的 Pod 将成为后端端点。</span></div><div class="service-selector-row"><el-input v-model.trim="page.serviceCreateForm.selectorKey" placeholder="标签键" /><el-input v-model.trim="page.serviceCreateForm.selectorValue" placeholder="标签值" /></div></section><section class="service-edit-section"><div class="service-edit-section-head"><strong>端口映射</strong><span>Service 端口暴露访问入口，目标端口指向容器端口。</span></div><div class="service-port-row"><el-input v-model.trim="page.serviceCreateForm.portName" placeholder="端口名称" /><el-input-number v-model="page.serviceCreateForm.port" :min="1" :max="65535" /><el-input v-model.trim="page.serviceCreateForm.targetPort" placeholder="目标端口" /></div></section></el-form><template #footer><el-button @click="page.serviceCreateVisible = false">取消</el-button><el-button type="primary" :loading="page.serviceCreateSaving" @click="page.submitServiceCreate">创建服务</el-button></template></el-dialog>
-  <el-dialog v-model="page.ingressCreateVisible" title="新增 Ingress" width="760px" destroy-on-close><el-form label-position="top" class="service-edit-form"><div class="service-metadata-grid"><el-form-item label="Ingress 名称" required><el-input v-model.trim="page.ingressCreateForm.name" placeholder="例如 orders-ingress" /></el-form-item><el-form-item label="命名空间" required><el-select v-model="page.ingressCreateForm.namespace"><el-option v-for="item in page.namespaceOptions.filter((option) => option.value !== '__all__')" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></div><section class="service-edit-section"><el-form-item label="Ingress Class"><el-input v-model.trim="page.ingressCreateForm.ingressClassName" placeholder="例如 nginx（可选）" /></el-form-item></section><section class="service-edit-section"><div class="service-edit-section-head"><strong>转发规则</strong><span>域名和路径将转发到指定 Service。</span></div><div class="ingress-create-grid"><el-input v-model.trim="page.ingressCreateForm.host" placeholder="域名，例如 api.example.com" /><el-input v-model.trim="page.ingressCreateForm.path" placeholder="路径，例如 /" /><el-select v-model="page.ingressCreateForm.pathType"><el-option label="Prefix" value="Prefix" /><el-option label="Exact" value="Exact" /></el-select><el-input v-model.trim="page.ingressCreateForm.serviceName" placeholder="后端 Service 名称" /><el-input-number v-model="page.ingressCreateForm.servicePort" :min="1" :max="65535" /></div></section></el-form><template #footer><el-button @click="page.ingressCreateVisible = false">取消</el-button><el-button type="primary" :loading="page.ingressCreateSaving" @click="page.submitIngressCreate">创建 Ingress</el-button></template></el-dialog>
+  <el-dialog v-model="page.ingressCreateVisible" title="新增 Ingress" width="1280px" class="ingress-edit-dialog" destroy-on-close>
+    <div class="ingress-editor-shell">
+      <section class="ingress-editor-section">
+        <div class="ingress-editor-heading"><span>基本信息</span></div>
+        <el-form label-position="left" label-width="120px" class="ingress-basic-form">
+          <el-form-item label="Ingress 名称" required><el-input v-model.trim="page.ingressCreateForm.name" placeholder="例如 orders-ingress" /></el-form-item>
+          <el-form-item label="命名空间" required><el-select v-model="page.ingressCreateForm.namespace"><el-option v-for="item in page.namespaceOptions.filter((option) => option.value !== '__all__')" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+          <el-form-item label="Annotations"><div class="ingress-annotation-editor"><div class="ingress-annotation-head"><span>用于配置 Ingress Controller 行为。</span><el-button link type="primary" @click="page.addIngressCreateAnnotation">新增</el-button></div><div v-if="!page.ingressCreateForm.annotations.length" class="ingress-annotation-empty">暂无注解</div><div v-for="(item, index) in page.ingressCreateForm.annotations" :key="index" class="ingress-annotation-row"><el-input v-model.trim="item.key" placeholder="注解键，例如 nginx.ingress.kubernetes.io/rewrite-target" /><el-input v-model="item.value" placeholder="注解值" /><el-button link type="danger" @click="page.removeIngressCreateAnnotation(index)">删除</el-button></div></div></el-form-item>
+          <el-form-item label="IngressClass"><el-input v-model.trim="page.ingressCreateForm.className" placeholder="输入 ingressClass；留空使用集群默认控制器" /></el-form-item>
+        </el-form>
+      </section>
+      <section class="ingress-editor-section ingress-routing-section">
+        <div class="ingress-editor-heading"><span>转发规则相关配置</span></div>
+        <el-form label-position="left" label-width="120px" class="ingress-basic-form"><el-form-item label="转发规则"><div class="ingress-routing-editor"><div class="ingress-route-table-head"><span>域名</span><span>路径</span><span>匹配类型</span><span>后端服务</span><span>服务端口</span><span></span></div><div v-for="(rule, index) in page.ingressCreateForm.rules" :key="index" class="ingress-route-table-row"><div v-if="rule.defaultBackend" class="ingress-default-backend-label">默认后端（无 Host/Path）</div><template v-else><el-input v-model.trim="rule.host" placeholder="请输入域名（可选）" aria-label="域名" /><el-input v-model.trim="rule.path" placeholder="例如 /" aria-label="路径" /><el-select v-model="rule.pathType" aria-label="匹配类型"><el-option label="前缀匹配" value="Prefix" /><el-option label="精确匹配" value="Exact" /><el-option label="ImplementationSpecific" value="ImplementationSpecific" /></el-select></template><el-select v-model="rule.serviceName" filterable placeholder="选择 Service" aria-label="后端服务" @change="page.handleIngressServiceChange(rule, page.ingressCreateForm.namespace)"><el-option v-for="service in page.ingressServiceOptions(page.ingressCreateForm.namespace)" :key="service.name" :label="service.name" :value="service.name" /></el-select><el-select v-model="rule.servicePort" filterable allow-create default-first-option placeholder="选择端口" aria-label="服务端口"><el-option v-for="port in page.ingressServicePortOptions(rule, page.ingressCreateForm.namespace)" :key="port.value" :label="port.label" :value="port.value" /></el-select><el-button link type="danger" :disabled="page.ingressCreateForm.rules.length === 1" aria-label="删除规则" @click="page.removeIngressCreateRule(index)">×</el-button></div><div class="ingress-route-actions"><el-button v-if="!page.ingressCreateForm.rules.some((rule) => rule.defaultBackend)" link type="primary" @click="page.addIngressCreateDefaultBackend">添加默认后端</el-button><el-button link type="primary" @click="page.addIngressCreateRule">添加转发规则</el-button></div><p>每条规则由域名和路径映射到一个 Service 的指定端口。</p></div></el-form-item></el-form>
+      </section>
+    </div>
+    <template #footer><el-button @click="page.ingressCreateVisible = false">取消</el-button><el-button type="primary" :loading="page.ingressCreateSaving" @click="page.submitIngressCreate">创建 Ingress</el-button></template>
+  </el-dialog>
+
+  <el-dialog
+    v-model="page.ingressEditVisible"
+    :title="`编辑 Ingress · ${page.ingressEditForm.name || '-'}`"
+    width="1280px"
+    class="ingress-edit-dialog"
+    destroy-on-close
+  >
+    <div v-loading="page.ingressEditLoading" class="ingress-editor-shell">
+      <section class="ingress-editor-section">
+        <div class="ingress-editor-heading"><span>基本信息</span></div>
+        <el-form label-position="left" label-width="120px" class="ingress-basic-form">
+          <el-form-item label="Ingress 名称" required><el-input :model-value="page.ingressEditForm.name" disabled /></el-form-item>
+          <el-form-item label="命名空间" required><el-input :model-value="page.ingressEditForm.namespace" disabled /></el-form-item>
+          <el-form-item label="Annotations">
+            <div class="ingress-annotation-editor">
+              <div class="ingress-annotation-head"><span>用于配置 Ingress Controller 行为。</span><el-button link type="primary" @click="page.addIngressAnnotation">新增</el-button></div>
+              <div v-if="!page.ingressEditForm.annotations.length" class="ingress-annotation-empty">暂无注解</div>
+              <div v-for="(item, index) in page.ingressEditForm.annotations" :key="index" class="ingress-annotation-row"><el-input v-model.trim="item.key" placeholder="注解键，例如 nginx.ingress.kubernetes.io/rewrite-target" /><el-input v-model="item.value" placeholder="注解值" /><el-button link type="danger" @click="page.removeIngressAnnotation(index)">删除</el-button></div>
+            </div>
+          </el-form-item>
+          <el-form-item label="IngressClass"><el-input v-model.trim="page.ingressEditForm.className" placeholder="输入 ingressClass；留空使用集群默认控制器" /></el-form-item>
+        </el-form>
+      </section>
+
+      <section class="ingress-editor-section ingress-routing-section">
+        <div class="ingress-editor-heading"><span>转发规则相关配置</span></div>
+        <el-form label-position="left" label-width="120px" class="ingress-basic-form">
+          <el-form-item label="转发规则">
+            <div class="ingress-routing-editor">
+              <div class="ingress-route-table-head"><span>域名</span><span>路径</span><span>匹配类型</span><span>后端服务</span><span>服务端口</span><span></span></div>
+              <div v-for="(rule, index) in page.ingressEditForm.rules" :key="index" class="ingress-route-table-row">
+                <div v-if="rule.defaultBackend" class="ingress-default-backend-label">默认后端（无 Host/Path）</div>
+                <template v-else><el-input v-model.trim="rule.host" placeholder="请输入域名（可选）" aria-label="域名" /><el-input v-model.trim="rule.path" placeholder="例如 /" aria-label="路径" /><el-select v-model="rule.pathType" aria-label="匹配类型"><el-option label="前缀匹配" value="Prefix" /><el-option label="精确匹配" value="Exact" /><el-option label="ImplementationSpecific" value="ImplementationSpecific" /></el-select></template>
+                <el-select v-model="rule.serviceName" filterable placeholder="选择 Service" aria-label="后端服务" @change="page.handleIngressServiceChange(rule)"><el-option v-for="service in page.ingressServiceOptions(page.ingressEditForm.namespace)" :key="service.name" :label="service.name" :value="service.name" /></el-select>
+                <el-select v-model="rule.servicePort" filterable allow-create default-first-option placeholder="选择端口" aria-label="服务端口"><el-option v-for="port in page.ingressServicePortOptions(rule)" :key="port.value" :label="port.label" :value="port.value" /></el-select>
+                <el-button link type="danger" :disabled="page.ingressEditForm.rules.length === 1" aria-label="删除规则" @click="page.removeIngressRule(index)">×</el-button>
+              </div>
+              <div class="ingress-route-actions"><el-button v-if="!page.ingressEditForm.rules.some((rule) => rule.defaultBackend)" link type="primary" @click="page.addIngressDefaultBackend">添加默认后端</el-button><el-button link type="primary" @click="page.addIngressRule">添加转发规则</el-button></div>
+              <p>每条规则由域名和路径映射到一个 Service 的指定端口。</p>
+            </div>
+          </el-form-item>
+        </el-form>
+      </section>
+    </div>
+    <template #footer>
+      <el-button @click="page.ingressEditVisible = false">取消</el-button>
+      <el-button type="primary" :loading="page.ingressEditSaving" @click="page.submitIngressEdit">更新 Ingress</el-button>
+    </template>
+  </el-dialog>
 
   <el-dialog
     v-model="page.serviceEditVisible"

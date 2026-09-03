@@ -3,26 +3,27 @@ package model
 import "time"
 
 type MonitorDatasource struct {
-	ID                  uint       `json:"id" gorm:"primaryKey"`
-	Name                string     `json:"name" gorm:"size:128;not null;index"`
-	Type                string     `json:"type" gorm:"size:32;not null;index"`
-	URL                 string     `json:"url" gorm:"size:1024;not null"`
-	AuthType            string     `json:"authType" gorm:"size:32;default:none"`
-	Username            string     `json:"username" gorm:"size:128"`
-	Password            string     `json:"password" gorm:"size:255"`
-	Token               string     `json:"token" gorm:"type:text"`
-	IsDefault           bool       `json:"isDefault" gorm:"default:false;index"`
-	Env                 string     `json:"env" gorm:"size:64;index"`
-	Status              int        `json:"status" gorm:"default:1;index"`
-	HealthStatus        string     `json:"healthStatus" gorm:"size:32;default:unknown;index"`
-	LastCheckAt         *time.Time `json:"lastCheckAt"`
-	LastSuccessAt       *time.Time `json:"lastSuccessAt"`
-	LatencyMs           int64      `json:"latencyMs" gorm:"default:0"`
-	ConsecutiveFailures int        `json:"consecutiveFailures" gorm:"default:0"`
-	LastError           string     `json:"lastError" gorm:"type:text"`
-	Description         string     `json:"description" gorm:"size:255"`
-	CreatedAt           time.Time  `json:"createTime"`
-	UpdatedAt           time.Time  `json:"updateTime"`
+	ID                   uint       `json:"id" gorm:"primaryKey"`
+	Name                 string     `json:"name" gorm:"size:128;not null;index"`
+	Type                 string     `json:"type" gorm:"size:32;not null;index"`
+	URL                  string     `json:"url" gorm:"size:1024;not null"`
+	AuthType             string     `json:"authType" gorm:"size:32;default:none"`
+	Username             string     `json:"username" gorm:"size:128"`
+	Password             string     `json:"password" gorm:"size:255"`
+	Token                string     `json:"token" gorm:"type:text"`
+	IsDefault            bool       `json:"isDefault" gorm:"default:false;index"`
+	Env                  string     `json:"env" gorm:"size:64;index"`
+	Status               int        `json:"status" gorm:"default:1;index"`
+	HealthStatus         string     `json:"healthStatus" gorm:"size:32;default:unknown;index"`
+	LastCheckAt          *time.Time `json:"lastCheckAt"`
+	LastSuccessAt        *time.Time `json:"lastSuccessAt"`
+	LatencyMs            int64      `json:"latencyMs" gorm:"default:0"`
+	ConsecutiveFailures  int        `json:"consecutiveFailures" gorm:"default:0"`
+	ConsecutiveSuccesses int        `json:"consecutiveSuccesses" gorm:"default:0"`
+	LastError            string     `json:"lastError" gorm:"type:text"`
+	Description          string     `json:"description" gorm:"size:255"`
+	CreatedAt            time.Time  `json:"createTime"`
+	UpdatedAt            time.Time  `json:"updateTime"`
 }
 
 func (MonitorDatasource) TableName() string {

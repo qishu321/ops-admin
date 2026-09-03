@@ -91,6 +91,7 @@ const victoriaLogsDatasourceOptions = computed(() => datasourceOptions.value.fil
 const availableDatasourceOptions = computed(() => {
   if (form.alertType === 'log') return logDatasourceOptions.value
   if (form.alertType === 'victorialogs') return victoriaLogsDatasourceOptions.value
+  if (form.alertType === 'datasource_health') return datasourceOptions.value
   return metricDatasourceOptions.value
 })
 const alertTypeLabel = computed(() => alertTypeName(form.alertType))
@@ -511,7 +512,7 @@ function validateJsonFields() {
 }
 
 async function submit() {
-  if (!form.name.trim() || !form.queryText.trim() || (form.datasourceScope === 'specific' && !form.datasourceId)) {
+  if (!form.name.trim() || (form.alertType !== 'datasource_health' && !form.queryText.trim()) || (form.datasourceScope === 'specific' && !form.datasourceId)) {
     ElMessage.warning(`请填写规则名称、${form.datasourceScope === 'specific' ? '数据源和' : ''}${form.alertType === 'log' ? ' Elasticsearch 查询语句' : ' PromQL'}`)
     return
   }
@@ -795,6 +796,7 @@ onMounted(async () => {
             <el-radio-button label="metric">监控告警 / PromQL</el-radio-button>
             <el-radio-button label="log">日志告警 / Elasticsearch</el-radio-button>
             <el-radio-button label="victorialogs">日志告警 / VictoriaLogs</el-radio-button>
+            <el-radio-button label="datasource_health">数据源健康</el-radio-button>
           </el-radio-group>
         </el-form-item></section>
 
@@ -802,7 +804,7 @@ onMounted(async () => {
         <el-form-item label="数据源范围" required>
           <div class="datasource-scope">
             <el-radio-group v-model="form.datasourceScope" @change="applyDatasourceScope">
-              <el-radio-button label="all">匹配所有{{ alertTypeLabel }}数据源</el-radio-button>
+              <el-radio-button v-if="form.alertType !== 'datasource_health'" label="all">匹配所有{{ alertTypeLabel }}数据源</el-radio-button>
               <el-radio-button label="specific">指定数据源</el-radio-button>
             </el-radio-group>
             <el-select v-if="form.datasourceScope === 'specific'" v-model="form.datasourceId" filterable style="width: 360px" placeholder="选择数据源">
@@ -812,12 +814,12 @@ onMounted(async () => {
           </div>
         </el-form-item>
         <el-form-item v-if="form.alertType === 'log'" label="日志索引" required><el-input v-model="form.logIndex" placeholder="例如：logs-*、.ds-app-log-*；使用 _all 搜索全部索引" /></el-form-item>
-        <el-form-item :label="queryLabel" required>
+        <el-form-item v-if="form.alertType !== 'datasource_health'" :label="queryLabel" required>
           <el-input v-model="form.queryText" type="textarea" :rows="4" :placeholder="queryPlaceholder" />
           <div class="form-tip">{{ queryHint }}</div>
         </el-form-item></section>
 
-        <section class="form-section"><div class="section-heading"><span>03</span><div><strong>触发条件</strong><small>配置阈值、持续时间和评估频率。</small></div></div>
+        <section v-if="form.alertType !== 'datasource_health'" class="form-section"><div class="section-heading"><span>03</span><div><strong>触发条件</strong><small>配置阈值、持续时间和评估频率。</small></div></div>
         <section class="rule-parameters">
           <div class="parameter-card">
             <span>比较符</span>
@@ -842,6 +844,7 @@ onMounted(async () => {
         </section>
         <el-form-item label="告警等级"><el-radio-group v-model="form.severity"><el-radio-button v-for="item in ['P0','P1','P2','P3']" :key="item" :label="item" /></el-radio-group></el-form-item></section>
 
+        <section v-else class="form-section"><div class="section-heading"><span>03</span><div><strong>健康判定</strong><small>平台固定执行：每 15 秒检测一次，连续失败 2 次触发；连续成功 3 次后自动恢复。</small></div></div></section>
         <section class="form-section"><div class="section-heading"><span>04</span><div><strong>通知与上下文</strong><small>补充事件标签、处置说明与消息发送策略。</small></div></div>
         <div class="json-grid"><el-form-item label="标签 JSON"><el-input v-model="form.labelsJson" type="textarea" :rows="2" placeholder='例如：{"team":"game"}' /></el-form-item><el-form-item label="注解 JSON"><el-input v-model="form.annotationsJson" type="textarea" :rows="2" placeholder='例如：{"summary":"请及时处理"}' /></el-form-item></div>
         <div class="notify-toggle" :class="{ 'is-enabled': form.notifyEnabled }">

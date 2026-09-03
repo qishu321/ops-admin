@@ -469,6 +469,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.GET("/k8s/service/detail", ctl.GetK8sServiceDetail)
 		authGroup.PUT("/k8s/service/update", ctl.UpdateK8sService)
 		authGroup.GET("/k8s/ingress/detail", ctl.GetK8sIngressDetail)
+		authGroup.PUT("/k8s/ingress/update", ctl.UpdateK8sIngress)
 		authGroup.GET("/k8s/istio/detail", ctl.GetK8sIstioResourceDetail)
 		authGroup.GET("/k8s/configmap/detail", ctl.GetK8sConfigMapDetail)
 		authGroup.GET("/k8s/secret/detail", ctl.GetK8sSecretDetail)

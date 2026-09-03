@@ -23,8 +23,9 @@ import {
   queryK8sPodLogs,
   queryK8sWorkloadDetail,
   queryK8sServiceDetail,
-	updateK8sService,
+  updateK8sService,
   queryK8sIngressDetail,
+  updateK8sIngress,
   queryK8sIstioResourceDetail,
   queryK8sConfigMapDetail,
   queryK8sSecretDetail,
@@ -40,6 +41,7 @@ import {
   deleteK8sResource,
   updateK8sResourceYAML
 } from '../../api/k8s'
+import { queryMonitorPrometheus, queryMonitorPrometheusRange } from '../../api/monitor'
 import { t } from '../../utils/i18n'
 
 const route = useRoute()
@@ -56,7 +58,8 @@ const sectionTabs = [
   { key: 'services', labelKey: 'k8sServices', path: '/containers/k8s/services', icon: Connection },
   { key: 'ingresses', labelKey: 'k8sIngresses', path: '/containers/k8s/ingresses', icon: Connection },
   { key: 'advanced-network', labelKey: 'k8sAdvancedNetwork', path: '/containers/k8s/advanced-network', icon: Connection },
-  { key: 'config-storage', labelKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: Grid }
+  { key: 'config-storage', labelKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: Grid },
+  { key: 'monitoring', labelKey: 'k8sMonitoringDetails', path: '/containers/k8s/monitoring', icon: Monitor }
 ]
 
 const loading = ref(false)
@@ -70,6 +73,8 @@ const pods = ref([])
 const workloads = ref([])
 const services = ref([])
 const ingresses = ref([])
+const ingressClasses = ref([])
+const ingressTab = ref('ingresses')
 const gatewayApiGateways = ref([])
 const httpRoutes = ref([])
 const configMaps = ref([])
@@ -145,6 +150,17 @@ const podLogTailLines = ref(200)
 const podPage = ref(1)
 const podPageSize = ref(20)
 const configStorageTab = ref('configmaps')
+const monitorView = ref('cluster')
+const monitorRange = ref('1h')
+const monitorLoading = ref(false)
+const monitorLastUpdated = ref('')
+const monitorCharts = ref([])
+const monitorHover = ref(null)
+const monitorNodeDrawerVisible = ref(false)
+const monitorNodeSelected = ref(null)
+const monitorNodeTraffic30d = ref({ receive: null, transmit: null })
+const monitorCache = new Map()
+let monitorLoadSequence = 0
 const configStorageCreateVisible = ref(false)
 const configStorageCreateSaving = ref(false)
 const configStorageEditing = ref(false)
@@ -204,9 +220,13 @@ const serviceCreateForm = reactive({ name: '', namespace: '', type: 'ClusterIP',
 const ingressDrawerVisible = ref(false)
 const ingressDrawerLoading = ref(false)
 const ingressDetail = ref(null)
+const ingressEditVisible = ref(false)
+const ingressEditLoading = ref(false)
+const ingressEditSaving = ref(false)
+const ingressEditForm = reactive({ name: '', namespace: '', className: '', annotations: [], rules: [] })
 const ingressCreateVisible = ref(false)
 const ingressCreateSaving = ref(false)
-const ingressCreateForm = reactive({ name: '', namespace: '', ingressClassName: '', host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: 80 })
+const ingressCreateForm = reactive({ name: '', namespace: '', className: '', annotations: [], rules: [] })
 
 const istioDrawerVisible = ref(false)
 const istioDrawerLoading = ref(false)
@@ -376,6 +396,11 @@ const pagedPods = computed(() => {
 const filteredWorkloads = computed(() => filterList(workloads.value))
 const filteredServices = computed(() => filterList(services.value))
 const filteredIngresses = computed(() => filterList(ingresses.value))
+const filteredIngressClasses = computed(() => {
+  const keyword = resourceKeyword.value.trim().toLowerCase()
+  if (!keyword) return ingressClasses.value
+  return ingressClasses.value.filter((item) => [item.name, item.controller, item.parameters].some((value) => String(value || '').toLowerCase().includes(keyword)))
+})
 const filteredGatewayApiGateways = computed(() => filterList(gatewayApiGateways.value))
 const filteredHTTPRoutes = computed(() => filterList(httpRoutes.value))
 const filteredConfigMaps = computed(() => filterList(configMaps.value))
@@ -383,6 +408,18 @@ const filteredSecrets = computed(() => filterList(secrets.value))
 const filteredStorages = computed(() => filterList(storages.value))
 const filteredStorageClasses = computed(() => filteredStorages.value.filter((item) => item.kind === 'PV'))
 const filteredStorageVolumes = computed(() => filteredStorages.value.filter((item) => item.kind === 'PVC'))
+const monitorDatasourceBound = computed(() => Boolean(cluster.value?.monitorDatasourceId))
+const monitorSummary = computed(() => {
+  const readyNodes = nodes.value.filter((item) => String(item.status || '').toLowerCase() === 'ready').length
+  const runningPods = pods.value.filter((item) => String(item.status || '').toLowerCase() === 'running').length
+  return [
+    { label: '运行状态', value: readyNodes === nodes.value.length && nodes.value.length ? '正常' : '注意', hint: `${readyNodes}/${nodes.value.length || 0} 节点 Ready`, tone: readyNodes === nodes.value.length && nodes.value.length ? 'success' : 'warning' },
+    { label: 'Ready 节点', value: readyNodes, hint: `共 ${nodes.value.length} 个节点`, tone: 'blue' },
+    { label: '运行中 Pod', value: runningPods, hint: `共 ${pods.value.length} 个 Pod`, tone: 'blue' },
+    { label: 'CPU 使用率', value: overview.value?.cpuUsage || '-', hint: '来自集群实时概览', tone: 'violet' },
+    { label: '内存使用率', value: overview.value?.memoryUsage || '-', hint: '来自集群实时概览', tone: 'violet' }
+  ]
+})
 const yamlDiffLines = computed(() => buildYAMLDiffLines(yamlEditor.originalYAML, yamlEditor.yaml))
 const yamlLineNumbers = computed(() => {
   const total = Math.max(1, yamlEditor.yaml.split('\n').length)
@@ -429,7 +466,7 @@ const kuboardMenuGroups = computed(() => [
   {
     key: 'config',
     label: t('k8sMenuConfig'),
-    items: sectionTabs.filter((item) => ['config-storage'].includes(item.key))
+    items: sectionTabs.filter((item) => ['config-storage', 'monitoring'].includes(item.key))
   }
 ])
 
@@ -534,6 +571,7 @@ function hasItems(list) {
 }
 
 function shouldShowNamespaceFilter(tab) {
+  if (tab === 'ingresses' && ingressTab.value === 'ingressclasses') return false
   return ['pods', 'workloads', 'services', 'ingresses', 'advanced-network', 'config-storage'].includes(tab)
 }
 
@@ -1062,6 +1100,7 @@ async function loadClusters(preferId) {
     workloads.value = []
       services.value = []
       ingresses.value = []
+	  ingressClasses.value = []
       gatewayApiGateways.value = []
       httpRoutes.value = []
       configMaps.value = []
@@ -1098,6 +1137,7 @@ async function loadClusterData(clusterId) {
     workloads.value = data.workloads || []
     services.value = data.network?.services || []
     ingresses.value = data.network?.ingresses || []
+	  ingressClasses.value = data.network?.ingressClasses || []
     gatewayApiGateways.value = data.advancedNetwork?.gatewayApiGateways || []
     httpRoutes.value = data.advancedNetwork?.httpRoutes || []
     configMaps.value = data.configStorage?.configMaps || []
@@ -1390,6 +1430,109 @@ async function openIngressYAML(row) {
   })
 }
 
+async function openIngressEdit(row) {
+  if (!cluster.value?.id) return
+  ingressEditVisible.value = true
+  ingressEditLoading.value = true
+  try {
+    const detail = await queryK8sIngressDetail(cluster.value.id, row.namespace, row.name)
+    ingressEditForm.name = detail.name
+    ingressEditForm.namespace = detail.namespace
+    ingressEditForm.className = detail.className === '-' ? '' : (detail.className || '')
+    ingressEditForm.annotations = Object.entries(detail.annotations || {})
+      .filter(([key]) => key !== 'kubernetes.io/ingress.class')
+      .map(([key, value]) => ({ key, value }))
+    ingressEditForm.rules = (detail.ruleSpecs || []).map((rule) => ({
+      defaultBackend: Boolean(rule.defaultBackend),
+      host: rule.host || '', path: rule.path || '/', pathType: rule.pathType || 'Prefix',
+      serviceName: rule.serviceName || '', servicePort: String(rule.servicePort || '')
+    }))
+    if (!ingressEditForm.rules.length) addIngressRule()
+  } catch (error) {
+    ingressEditVisible.value = false
+  } finally {
+    ingressEditLoading.value = false
+  }
+}
+
+function addIngressRule() {
+  ingressEditForm.rules.push({ defaultBackend: false, host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: '80' })
+}
+
+function addIngressDefaultBackend() {
+  ingressEditForm.rules.unshift({ defaultBackend: true, host: '', path: '', pathType: '', serviceName: '', servicePort: '80' })
+}
+
+function removeIngressRule(index) {
+  ingressEditForm.rules.splice(index, 1)
+}
+
+function addIngressAnnotation() {
+  ingressEditForm.annotations.push({ key: '', value: '' })
+}
+
+function removeIngressAnnotation(index) {
+  ingressEditForm.annotations.splice(index, 1)
+}
+
+function ingressServiceOptions(namespace) {
+  return services.value.filter((service) => service.namespace === namespace)
+}
+
+function ingressServicePortOptions(rule, namespace = ingressEditForm.namespace) {
+  const service = services.value.find((item) => item.namespace === namespace && item.name === rule.serviceName)
+  return (service?.portSpecs || []).map((port) => {
+    const number = String(port.port)
+    const useNamedPort = port.name && rule.servicePort === port.name
+    return {
+      value: useNamedPort ? port.name : number,
+      label: port.name ? `${number}:${port.name}` : number
+    }
+  })
+}
+
+function handleIngressServiceChange(rule, namespace = ingressEditForm.namespace) {
+  const options = ingressServicePortOptions({ ...rule, servicePort: '' }, namespace)
+  rule.servicePort = options[0]?.value || ''
+}
+
+async function submitIngressEdit() {
+  if (!cluster.value?.id) return
+  if (!ingressEditForm.rules.length) {
+    ElMessage.warning('请至少保留一条转发规则')
+    return
+  }
+  if (ingressEditForm.rules.some((rule) => !rule.serviceName?.trim() || !String(rule.servicePort || '').trim())) {
+    ElMessage.warning('请完整填写每条规则的后端 Service 和端口')
+    return
+  }
+  ingressEditSaving.value = true
+  try {
+    await updateK8sIngress({
+      clusterId: cluster.value.id,
+      namespace: ingressEditForm.namespace,
+      name: ingressEditForm.name,
+      className: ingressEditForm.className?.trim() || '',
+      annotations: Object.fromEntries(ingressEditForm.annotations
+        .filter((item) => item.key?.trim() && item.value?.trim())
+        .map((item) => [item.key.trim(), item.value.trim()])),
+      rules: ingressEditForm.rules.map((rule) => ({
+        defaultBackend: Boolean(rule.defaultBackend),
+        host: rule.host?.trim() || '', path: rule.path?.trim() || '/', pathType: rule.pathType || 'Prefix',
+        serviceName: rule.serviceName.trim(), servicePort: String(rule.servicePort).trim()
+      }))
+    })
+    ElMessage.success(`Ingress ${ingressEditForm.name} 已更新`)
+    ingressEditVisible.value = false
+    await refreshCurrentClusterData()
+    if (ingressDetail.value?.name === ingressEditForm.name && ingressDetail.value?.namespace === ingressEditForm.namespace) {
+      ingressDetail.value = await queryK8sIngressDetail(cluster.value.id, ingressEditForm.namespace, ingressEditForm.name)
+    }
+  } finally {
+    ingressEditSaving.value = false
+  }
+}
+
 async function openServiceEdit(row) {
   if (!cluster.value?.id) return
   serviceEditVisible.value = true
@@ -1509,18 +1652,57 @@ async function submitServiceCreate() {
 }
 
 function openIngressFormCreate() {
-  Object.assign(ingressCreateForm, { name: '', namespace: namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || 'default'), ingressClassName: '', host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: 80 })
+  Object.assign(ingressCreateForm, {
+    name: '', namespace: namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || 'default'),
+    className: '', annotations: [], rules: [{ defaultBackend: false, host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: '80' }]
+  })
   ingressCreateVisible.value = true
+}
+
+function addIngressCreateRule() {
+  ingressCreateForm.rules.push({ defaultBackend: false, host: '', path: '/', pathType: 'Prefix', serviceName: '', servicePort: '80' })
+}
+
+function addIngressCreateDefaultBackend() {
+  ingressCreateForm.rules.unshift({ defaultBackend: true, host: '', path: '', pathType: '', serviceName: '', servicePort: '80' })
+}
+
+function removeIngressCreateRule(index) {
+  ingressCreateForm.rules.splice(index, 1)
+}
+
+function addIngressCreateAnnotation() {
+  ingressCreateForm.annotations.push({ key: '', value: '' })
+}
+
+function removeIngressCreateAnnotation(index) {
+  ingressCreateForm.annotations.splice(index, 1)
 }
 
 async function submitIngressCreate() {
   const form = ingressCreateForm
-  if (!cluster.value?.id || !validK8sResourceName(form.name) || !form.namespace || !form.host.trim() || !form.serviceName.trim() || !form.servicePort) return ElMessage.warning('请完整填写 Ingress 名称、命名空间、域名和后端服务')
+  if (!cluster.value?.id || !validK8sResourceName(form.name) || !form.namespace || !form.rules.length) return ElMessage.warning('请完整填写 Ingress 名称、命名空间和转发规则')
+  if (form.rules.some((rule) => !rule.serviceName?.trim() || !String(rule.servicePort || '').trim())) return ElMessage.warning('请完整填写每条规则的后端 Service 和端口')
   ingressCreateSaving.value = true
   try {
-    const spec = { rules: [{ host: form.host.trim(), http: { paths: [{ path: form.path || '/', pathType: form.pathType, backend: { service: { name: form.serviceName.trim(), port: { number: Number(form.servicePort) } } } }] } }] }
-    if (form.ingressClassName.trim()) spec.ingressClassName = form.ingressClassName.trim()
-    const manifest = { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata: { name: form.name.trim(), namespace: form.namespace }, spec }
+    const backend = (rule) => {
+      const port = String(rule.servicePort).trim()
+      return { service: { name: rule.serviceName.trim(), port: /^\d+$/.test(port) ? { number: Number(port) } : { name: port } } }
+    }
+    const defaultRule = form.rules.find((rule) => rule.defaultBackend)
+    const rules = form.rules.filter((rule) => !rule.defaultBackend).map((rule) => {
+      const item = { http: { paths: [{ path: rule.path?.trim() || '/', pathType: rule.pathType || 'Prefix', backend: backend(rule) }] } }
+      if (rule.host?.trim()) item.host = rule.host.trim()
+      return item
+    })
+    const spec = {}
+    if (form.className.trim()) spec.ingressClassName = form.className.trim()
+    if (defaultRule) spec.defaultBackend = backend(defaultRule)
+    if (rules.length) spec.rules = rules
+    const annotations = Object.fromEntries(form.annotations.filter((item) => item.key?.trim() && item.value?.trim()).map((item) => [item.key.trim(), item.value.trim()]))
+    const metadata = { name: form.name.trim(), namespace: form.namespace }
+    if (Object.keys(annotations).length) metadata.annotations = annotations
+    const manifest = { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata, spec }
     await createK8sResourceYAML({ clusterId: cluster.value.id, resourceType: 'ingress', namespace: form.namespace, name: form.name.trim(), yaml: JSON.stringify(manifest, null, 2) })
     ElMessage.success('Ingress 已创建'); ingressCreateVisible.value = false; await refreshCurrentClusterData()
   } finally { ingressCreateSaving.value = false }
@@ -2639,6 +2821,287 @@ function translateIstioDetailLabel(label) {
   return map[label] ? t(map[label]) : label
 }
 
+const monitorChartDefinitions = {
+  cluster: [
+    { title: 'CPU 使用率（%）', query: '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', unit: '%' },
+    { title: 'CPU 使用量（核）', query: 'sum(rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))', unit: '核', seriesLabel: '集群 CPU' },
+    { title: '内存使用率（%）', query: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100', unit: '%' },
+    { title: '内存使用量（GiB）', query: 'sum(container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024 / 1024', unit: 'GiB', seriesLabel: '集群内存' },
+    { title: '磁盘使用率（%）', query: '100 - (sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / sum by(instance) (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) * 100)', unit: '%' },
+    { title: '磁盘 IOPS（次/秒）', query: 'sum by(instance) (rate(node_disk_reads_completed_total{device!~"loop.*|ram.*"}[5m]) + rate(node_disk_writes_completed_total{device!~"loop.*|ram.*"}[5m]))', unit: '次/秒' }
+  ],
+  node: [
+    { key: 'cpu', title: 'CPU 使用率（%）', query: 'topk(10, 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100))', unit: '%', summaryOnly: true },
+    { key: 'memory', title: '内存使用率（%）', query: 'topk(10, (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100)', unit: '%', summaryOnly: true },
+    { key: 'receive', title: '网络接收速率（MiB/s）', query: 'sum by(instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s' },
+    { key: 'transmit', title: '网络发送速率（MiB/s）', query: 'sum by(instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s' },
+    { key: 'load', title: '5 分钟系统负载', query: 'node_load5', unit: '' },
+    { key: 'connections', title: 'TCP 已建立连接数', query: 'node_netstat_Tcp_CurrEstab', unit: '个' },
+    { key: 'disk-usage', title: '磁盘使用率（%）', query: 'topk(10, 100 - (sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / sum by(instance) (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) * 100))', unit: '%', summaryOnly: true },
+    { key: 'disk-free', title: '剩余磁盘（GiB）', query: 'sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / 1024 / 1024 / 1024', unit: 'GiB', summaryOnly: true },
+    { key: 'iops', title: '磁盘 IOPS（次/秒）', query: 'sum by(instance) (rate(node_disk_reads_completed_total{device!~"loop.*|ram.*"}[5m]) + rate(node_disk_writes_completed_total{device!~"loop.*|ram.*"}[5m]))', unit: '次/秒', summaryOnly: true },
+    { key: 'pods', title: 'Pod 数量', query: 'sum by(node) (kube_pod_info)', unit: '个', summaryOnly: true },
+    { key: 'retransmit', title: 'TCP 重传率（%）', query: '100 * sum by(instance) (rate(node_netstat_Tcp_RetransSegs[5m])) / clamp_min(sum by(instance) (rate(node_netstat_Tcp_OutSegs[5m])), 1)', unit: '%', summaryOnly: true },
+    { key: 'uptime', title: '在线时间', query: 'time() - node_boot_time_seconds', unit: '秒', summaryOnly: true }
+  ],
+  pod: [
+    { title: 'Pod CPU 使用量 Top 10（核）', query: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))', unit: '核' },
+    { title: 'Pod 内存使用量 Top 10（MiB）', query: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024)', unit: 'MiB' },
+    { title: '各命名空间运行中 Pod', query: 'sum by(namespace) (kube_pod_status_phase{phase="Running"})', unit: '个' },
+    { title: 'Pod 最近 1 小时新增重启 Top 10', query: 'topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{pod!=""}[1h])))', unit: '次' }
+  ],
+  network: [
+    { title: '网络流入趋势（MiB/s）', query: 'sum by(instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s' },
+    { title: '网络流出趋势（MiB/s）', query: 'sum by(instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s' },
+    { title: 'Pod 网络流入 Top 10（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' },
+    { title: 'Pod 网络流出 Top 10（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' }
+  ]
+}
+
+function monitorSeriesMatchesNode(series, node) {
+  const label = String(series?.label || '')
+  const internalIP = String(node?.internalIP || '')
+  return label === node?.name || label === internalIP || (internalIP && label.startsWith(`${internalIP}:`))
+}
+
+function monitorNodeMetric(node, key) {
+  const chart = monitorCharts.value.find((item) => item.key === key)
+  const series = chart?.series?.find((item) => monitorSeriesMatchesNode(item, node))
+  const value = Number(series?.values?.at(-1)?.[1])
+  return Number.isFinite(value) ? value : null
+}
+
+function monitorMetricText(value, unit = '', digits = 1) {
+  if (!Number.isFinite(value)) return '-'
+  return `${value.toLocaleString('zh-CN', { maximumFractionDigits: digits })}${unit}`
+}
+
+function monitorRateText(value) {
+  if (!Number.isFinite(value)) return '-'
+  if (value < 1) return `${(value * 1024).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} KiB/s`
+  return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} MiB/s`
+}
+
+function monitorUptimeText(seconds) {
+  if (!Number.isFinite(seconds)) return '-'
+  const days = Math.floor(seconds / 86400)
+  if (days >= 7) return `${Math.floor(days / 7)} 周 ${days % 7} 天`
+  if (days > 0) return `${days} 天`
+  return `${Math.max(1, Math.floor(seconds / 3600))} 小时`
+}
+
+const monitorNodeRows = computed(() => nodes.value.map((node) => {
+  const cpuUsageValue = monitorNodeMetric(node, 'cpu')
+  const memoryUsageValue = monitorNodeMetric(node, 'memory')
+  return {
+    ...node,
+    cpuUsageValue,
+    memoryUsageValue,
+    cpuUsage: monitorMetricText(cpuUsageValue, '%'),
+    memoryUsage: monitorMetricText(memoryUsageValue, '%'),
+    diskFree: monitorMetricText(monitorNodeMetric(node, 'disk-free'), ' GiB'),
+    receive: monitorRateText(monitorNodeMetric(node, 'receive')),
+    transmit: monitorRateText(monitorNodeMetric(node, 'transmit')),
+    connections: monitorMetricText(monitorNodeMetric(node, 'connections'), '', 0),
+    retransmit: monitorMetricText(monitorNodeMetric(node, 'retransmit'), '%', 2),
+    load: monitorMetricText(monitorNodeMetric(node, 'load'), '', 2),
+    uptime: monitorUptimeText(monitorNodeMetric(node, 'uptime'))
+  }
+}))
+
+function monitorSeriesAverage(series) {
+  if (!series?.values?.length) return 0
+  return series.values.reduce((total, item) => total + item[1], 0) / series.values.length
+}
+
+const monitorNodeThroughputRanking = computed(() => {
+  const receiveChart = monitorCharts.value.find((item) => item.key === 'receive')
+  const transmitChart = monitorCharts.value.find((item) => item.key === 'transmit')
+  return nodes.value.map((node) => {
+    const receive = receiveChart?.series?.find((item) => monitorSeriesMatchesNode(item, node))
+    const transmit = transmitChart?.series?.find((item) => monitorSeriesMatchesNode(item, node))
+    const receiveValues = receive?.values || []
+    const transmitValues = transmit?.values || []
+    const totalValues = receiveValues.map((item, index) => item[1] + (transmitValues[index]?.[1] || 0))
+    return {
+      name: node.name,
+      mean: monitorSeriesAverage(receive) + monitorSeriesAverage(transmit),
+      max: totalValues.length ? Math.max(...totalValues) : 0
+    }
+  }).sort((left, right) => right.mean - left.mean).map((item) => ({ ...item, meanText: monitorRateText(item.mean), maxText: monitorRateText(item.max) }))
+})
+
+const monitorNodeDashboardStats = computed(() => {
+  const connections = nodes.value.reduce((total, node) => total + (monitorNodeMetric(node, 'connections') || 0), 0)
+  const throughput = nodes.value.reduce((total, node) => total + (monitorNodeMetric(node, 'receive') || 0) + (monitorNodeMetric(node, 'transmit') || 0), 0)
+  const receive30d = monitorNodeTraffic30d.value.receive
+  const transmit30d = monitorNodeTraffic30d.value.transmit
+  return {
+    online: nodes.value.filter((node) => String(node.status).toLowerCase() === 'ready').length,
+    connections: monitorMetricText(connections, '', 0),
+    throughput: monitorRateText(throughput),
+    receive30d: monitorMetricText(receive30d, ' GiB', 1),
+    transmit30d: monitorMetricText(transmit30d, ' GiB', 1),
+    total30d: monitorMetricText(Number.isFinite(receive30d) && Number.isFinite(transmit30d) ? receive30d + transmit30d : null, ' GiB', 1)
+  }
+})
+
+const monitorVisibleCharts = computed(() => monitorCharts.value.filter((chart) => monitorView.value !== 'node' || !chart.summaryOnly))
+const monitorNodeDetailCharts = computed(() => {
+  if (!monitorNodeSelected.value) return []
+  const detailOrder = ['cpu', 'memory', 'load', 'pods', 'disk-free', 'iops', 'receive', 'transmit']
+  return detailOrder
+    .map((key) => monitorCharts.value.find((chart) => chart.key === key))
+    .filter(Boolean)
+    .map((chart) => ({ ...chart, series: chart.series.filter((series) => monitorSeriesMatchesNode(series, monitorNodeSelected.value)) }))
+})
+
+function openMonitorNode(row) {
+  monitorNodeSelected.value = row
+  monitorNodeDrawerVisible.value = true
+}
+
+function monitorSeriesLabel(metric, index, definition) {
+  return metric?.instance || (metric?.namespace && metric?.pod ? `${metric.namespace}/${metric.pod}` : '') || metric?.namespace || metric?.node || definition?.seriesLabel || definition?.title || `指标 ${index + 1}`
+}
+
+function normalizeMonitorChart(definition, result) {
+  const series = (result || []).map((item, index) => ({
+    label: monitorSeriesLabel(item.metric, index, definition),
+    values: (item.values || []).map(([time, value]) => [Number(time), Number(value)]).filter(([time, value]) => Number.isFinite(time) && Number.isFinite(value))
+  })).filter((item) => item.values.length).slice(0, 10)
+  const points = series.flatMap((item) => item.values)
+  const times = points.map(([time]) => time)
+  const values = points.map(([, value]) => value)
+  const minTime = times.length ? Math.min(...times) : 0
+  const maxTime = times.length ? Math.max(...times) : 1
+  const rawMinValue = values.length ? Math.min(...values) : 0
+  const rawMaxValue = values.length ? Math.max(...values) : 1
+  const minValue = rawMinValue < 0 ? rawMinValue * 1.1 : 0
+  const paddedMax = rawMaxValue > 0 ? rawMaxValue * 1.14 : 1
+  const maxValue = definition.unit === '%' ? Math.min(100, Math.max(5, Math.ceil(paddedMax / 5) * 5)) : paddedMax
+  return { ...definition, series, minTime, maxTime: maxTime === minTime ? minTime + 1 : maxTime, minValue, maxValue: maxValue === minValue ? minValue + 1 : maxValue }
+}
+
+function monitorChartPath(chart, values) {
+  const points = values.map(([time, value]) => {
+    const x = 42 + (time - chart.minTime) / (chart.maxTime - chart.minTime || 1) * 918
+    const y = 14 + (1 - (value - chart.minValue) / (chart.maxValue - chart.minValue || 1)) * 184
+    return [x, y]
+  })
+  if (!points.length) return ''
+  if (points.length === 1) return `M${points[0][0].toFixed(2)},${points[0][1].toFixed(2)}`
+  if (points.length === 2) return `M${points[0][0].toFixed(2)},${points[0][1].toFixed(2)} L${points[1][0].toFixed(2)},${points[1][1].toFixed(2)}`
+  let path = `M${points[0][0].toFixed(2)},${points[0][1].toFixed(2)}`
+  for (let index = 1; index < points.length - 1; index++) {
+    const current = points[index]
+    const next = points[index + 1]
+    const middleX = (current[0] + next[0]) / 2
+    const middleY = (current[1] + next[1]) / 2
+    path += ` Q${current[0].toFixed(2)},${current[1].toFixed(2)} ${middleX.toFixed(2)},${middleY.toFixed(2)}`
+  }
+  const last = points.at(-1)
+  path += ` T${last[0].toFixed(2)},${last[1].toFixed(2)}`
+  return path
+}
+
+function monitorChartArea(chart, values) {
+  if (!values.length) return ''
+  const firstX = 42 + (values[0][0] - chart.minTime) / (chart.maxTime - chart.minTime || 1) * 918
+  const lastX = 42 + (values.at(-1)[0] - chart.minTime) / (chart.maxTime - chart.minTime || 1) * 918
+  return `${monitorChartPath(chart, values)} L${lastX.toFixed(2)},198 L${firstX.toFixed(2)},198 Z`
+}
+
+function monitorFormatValue(value, unit = '') {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '-'
+  return `${number.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}${unit ? ` ${unit}` : ''}`
+}
+
+function monitorLatestValue(chart) {
+  const values = chart?.series?.flatMap((item) => item.values.map((value) => value[1])) || []
+  if (!values.length) return '-'
+  const value = values.at(-1)
+  return monitorFormatValue(value, chart.unit)
+}
+
+function monitorColor(index) {
+  return ['#5b7cfa', '#38bdf8', '#22c55e', '#f59e0b', '#a78bfa', '#f472b6'][index % 6]
+}
+
+function monitorTimeText(timestamp) {
+  return new Date(Number(timestamp) * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+}
+
+function updateMonitorChartHover(chart, event) {
+  if (!chart?.series?.length) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  const svgX = (event.clientX - rect.left) / rect.width * 1000
+  const ratio = Math.min(1, Math.max(0, (svgX - 42) / 918))
+  const targetTime = chart.minTime + ratio * (chart.maxTime - chart.minTime)
+  const points = chart.series.map((series, index) => {
+    const point = series.values.reduce((closest, value) => Math.abs(value[0] - targetTime) < Math.abs(closest[0] - targetTime) ? value : closest, series.values[0])
+    return { label: series.label, value: point[1], color: monitorColor(index) }
+  }).sort((left, right) => right.value - left.value)
+  monitorHover.value = { chart: chart.title, time: targetTime, position: ratio, points, unit: chart.unit }
+}
+
+async function loadMonitoringCharts(force = false) {
+  if (!cluster.value?.monitorDatasourceId) {
+    monitorCharts.value = []
+    return
+  }
+  const cacheKey = `${cluster.value.monitorDatasourceId}:${monitorView.value}:${monitorRange.value}`
+  const cached = monitorCache.get(cacheKey)
+  if (!force && cached && Date.now() - cached.timestamp < 60000) {
+    monitorCharts.value = cached.charts
+    if (cached.nodeTraffic30d) monitorNodeTraffic30d.value = cached.nodeTraffic30d
+    monitorLastUpdated.value = cached.updatedAt
+    return
+  }
+  const sequence = ++monitorLoadSequence
+  monitorLoading.value = true
+  try {
+    const endAt = Math.floor(Date.now() / 1000)
+    const duration = { '1h': 3600, '6h': 21600, '24h': 86400, '3d': 259200, '7d': 604800 }[monitorRange.value] || 3600
+    const definitions = monitorChartDefinitions[monitorView.value] || monitorChartDefinitions.cluster
+    const nodeTrafficPromise = monitorView.value === 'node' ? Promise.allSettled([
+      queryMonitorPrometheus({ datasourceId: cluster.value.monitorDatasourceId, query: 'sum(increase(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[30d])) / 1024 / 1024 / 1024' }),
+      queryMonitorPrometheus({ datasourceId: cluster.value.monitorDatasourceId, query: 'sum(increase(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[30d])) / 1024 / 1024 / 1024' })
+    ]) : null
+    monitorCharts.value = definitions.map((definition) => ({ ...normalizeMonitorChart(definition, []), loading: true }))
+    await Promise.allSettled(definitions.map(async (definition, index) => {
+      try {
+        const response = await queryMonitorPrometheusRange({
+          datasourceId: cluster.value.monitorDatasourceId,
+          query: definition.query,
+          startAt: endAt - duration,
+          endAt,
+          stepSeconds: Math.max(15, Math.ceil(duration / 120))
+        })
+        if (sequence !== monitorLoadSequence) return
+        const chart = { ...normalizeMonitorChart(definition, response?.result), loading: false }
+        monitorCharts.value = monitorCharts.value.map((item, itemIndex) => itemIndex === index ? chart : item)
+      } catch {
+        if (sequence !== monitorLoadSequence) return
+        monitorCharts.value = monitorCharts.value.map((item, itemIndex) => itemIndex === index ? { ...item, loading: false, failed: true } : item)
+      }
+    }))
+    if (sequence !== monitorLoadSequence) return
+    if (nodeTrafficPromise) {
+      const trafficResults = await nodeTrafficPromise
+      if (sequence !== monitorLoadSequence) return
+      const resultValue = (result) => result.status === 'fulfilled' ? Number(result.value?.result?.[0]?.value?.[1]) : null
+      monitorNodeTraffic30d.value = { receive: resultValue(trafficResults[0]), transmit: resultValue(trafficResults[1]) }
+    }
+    monitorHover.value = null
+    monitorLastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    monitorCache.set(cacheKey, { charts: monitorCharts.value, nodeTraffic30d: monitorView.value === 'node' ? { ...monitorNodeTraffic30d.value } : null, updatedAt: monitorLastUpdated.value, timestamp: Date.now() })
+  } finally {
+    if (sequence === monitorLoadSequence) monitorLoading.value = false
+  }
+}
+
 const page = reactive({
   t,
   loading,
@@ -2652,6 +3115,22 @@ const page = reactive({
   podPage,
   podPageSize,
   configStorageTab,
+  monitorView,
+  monitorRange,
+  monitorLoading,
+  monitorLastUpdated,
+  monitorCharts,
+  monitorHover,
+  monitorNodeDrawerVisible,
+  monitorNodeSelected,
+  monitorNodeTraffic30d,
+  monitorDatasourceBound,
+  monitorSummary,
+  monitorNodeRows,
+  monitorNodeDashboardStats,
+  monitorNodeThroughputRanking,
+  monitorVisibleCharts,
+  monitorNodeDetailCharts,
   configStorageCreateVisible,
   configStorageCreateSaving,
   configStorageEditing,
@@ -2662,6 +3141,8 @@ const page = reactive({
   workloads,
   services,
   ingresses,
+  ingressClasses,
+  ingressTab,
   gatewayApiGateways,
   httpRoutes,
   configMaps,
@@ -2730,6 +3211,10 @@ const page = reactive({
   ingressDrawerVisible,
   ingressDrawerLoading,
   ingressDetail,
+  ingressEditVisible,
+  ingressEditLoading,
+  ingressEditSaving,
+  ingressEditForm,
   ingressCreateVisible,
   ingressCreateSaving,
   ingressCreateForm,
@@ -2786,6 +3271,7 @@ const page = reactive({
   filteredWorkloads,
   filteredServices,
   filteredIngresses,
+  filteredIngressClasses,
   filteredGatewayApiGateways,
   filteredHTTPRoutes,
   filteredConfigMaps,
@@ -2879,6 +3365,21 @@ const page = reactive({
   submitServiceEdit,
   copyServiceName,
   openIngressDetail,
+  openIngressEdit,
+  addIngressRule,
+  addIngressDefaultBackend,
+  removeIngressRule,
+  addIngressAnnotation,
+  removeIngressAnnotation,
+  addIngressCreateRule,
+  addIngressCreateDefaultBackend,
+  removeIngressCreateRule,
+  addIngressCreateAnnotation,
+  removeIngressCreateAnnotation,
+  ingressServiceOptions,
+  ingressServicePortOptions,
+  handleIngressServiceChange,
+  submitIngressEdit,
   openIngressFormCreate,
   submitIngressCreate,
   openIngressYAML,
@@ -2900,6 +3401,15 @@ const page = reactive({
   openStorageDetail,
   openStorageYAML,
   translateIstioDetailLabel,
+  loadMonitoringCharts,
+  monitorChartPath,
+  monitorChartArea,
+  monitorLatestValue,
+  monitorFormatValue,
+  monitorColor,
+  monitorTimeText,
+  updateMonitorChartHover,
+  openMonitorNode,
   runYAMLSearch,
   searchYAMLPrev,
   searchYAMLNext,
@@ -2922,6 +3432,13 @@ watch(
     if (currentTab.value === 'workloads') {
       void hydrateWorkloadImages()
     }
+  }
+)
+
+watch(
+  () => [currentTab.value, monitorView.value, monitorRange.value, cluster.value?.monitorDatasourceId],
+  ([tab]) => {
+    if (tab === 'monitoring') void loadMonitoringCharts()
   }
 )
 

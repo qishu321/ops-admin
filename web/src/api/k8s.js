@@ -36,6 +36,8 @@ export const updateK8sService = (data) => http.put('/api/v1/k8s/service/update',
 export const queryK8sIngressDetail = (clusterId, namespace, ingressName) =>
   http.get('/api/v1/k8s/ingress/detail', { params: { clusterId, namespace, ingressName } })
 
+export const updateK8sIngress = (data) => http.put('/api/v1/k8s/ingress/update', data)
+
 export const queryK8sIstioResourceDetail = (clusterId, resourceType, namespace, name) =>
   http.get('/api/v1/k8s/istio/detail', { params: { clusterId, resourceType, namespace, name } })
 

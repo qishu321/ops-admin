@@ -554,6 +554,20 @@ func (ctl *Controller) GetK8sIngressDetail(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+func (ctl *Controller) UpdateK8sIngress(c *gin.Context) {
+	var payload model.K8sIngressUpdatePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid ingress payload")
+		return
+	}
+	data, err := ctl.service.UpdateK8sIngress(payload)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetK8sIstioResourceDetail(c *gin.Context) {
 	var query struct {
 		ClusterID    uint   `form:"clusterId"`

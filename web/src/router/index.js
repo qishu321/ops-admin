@@ -265,6 +265,7 @@ const routes = [
       { path: '/containers/k8s/ingresses', component: K8s, meta: { title: 'Ingress', app: 'containers' } },
       { path: '/containers/k8s/advanced-network', component: K8s, meta: { title: '高级网络', app: 'containers' } },
       { path: '/containers/k8s/config-storage', component: K8s, meta: { title: '配置与存储', app: 'containers' } },
+      { path: '/containers/k8s/monitoring', component: K8s, meta: { title: '监控详情', app: 'containers' } },
       {
         path: '/containers/k8s/pod-terminal/:clusterId/:namespace/:podName',
         name: 'K8sPodTerminal',

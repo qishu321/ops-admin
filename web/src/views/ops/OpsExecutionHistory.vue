@@ -81,6 +81,14 @@ function statusTagType(value) {
   return 'danger'
 }
 
+function formatExecutionTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 async function retryFailed(row) {
   await ElMessageBox.confirm(`仅重新执行“${row.title}”中的失败或超时主机，是否继续？`, '重试失败目标', { type: 'warning' })
   const data = await retryOpsExecTask(row.id)
@@ -151,8 +159,8 @@ onMounted(loadData)
       <el-table-column prop="summary" label="摘要" min-width="180" />
       <el-table-column prop="operator" label="发起人" width="120"><template #default="{ row }">{{ row.operator || 'system' }}</template></el-table-column>
       <el-table-column label="风险" width="90"><template #default="{ row }"><el-tag :type="row.riskLevel === 'high' ? 'danger' : 'info'" effect="plain">{{ row.riskLevel === 'high' ? '高风险' : '普通' }}</el-tag></template></el-table-column>
-      <el-table-column prop="createTime" label="创建时间" min-width="180" />
-      <el-table-column label="操作" width="190" fixed="right">
+      <el-table-column label="执行时间" min-width="180"><template #default="{ row }">{{ formatExecutionTime(row.startedAt || row.createTime) }}</template></el-table-column>
+      <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
           <el-button v-if="row.status !== 'running' && row.failedCount > 0 && row.taskType !== 'file'" link type="warning" @click="retryFailed(row)">重试失败</el-button>
@@ -182,7 +190,7 @@ onMounted(loadData)
           <div class="summary-item"><span>执行状态</span><strong>{{ detailTask.status }}</strong></div>
           <div class="summary-item"><span>执行摘要</span><strong>{{ detailTask.summary || '-' }}</strong></div>
           <div class="summary-item"><span>并发数</span><strong>{{ detailTask.concurrency }}</strong></div>
-          <div class="summary-item"><span>创建时间</span><strong>{{ detailTask.createTime }}</strong></div>
+          <div class="summary-item"><span>执行时间</span><strong>{{ formatExecutionTime(detailTask.startedAt || detailTask.createTime) }}</strong></div>
           <div class="summary-item"><span>发起人</span><strong>{{ detailTask.operator || 'system' }}</strong></div>
           <div class="summary-item"><span>脚本版本</span><strong>{{ detailTask.scriptVersion ? `v${detailTask.scriptVersion}` : '-' }}</strong></div>
         </div>

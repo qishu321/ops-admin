@@ -125,7 +125,7 @@ onMounted(loadData)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border>
+    <el-table v-loading="loading" :data="rows" border class="job-approval-table">
       <el-table-column prop="jobName" label="作业名称" min-width="220" />
       <el-table-column label="状态" width="120" align="center">
         <template #default="{ row }">
@@ -199,6 +199,8 @@ onMounted(loadData)
 .ops-page { display: flex; flex-direction: column; gap: 18px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .page-title { margin: 0 0 8px; font-size: 24px; font-weight: 700; color: #14213d; }
+.job-approval-table :deep(th.el-table-fixed-column--right),
+.job-approval-table :deep(td.el-table-fixed-column--right) { border-left: 1px solid #dfe6f1 !important; }
 .page-desc { margin: 0; color: #7282a0; }
 .toolbar-left { display: flex; gap: 12px; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; }

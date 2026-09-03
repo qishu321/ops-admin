@@ -47,6 +47,14 @@ const selectedScriptVariables = computed(() => {
   return current?.variables || []
 })
 
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes() )}:${pad(date.getSeconds())}`
+}
+
 function syncScriptVariables(values = {}) {
   const next = {}
   selectedScriptVariables.value.forEach((variable) => {
@@ -212,7 +220,7 @@ onMounted(async () => {
         </template>
       </el-table-column>
       <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="updateTime" label="更新时间" width="180" />
+      <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDateTime(row.updateTime) }}</template></el-table-column>
       <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>

@@ -118,6 +118,16 @@ async function remove(row) {
 
 const providerName = value => providers.find(item => item[0] === value)?.[1] || value
 const frequencyName = value => frequencies.find(item => item[0] === value)?.[1] || value
+function formatDateTime(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/)
+  if (match) return `${match[1]} ${match[2]}`
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return raw
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
 
 onMounted(load)
 </script>
@@ -157,7 +167,7 @@ onMounted(load)
           <template #default="{ row }">{{ row.syncEnabled ? frequencyName(row.syncFrequency) : '未启用' }}</template>
         </el-table-column>
         <el-table-column label="最后同步" min-width="170">
-          <template #default="{ row }">{{ row.lastSyncAt || '-' }}</template>
+          <template #default="{ row }">{{ formatDateTime(row.lastSyncAt) }}</template>
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">

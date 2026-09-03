@@ -159,6 +159,10 @@ const monitorHover = ref(null)
 const monitorNodeDrawerVisible = ref(false)
 const monitorNodeSelected = ref(null)
 const monitorNodeTraffic30d = ref({ receive: null, transmit: null })
+const monitorPodNamespace = ref('__all__')
+const monitorPodNode = ref('__all__')
+const monitorPodWorkload = ref('__all__')
+const monitorPodName = ref('__all__')
 const monitorCache = new Map()
 let monitorLoadSequence = 0
 const configStorageCreateVisible = ref(false)
@@ -416,10 +420,39 @@ const monitorSummary = computed(() => {
     { label: '运行状态', value: readyNodes === nodes.value.length && nodes.value.length ? '正常' : '注意', hint: `${readyNodes}/${nodes.value.length || 0} 节点 Ready`, tone: readyNodes === nodes.value.length && nodes.value.length ? 'success' : 'warning' },
     { label: 'Ready 节点', value: readyNodes, hint: `共 ${nodes.value.length} 个节点`, tone: 'blue' },
     { label: '运行中 Pod', value: runningPods, hint: `共 ${pods.value.length} 个 Pod`, tone: 'blue' },
-    { label: 'CPU 使用率', value: overview.value?.cpuUsage || '-', hint: '来自集群实时概览', tone: 'violet' },
-    { label: '内存使用率', value: overview.value?.memoryUsage || '-', hint: '来自集群实时概览', tone: 'violet' }
+    { label: 'CPU 请求占用率', value: overview.value?.cpuUsage || '-', hint: 'Requests / Allocatable · 非实时用量', tone: 'violet' },
+    { label: '内存请求占用率', value: overview.value?.memoryUsage || '-', hint: 'Requests / Allocatable · 非实时用量', tone: 'violet' }
   ]
 })
+const monitorPodScopePods = computed(() => pods.value.filter((pod) => {
+  if (monitorPodNamespace.value !== '__all__' && pod.namespace !== monitorPodNamespace.value) return false
+  return monitorPodNode.value === '__all__' || pod.node === monitorPodNode.value
+}))
+const monitorPodWorkloadValue = (pod) => pod.workloadName ? `${pod.workloadType || 'Workload'}:${pod.workloadName}` : '__standalone__'
+const monitorPodNamespaceOptions = computed(() => [{ value: '__all__', label: '全部 Namespace' }, ...namespaces.value.map((item) => ({ value: item.name, label: item.name }))])
+const monitorPodNodeOptions = computed(() => [{ value: '__all__', label: '全部 Node' }, ...nodes.value.map((item) => ({ value: item.name, label: item.name }))])
+const monitorPodWorkloadOptions = computed(() => {
+  const grouped = new Map()
+  for (const pod of monitorPodScopePods.value) {
+    const value = monitorPodWorkloadValue(pod)
+    if (!grouped.has(value)) grouped.set(value, { value, label: pod.workloadName ? `${pod.workloadType || '工作负载'} / ${pod.workloadName}` : '独立 Pod' })
+  }
+  return [{ value: '__all__', label: '全部工作负载' }, ...Array.from(grouped.values()).sort((left, right) => left.label.localeCompare(right.label))]
+})
+const monitorPodNameOptions = computed(() => [{ value: '__all__', label: '全部 Pod' }, ...monitorPodScopePods.value
+  .filter((pod) => monitorPodWorkload.value === '__all__' || monitorPodWorkloadValue(pod) === monitorPodWorkload.value)
+  .map((pod) => ({ value: `${pod.namespace}/${pod.name}`, label: `${pod.namespace} / ${pod.name}` }))])
+const monitorPodFilteredPods = computed(() => monitorPodScopePods.value.filter((pod) => {
+  if (monitorPodWorkload.value !== '__all__' && monitorPodWorkloadValue(pod) !== monitorPodWorkload.value) return false
+  return monitorPodName.value === '__all__' || `${pod.namespace}/${pod.name}` === monitorPodName.value
+}))
+function handleMonitorPodScopeChange() {
+  monitorPodWorkload.value = '__all__'
+  monitorPodName.value = '__all__'
+}
+function handleMonitorPodWorkloadChange() {
+  monitorPodName.value = '__all__'
+}
 const yamlDiffLines = computed(() => buildYAMLDiffLines(yamlEditor.originalYAML, yamlEditor.yaml))
 const yamlLineNumbers = computed(() => {
   const total = Math.max(1, yamlEditor.yaml.split('\n').length)
@@ -2848,13 +2881,17 @@ const monitorChartDefinitions = {
     { title: 'Pod CPU 使用量 Top 10（核）', query: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))', unit: '核' },
     { title: 'Pod 内存使用量 Top 10（MiB）', query: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024)', unit: 'MiB' },
     { title: '各命名空间运行中 Pod', query: 'sum by(namespace) (kube_pod_status_phase{phase="Running"})', unit: '个' },
-    { title: 'Pod 最近 1 小时新增重启 Top 10', query: 'topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{pod!=""}[1h])))', unit: '次' }
+    { title: 'Pod 最近 1 小时新增重启 Top 10', query: 'topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{pod!=""}[1h])))', unit: '次' },
+    { title: 'Pod 网络接收速率（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' },
+    { title: 'Pod 网络发送速率（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' }
   ],
   network: [
+    { title: 'Pod 网络流入 Top 10', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s', type: 'bar' },
+    { title: 'Pod 网络流出 Top 10', query: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s', type: 'bar' },
     { title: '网络流入趋势（MiB/s）', query: 'sum by(instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s' },
     { title: '网络流出趋势（MiB/s）', query: 'sum by(instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s' },
-    { title: 'Pod 网络流入 Top 10（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' },
-    { title: 'Pod 网络流出 Top 10（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' }
+    { title: '网络出流量（MiB/s）', query: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s', seriesLabel: '当前值' },
+    { title: '网络入流量（MiB/s）', query: 'sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])) / 1024 / 1024', unit: 'MiB/s', seriesLabel: '当前值' }
   ]
 }
 
@@ -2946,7 +2983,20 @@ const monitorNodeDashboardStats = computed(() => {
   }
 })
 
-const monitorVisibleCharts = computed(() => monitorCharts.value.filter((chart) => monitorView.value !== 'node' || !chart.summaryOnly))
+const monitorVisibleCharts = computed(() => {
+  const charts = monitorCharts.value.filter((chart) => monitorView.value !== 'node' || !chart.summaryOnly)
+  if (monitorView.value !== 'pod') return charts
+  const podLabels = new Set(monitorPodFilteredPods.value.map((pod) => `${pod.namespace}/${pod.name}`))
+  const namespaceLabels = new Set(monitorPodFilteredPods.value.map((pod) => pod.namespace))
+  const hasPodScope = monitorPodNamespace.value !== '__all__' || monitorPodNode.value !== '__all__' || monitorPodWorkload.value !== '__all__' || monitorPodName.value !== '__all__'
+  if (!hasPodScope) return charts
+  return charts.map((chart) => ({
+    ...chart,
+    series: chart.title === '各命名空间运行中 Pod'
+      ? chart.series.filter((series) => namespaceLabels.has(series.label))
+      : chart.series.filter((series) => podLabels.has(series.label))
+  }))
+})
 const monitorNodeDetailCharts = computed(() => {
   if (!monitorNodeSelected.value) return []
   const detailOrder = ['cpu', 'memory', 'load', 'pods', 'disk-free', 'iops', 'receive', 'transmit']
@@ -3023,6 +3073,17 @@ function monitorLatestValue(chart) {
   if (!values.length) return '-'
   const value = values.at(-1)
   return monitorFormatValue(value, chart.unit)
+}
+
+function monitorBarRows(chart) {
+  return (chart?.series || []).map((series) => ({ label: series.label, value: Number(series.values?.at(-1)?.[1]) || 0 }))
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 10)
+}
+
+function monitorBarWidth(chart, value) {
+  const maximum = Math.max(...monitorBarRows(chart).map((item) => item.value), 0.000001)
+  return `${Math.max(2, Math.min(100, value / maximum * 100))}%`
 }
 
 function monitorColor(index) {
@@ -3124,8 +3185,17 @@ const page = reactive({
   monitorNodeDrawerVisible,
   monitorNodeSelected,
   monitorNodeTraffic30d,
+  monitorPodNamespace,
+  monitorPodNode,
+  monitorPodWorkload,
+  monitorPodName,
   monitorDatasourceBound,
   monitorSummary,
+  monitorPodNamespaceOptions,
+  monitorPodNodeOptions,
+  monitorPodWorkloadOptions,
+  monitorPodNameOptions,
+  monitorPodFilteredPods,
   monitorNodeRows,
   monitorNodeDashboardStats,
   monitorNodeThroughputRanking,
@@ -3297,6 +3367,8 @@ const page = reactive({
   handleClusterChange,
   handleTabChange,
   handleNamespaceFilterChange,
+  handleMonitorPodScopeChange,
+  handleMonitorPodWorkloadChange,
   handlePodWorkloadFilterChange,
   handleResourceKeywordChange,
   handleNamespaceKeywordChange,
@@ -3405,6 +3477,8 @@ const page = reactive({
   monitorChartPath,
   monitorChartArea,
   monitorLatestValue,
+  monitorBarRows,
+  monitorBarWidth,
   monitorFormatValue,
   monitorColor,
   monitorTimeText,

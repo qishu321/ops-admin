@@ -76,11 +76,11 @@ defineProps({
       </article>
     </div>
 
-    <div class="overview-section-title"><strong>用量概览</strong><span>当前集群资源使用情况</span></div>
+    <div class="overview-section-title"><strong>资源预留概览</strong><span>按容器 Requests ÷ 节点可分配资源计算，不含 Limit 与实时用量</span></div>
     <article class="overview-usage-card">
-      <div class="overview-usage-item"><span>{{ page.t('k8sCpuUsage') }}</span><strong>{{ page.overview.cpuUsage }}</strong><small>{{ page.t('k8sWorkloads') }} · {{ page.overview.requestRate }}</small></div>
+      <div class="overview-usage-item"><span>{{ page.t('k8sCpuUsage') }}</span><strong>{{ page.overview.cpuUsage }}</strong><small>Requests / Allocatable · {{ page.t('k8sWorkloads') }} · {{ page.overview.requestRate }}</small></div>
       <div class="overview-usage-divider"></div>
-      <div class="overview-usage-item"><span>{{ page.t('k8sMemoryUsage') }}</span><strong>{{ page.overview.memoryUsage }}</strong><small>{{ page.t('k8sPodUsage', { value: page.overview.podUsage }) }}</small></div>
+      <div class="overview-usage-item"><span>{{ page.t('k8sMemoryUsage') }}</span><strong>{{ page.overview.memoryUsage }}</strong><small>Requests / Allocatable · {{ page.t('k8sPodUsage', { value: page.overview.podUsage }) }}</small></div>
       <div class="overview-usage-divider"></div>
       <div class="overview-usage-item"><span>{{ page.t('k8sHealthScore') }}</span><strong>{{ page.overview.healthScore }}</strong><small>{{ page.t('k8sCurrentAlerts', { count: page.overview.alertCount }) }}</small></div>
     </article>

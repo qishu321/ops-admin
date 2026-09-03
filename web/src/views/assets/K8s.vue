@@ -416,8 +416,8 @@ const monitorSummary = computed(() => {
     { label: '运行状态', value: readyNodes === nodes.value.length && nodes.value.length ? '正常' : '注意', hint: `${readyNodes}/${nodes.value.length || 0} 节点 Ready`, tone: readyNodes === nodes.value.length && nodes.value.length ? 'success' : 'warning' },
     { label: 'Ready 节点', value: readyNodes, hint: `共 ${nodes.value.length} 个节点`, tone: 'blue' },
     { label: '运行中 Pod', value: runningPods, hint: `共 ${pods.value.length} 个 Pod`, tone: 'blue' },
-    { label: 'CPU 使用率', value: overview.value?.cpuUsage || '-', hint: '来自集群实时概览', tone: 'violet' },
-    { label: '内存使用率', value: overview.value?.memoryUsage || '-', hint: '来自集群实时概览', tone: 'violet' }
+    { label: 'CPU 请求占用率', value: overview.value?.cpuUsage || '-', hint: 'Requests / Allocatable · 非实时用量', tone: 'violet' },
+    { label: '内存请求占用率', value: overview.value?.memoryUsage || '-', hint: 'Requests / Allocatable · 非实时用量', tone: 'violet' }
   ]
 })
 const yamlDiffLines = computed(() => buildYAMLDiffLines(yamlEditor.originalYAML, yamlEditor.yaml))

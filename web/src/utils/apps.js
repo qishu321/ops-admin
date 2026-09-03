@@ -146,7 +146,8 @@ export const appDefinitions = [
           { title: '服务', titleKey: 'k8sServices', path: '/containers/k8s/services', icon: 'Share', children: [] },
           { title: 'Ingress', titleKey: 'k8sIngresses', path: '/containers/k8s/ingresses', icon: 'Connection', children: [] },
           { title: '高级网络', titleKey: 'k8sAdvancedNetwork', path: '/containers/k8s/advanced-network', icon: 'Connection', children: [] },
-          { title: '配置与存储', titleKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: 'Files', children: [] }
+          { title: '配置与存储', titleKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: 'Files', children: [] },
+          { title: '监控详情', titleKey: 'k8sMonitoringDetails', path: '/containers/k8s/monitoring', icon: 'Monitor', children: [] }
         ]
       }
     ]

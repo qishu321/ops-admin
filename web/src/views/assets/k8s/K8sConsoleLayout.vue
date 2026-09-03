@@ -17,7 +17,8 @@ const iconMap = {
   services: Connection,
   ingresses: Connection,
   'advanced-network': Connection,
-  'config-storage': Grid
+  'config-storage': Grid,
+  monitoring: Monitor
 }
 </script>
 
@@ -145,7 +146,7 @@ const iconMap = {
             新增工作负载
           </el-button>
           <template v-if="page.currentTab === 'services'"><el-button @click="page.openServiceCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openServiceFormCreate">新增服务</el-button></template>
-          <template v-if="page.currentTab === 'ingresses'"><el-button @click="page.openIngressCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openIngressFormCreate">新增 Ingress</el-button></template>
+          <template v-if="page.currentTab === 'ingresses' && page.ingressTab === 'ingresses'"><el-button @click="page.openIngressCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openIngressFormCreate">新增 Ingress</el-button></template>
           <el-button v-if="page.currentTab === 'namespaces'" type="primary" @click="page.openNamespaceCreate">
             {{ page.t('k8sCreateNamespace') }}
           </el-button>

@@ -318,14 +318,15 @@ type K8sWorkloadDetail struct {
 }
 
 type K8sServiceItem struct {
-	Name       string `json:"name"`
-	Namespace  string `json:"namespace"`
-	Type       string `json:"type"`
-	ClusterIP  string `json:"clusterIP"`
-	ExternalIP string `json:"externalIP"`
-	Ports      string `json:"ports"`
-	Endpoints  int    `json:"endpoints"`
-	Age        string `json:"age"`
+	Name       string           `json:"name"`
+	Namespace  string           `json:"namespace"`
+	Type       string           `json:"type"`
+	ClusterIP  string           `json:"clusterIP"`
+	ExternalIP string           `json:"externalIP"`
+	Ports      string           `json:"ports"`
+	PortSpecs  []K8sServicePort `json:"portSpecs"`
+	Endpoints  int              `json:"endpoints"`
+	Age        string           `json:"age"`
 }
 
 type K8sServiceDetail struct {
@@ -369,24 +370,52 @@ type K8sServiceUpdatePayload struct {
 type K8sIngressItem struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
+	ClassName string `json:"className"`
 	Host      string `json:"host"`
+	Backend   string `json:"backend"`
 	Address   string `json:"address"`
 	TLS       string `json:"tls"`
 	Age       string `json:"age"`
 }
 
+type K8sIngressClassItem struct {
+	Name       string `json:"name"`
+	Controller string `json:"controller"`
+	Parameters string `json:"parameters"`
+	Age        string `json:"age"`
+}
+
+type K8sIngressRuleSpec struct {
+	DefaultBackend bool   `json:"defaultBackend"`
+	Host           string `json:"host"`
+	Path           string `json:"path"`
+	PathType       string `json:"pathType"`
+	ServiceName    string `json:"serviceName"`
+	ServicePort    string `json:"servicePort"`
+}
+
 type K8sIngressDetail struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace"`
-	Host        string            `json:"host"`
-	Address     string            `json:"address"`
-	TLS         string            `json:"tls"`
-	ClassName   string            `json:"className"`
-	Labels      map[string]string `json:"labels"`
-	Annotations map[string]string `json:"annotations"`
-	Rules       []K8sKVTextItem   `json:"rules"`
-	Age         string            `json:"age"`
-	YAML        string            `json:"yaml"`
+	Name        string               `json:"name"`
+	Namespace   string               `json:"namespace"`
+	Host        string               `json:"host"`
+	Address     string               `json:"address"`
+	TLS         string               `json:"tls"`
+	ClassName   string               `json:"className"`
+	Labels      map[string]string    `json:"labels"`
+	Annotations map[string]string    `json:"annotations"`
+	Rules       []K8sKVTextItem      `json:"rules"`
+	RuleSpecs   []K8sIngressRuleSpec `json:"ruleSpecs"`
+	Age         string               `json:"age"`
+	YAML        string               `json:"yaml"`
+}
+
+type K8sIngressUpdatePayload struct {
+	ClusterID   uint                 `json:"clusterId"`
+	Namespace   string               `json:"namespace"`
+	Name        string               `json:"name"`
+	ClassName   string               `json:"className"`
+	Annotations map[string]string    `json:"annotations"`
+	Rules       []K8sIngressRuleSpec `json:"rules"`
 }
 
 type K8sConfigMapItem struct {
@@ -459,8 +488,9 @@ type K8sStorageDetail struct {
 }
 
 type K8sNetworkSection struct {
-	Services  []K8sServiceItem `json:"services"`
-	Ingresses []K8sIngressItem `json:"ingresses"`
+	Services       []K8sServiceItem      `json:"services"`
+	Ingresses      []K8sIngressItem      `json:"ingresses"`
+	IngressClasses []K8sIngressClassItem `json:"ingressClasses"`
 }
 
 type K8sIstioResourceItem struct {

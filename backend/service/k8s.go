@@ -96,6 +96,10 @@ type kubeIngressListResponse struct {
 	Items []kubeIngress `json:"items"`
 }
 
+type kubeIngressClassListResponse struct {
+	Items []kubeIngressClass `json:"items"`
+}
+
 type kubeConfigMapListResponse struct {
 	Items []kubeConfigMap `json:"items"`
 }
@@ -270,28 +274,36 @@ type kubeEndpoints struct {
 	} `json:"subsets"`
 }
 
+type kubeIngressBackend struct {
+	Service struct {
+		Name string `json:"name"`
+		Port struct {
+			Number int    `json:"number"`
+			Name   string `json:"name"`
+		} `json:"port"`
+	} `json:"service"`
+}
+
+type kubeIngressPath struct {
+	Path     string             `json:"path"`
+	PathType string             `json:"pathType"`
+	Backend  kubeIngressBackend `json:"backend"`
+}
+
+type kubeIngressRule struct {
+	Host string `json:"host"`
+	HTTP struct {
+		Paths []kubeIngressPath `json:"paths"`
+	} `json:"http"`
+}
+
 type kubeIngress struct {
 	Metadata kubeMetadata `json:"metadata"`
 	Spec     struct {
-		IngressClassName string `json:"ingressClassName"`
-		Rules            []struct {
-			Host string `json:"host"`
-			HTTP struct {
-				Paths []struct {
-					Path    string `json:"path"`
-					Backend struct {
-						Service struct {
-							Name string `json:"name"`
-							Port struct {
-								Number int    `json:"number"`
-								Name   string `json:"name"`
-							} `json:"port"`
-						} `json:"service"`
-					} `json:"backend"`
-				} `json:"paths"`
-			} `json:"http"`
-		} `json:"rules"`
-		TLS []struct{} `json:"tls"`
+		IngressClassName string             `json:"ingressClassName"`
+		DefaultBackend   kubeIngressBackend `json:"defaultBackend"`
+		Rules            []kubeIngressRule  `json:"rules"`
+		TLS              []struct{}         `json:"tls"`
 	} `json:"spec"`
 	Status struct {
 		LoadBalancer struct {
@@ -301,6 +313,19 @@ type kubeIngress struct {
 			} `json:"ingress"`
 		} `json:"loadBalancer"`
 	} `json:"status"`
+}
+
+type kubeIngressClass struct {
+	Metadata kubeMetadata `json:"metadata"`
+	Spec     struct {
+		Controller string `json:"controller"`
+		Parameters struct {
+			APIGroup string `json:"apiGroup"`
+			Kind     string `json:"kind"`
+			Name     string `json:"name"`
+			Scope    string `json:"scope"`
+		} `json:"parameters"`
+	} `json:"spec"`
 }
 
 type kubeConfigMap struct {
@@ -615,6 +640,7 @@ type k8sFetchedData struct {
 	Services              []kubeService
 	Endpoints             []kubeEndpoints
 	Ingresses             []kubeIngress
+	IngressClasses        []kubeIngressClass
 	ConfigMaps            []kubeConfigMap
 	Secrets               []kubeSecret
 	PVCs                  []kubePersistentVolumeClaim
@@ -884,7 +910,7 @@ func (s *Service) getK8sClusterDetailUncached(clusterID uint) (model.K8sClusterD
 		Namespaces: buildNamespaceItems(data.Namespaces, namespaceCounts),
 		Pods:       buildPodItemsWithWorkloads(data),
 		Workloads:  workloads,
-		Network:    buildNetworkSection(data.Services, data.Ingresses, endpointCounts),
+		Network:    buildNetworkSection(data.Services, data.Ingresses, data.IngressClasses, endpointCounts),
 		AdvancedNetwork: buildAdvancedNetworkSection(
 			data.GatewayAPIGateways,
 			data.HTTPRoutes,
@@ -2415,6 +2441,7 @@ func (s *Service) GetK8sIngressDetail(clusterID uint, namespace string, ingressN
 			})
 		}
 	}
+	ruleSpecs := ingressRuleSpecs(ingress)
 
 	return model.K8sIngressDetail{
 		Name:        ingress.Metadata.Name,
@@ -2422,13 +2449,184 @@ func (s *Service) GetK8sIngressDetail(clusterID uint, namespace string, ingressN
 		Host:        fallbackText(strings.Join(hosts, ", ")),
 		Address:     fallbackText(address),
 		TLS:         tls,
-		ClassName:   fallbackText(ingress.Spec.IngressClassName),
+		ClassName:   ingressClassName(ingress),
 		Labels:      ingress.Metadata.Labels,
 		Annotations: ingress.Metadata.Annotations,
 		Rules:       rules,
+		RuleSpecs:   ruleSpecs,
 		Age:         humanizeAge(ingress.Metadata.CreationTimestamp),
 		YAML:        marshalK8sYAML(ingress),
 	}, nil
+}
+
+func (s *Service) UpdateK8sIngress(payload model.K8sIngressUpdatePayload) (map[string]any, error) {
+	payload.Namespace = strings.TrimSpace(payload.Namespace)
+	payload.Name = strings.TrimSpace(payload.Name)
+	if payload.ClusterID == 0 || payload.Namespace == "" || payload.Name == "" {
+		return nil, errors.New("invalid ingress payload")
+	}
+	if len(payload.Rules) == 0 {
+		return nil, errors.New("at least one ingress rule is required")
+	}
+
+	rules := make([]map[string]any, 0, len(payload.Rules))
+	var defaultBackend map[string]any
+	for _, rule := range payload.Rules {
+		if rule.DefaultBackend {
+			if defaultBackend != nil {
+				return nil, errors.New("only one default ingress backend is allowed")
+			}
+			backend, err := buildIngressBackend(rule)
+			if err != nil {
+				return nil, err
+			}
+			defaultBackend = backend
+			continue
+		}
+		item, err := buildIngressRule(rule)
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, item)
+	}
+
+	_, runtime, client, err := s.k8sClientForCluster(payload.ClusterID)
+	if err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("/apis/networking.k8s.io/v1/namespaces/%s/ingresses/%s", payload.Namespace, payload.Name)
+	var current map[string]any
+	if err := k8sGetJSON(client, runtime, path, &current); err != nil {
+		return nil, errors.New(k8sClusterConnectError)
+	}
+	spec, ok := current["spec"].(map[string]any)
+	if !ok {
+		return nil, errors.New("invalid ingress resource")
+	}
+	if len(rules) > 0 {
+		spec["rules"] = rules
+	} else {
+		spec["rules"] = nil
+	}
+	if defaultBackend != nil {
+		spec["defaultBackend"] = defaultBackend
+	} else {
+		spec["defaultBackend"] = nil
+	}
+	if className := strings.TrimSpace(payload.ClassName); className != "" {
+		spec["ingressClassName"] = className
+	} else {
+		spec["ingressClassName"] = nil
+	}
+	metadata, _ := current["metadata"].(map[string]any)
+	annotationPatch := make(map[string]any)
+	if currentAnnotations, ok := metadata["annotations"].(map[string]any); ok {
+		for key := range currentAnnotations {
+			annotationPatch[key] = nil
+		}
+	}
+	for key, value := range payload.Annotations {
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if key != "" && key != "kubernetes.io/ingress.class" {
+			annotationPatch[key] = value
+		}
+	}
+	annotationPatch["kubernetes.io/ingress.class"] = nil
+	request := map[string]any{
+		"apiVersion": "networking.k8s.io/v1",
+		"kind":       "Ingress",
+		"metadata": map[string]any{
+			"name":            payload.Name,
+			"namespace":       payload.Namespace,
+			"resourceVersion": metadata["resourceVersion"],
+			"annotations":     annotationPatch,
+		},
+		"spec": spec,
+	}
+	if err := k8sPatchJSON(client, runtime, path, request, "application/merge-patch+json", nil); err != nil {
+		return nil, err
+	}
+	return map[string]any{"name": payload.Name, "namespace": payload.Namespace}, nil
+}
+
+func buildIngressRule(rule model.K8sIngressRuleSpec) (map[string]any, error) {
+	backend, err := buildIngressBackend(rule)
+	if err != nil {
+		return nil, err
+	}
+	pathType := fallbackIngressPathType(rule.PathType)
+	if pathType != "Prefix" && pathType != "Exact" && pathType != "ImplementationSpecific" {
+		return nil, errors.New("unsupported ingress path type")
+	}
+	item := map[string]any{
+		"http": map[string]any{"paths": []map[string]any{{
+			"path":     fallbackIngressPath(rule.Path),
+			"pathType": pathType,
+			"backend":  backend,
+		}}},
+	}
+	if host := strings.TrimSpace(rule.Host); host != "" {
+		item["host"] = host
+	}
+	return item, nil
+}
+
+func buildIngressBackend(rule model.K8sIngressRuleSpec) (map[string]any, error) {
+	serviceName := strings.TrimSpace(rule.ServiceName)
+	if serviceName == "" {
+		return nil, errors.New("ingress backend service is required")
+	}
+	portValue := strings.TrimSpace(rule.ServicePort)
+	if portValue == "" {
+		return nil, errors.New("ingress backend service port is required")
+	}
+	port := map[string]any{}
+	if number, err := strconv.Atoi(portValue); err == nil {
+		if number < 1 || number > 65535 {
+			return nil, errors.New("ingress backend service port must be between 1 and 65535")
+		}
+		port["number"] = number
+	} else {
+		port["name"] = portValue
+	}
+	return map[string]any{"service": map[string]any{"name": serviceName, "port": port}}, nil
+}
+
+func fallbackIngressPath(path string) string {
+	if path = strings.TrimSpace(path); path != "" {
+		return path
+	}
+	return "/"
+}
+
+func fallbackIngressPathType(pathType string) string {
+	if pathType = strings.TrimSpace(pathType); pathType != "" {
+		return pathType
+	}
+	return "Prefix"
+}
+
+func ingressRuleSpecs(ingress kubeIngress) []model.K8sIngressRuleSpec {
+	ruleSpecs := make([]model.K8sIngressRuleSpec, 0)
+	if strings.TrimSpace(ingress.Spec.DefaultBackend.Service.Name) != "" {
+		ruleSpecs = append(ruleSpecs, model.K8sIngressRuleSpec{
+			DefaultBackend: true,
+			ServiceName:    ingress.Spec.DefaultBackend.Service.Name,
+			ServicePort:    ingressBackendPort(ingress.Spec.DefaultBackend),
+		})
+	}
+	for _, rule := range ingress.Spec.Rules {
+		for _, path := range rule.HTTP.Paths {
+			ruleSpecs = append(ruleSpecs, model.K8sIngressRuleSpec{
+				Host:        rule.Host,
+				Path:        fallbackIngressPath(path.Path),
+				PathType:    fallbackIngressPathType(path.PathType),
+				ServiceName: path.Backend.Service.Name,
+				ServicePort: ingressBackendPort(path.Backend),
+			})
+		}
+	}
+	return ruleSpecs
 }
 
 func (s *Service) GetK8sConfigMapDetail(clusterID uint, namespace string, configMapName string) (model.K8sConfigMapDetail, error) {
@@ -2590,6 +2788,10 @@ func fetchK8sData(client *http.Client, runtime kubeClusterRuntime) (k8sFetchedDa
 	var ingressResp kubeIngressListResponse
 	if err := k8sGetJSON(client, runtime, "/apis/networking.k8s.io/v1/ingresses", &ingressResp); err == nil {
 		data.Ingresses = ingressResp.Items
+	}
+	var ingressClassResp kubeIngressClassListResponse
+	if err := k8sGetJSON(client, runtime, "/apis/networking.k8s.io/v1/ingressclasses", &ingressClassResp); err == nil {
+		data.IngressClasses = ingressClassResp.Items
 	}
 
 	var gatewayAPIResp kubeGatewayAPIListResponse
@@ -4020,12 +4222,24 @@ func firstHTTPRouteRuleIndex(item kubeHTTPRoute) int {
 	return -1
 }
 
-func buildNetworkSection(services []kubeService, ingresses []kubeIngress, endpointCounts map[string]int) model.K8sNetworkSection {
+func buildNetworkSection(services []kubeService, ingresses []kubeIngress, ingressClasses []kubeIngressClass, endpointCounts map[string]int) model.K8sNetworkSection {
 	serviceItems := make([]model.K8sServiceItem, 0, len(services))
 	for _, service := range services {
 		ports := make([]string, 0, len(service.Spec.Ports))
+		portSpecs := make([]model.K8sServicePort, 0, len(service.Spec.Ports))
 		for _, port := range service.Spec.Ports {
 			ports = append(ports, formatServiceListPort(port.Port, port.NodePort, port.Protocol))
+			protocol := strings.TrimSpace(port.Protocol)
+			if protocol == "" {
+				protocol = "TCP"
+			}
+			portSpecs = append(portSpecs, model.K8sServicePort{
+				Name:       port.Name,
+				Protocol:   protocol,
+				Port:       port.Port,
+				TargetPort: stringifyTargetPort(port.TargetPort),
+				NodePort:   port.NodePort,
+			})
 		}
 
 		key := service.Metadata.Namespace + "/" + service.Metadata.Name
@@ -4036,6 +4250,7 @@ func buildNetworkSection(services []kubeService, ingresses []kubeIngress, endpoi
 			ClusterIP:  fallbackText(service.Spec.ClusterIP),
 			ExternalIP: serviceExternalIP(service),
 			Ports:      strings.Join(ports, ", "),
+			PortSpecs:  portSpecs,
 			Endpoints:  endpointCounts[key],
 			Age:        humanizeAge(service.Metadata.CreationTimestamp),
 		})
@@ -4069,7 +4284,9 @@ func buildNetworkSection(services []kubeService, ingresses []kubeIngress, endpoi
 		ingressItems = append(ingressItems, model.K8sIngressItem{
 			Name:      ingress.Metadata.Name,
 			Namespace: ingress.Metadata.Namespace,
+			ClassName: ingressClassName(ingress),
 			Host:      fallbackText(strings.Join(hosts, ", ")),
+			Backend:   ingressBackendServices(ingress),
 			Address:   fallbackText(address),
 			TLS:       tls,
 			Age:       humanizeAge(ingress.Metadata.CreationTimestamp),
@@ -4082,10 +4299,66 @@ func buildNetworkSection(services []kubeService, ingresses []kubeIngress, endpoi
 		return ingressItems[i].Namespace < ingressItems[j].Namespace
 	})
 
-	return model.K8sNetworkSection{
-		Services:  serviceItems,
-		Ingresses: ingressItems,
+	ingressClassItems := make([]model.K8sIngressClassItem, 0, len(ingressClasses))
+	for _, ingressClass := range ingressClasses {
+		parameters := "-"
+		if name := strings.TrimSpace(ingressClass.Spec.Parameters.Name); name != "" {
+			parameters = strings.TrimSpace(ingressClass.Spec.Parameters.Kind) + "/" + name
+			if group := strings.TrimSpace(ingressClass.Spec.Parameters.APIGroup); group != "" {
+				parameters = group + " · " + parameters
+			}
+		}
+		ingressClassItems = append(ingressClassItems, model.K8sIngressClassItem{Name: ingressClass.Metadata.Name, Controller: fallbackText(ingressClass.Spec.Controller), Parameters: parameters, Age: humanizeAge(ingressClass.Metadata.CreationTimestamp)})
 	}
+	sort.Slice(ingressClassItems, func(i, j int) bool { return ingressClassItems[i].Name < ingressClassItems[j].Name })
+
+	return model.K8sNetworkSection{Services: serviceItems, Ingresses: ingressItems, IngressClasses: ingressClassItems}
+}
+
+func ingressClassName(ingress kubeIngress) string {
+	className := strings.TrimSpace(ingress.Spec.IngressClassName)
+	if className == "" {
+		className = strings.TrimSpace(ingress.Metadata.Annotations["kubernetes.io/ingress.class"])
+	}
+	return fallbackText(className)
+}
+
+func ingressBackendServices(ingress kubeIngress) string {
+	backends := make([]string, 0)
+	seen := make(map[string]struct{})
+	appendBackend := func(backend kubeIngressBackend) {
+		target := strings.TrimSpace(backend.Service.Name)
+		if target == "" {
+			return
+		}
+		port := ingressBackendPort(backend)
+		if port != "" {
+			target += ":" + port
+		}
+		if _, exists := seen[target]; exists {
+			return
+		}
+		seen[target] = struct{}{}
+		backends = append(backends, target)
+	}
+
+	appendBackend(ingress.Spec.DefaultBackend)
+	for _, rule := range ingress.Spec.Rules {
+		for _, path := range rule.HTTP.Paths {
+			appendBackend(path.Backend)
+		}
+	}
+	return fallbackText(strings.Join(backends, ", "))
+}
+
+func ingressBackendPort(backend kubeIngressBackend) string {
+	if port := strings.TrimSpace(backend.Service.Port.Name); port != "" {
+		return port
+	}
+	if backend.Service.Port.Number > 0 {
+		return strconv.Itoa(backend.Service.Port.Number)
+	}
+	return ""
 }
 
 func serviceDisplayType(service kubeService) string {

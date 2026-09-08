@@ -120,6 +120,14 @@ type OpsAppPipelinePayload struct {
 	DefinitionJSON string `json:"definitionJson"`
 }
 
+type OpsAppPipelineTemplatePayload struct {
+	Name           string `json:"name"`
+	Category       string `json:"category"`
+	TechStack      string `json:"techStack"`
+	Description    string `json:"description"`
+	DefinitionJSON string `json:"definitionJson"`
+}
+
 type OpsAppPipelineStatusPayload struct {
 	ID     uint `json:"id"`
 	Status int  `json:"status"`
@@ -936,7 +944,7 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 		Stages      []OpsAppPipelineStageDefinition
 	}{
 		{
-			ID: 1, Name: "Go 后端通用模板", Category: "Go", TechStack: "go",
+			ID: 1000001, Name: "Go 后端通用模板", Category: "Go", TechStack: "go",
 			Description: "Go 编译、镜像构建、上传镜像仓库、工作负载更新",
 			Stages: []OpsAppPipelineStageDefinition{
 				{ID: "checkout", Name: "代码拉取", Type: "checkout", TimeoutSeconds: 600, FailurePolicy: "stop"},
@@ -949,7 +957,7 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 			},
 		},
 		{
-			ID: 2, Name: "Maven Java 通用模板", Category: "Java", TechStack: "maven",
+			ID: 1000002, Name: "Maven Java 通用模板", Category: "Java", TechStack: "maven",
 			Description: "Maven 打包、Jar 镜像、K8s 发布",
 			Stages: []OpsAppPipelineStageDefinition{
 				{ID: "checkout", Name: "代码拉取", Type: "checkout", TimeoutSeconds: 600, FailurePolicy: "stop"},
@@ -962,7 +970,7 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 			},
 		},
 		{
-			ID: 3, Name: "Vue 前端通用模板", Category: "Node.js", TechStack: "vue",
+			ID: 1000003, Name: "Vue 前端通用模板", Category: "Node.js", TechStack: "vue",
 			Description: "npm 构建、镜像打包、K8s 滚动发布",
 			Stages: []OpsAppPipelineStageDefinition{
 				{ID: "checkout", Name: "代码拉取", Type: "checkout", TimeoutSeconds: 600, FailurePolicy: "stop"},
@@ -989,6 +997,17 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 func (s *Service) ListOpsAppPipelineTemplates(category string) ([]map[string]any, error) {
 	category = strings.TrimSpace(category)
 	all := builtinOpsAppPipelineTemplates()
+	var custom []model.OpsAppPipelineTemplate
+	if err := s.db.Where("status = ?", 1).Order("updated_at DESC").Find(&custom).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range custom {
+		all = append(all, map[string]any{
+			"id": item.ID, "name": item.Name, "category": item.Category, "techStack": item.TechStack,
+			"description": item.Description, "stageCount": item.StageCount, "definitionJson": item.DefinitionJSON,
+			"builtin": false, "status": item.Status, "createTime": item.CreatedAt, "updateTime": item.UpdatedAt,
+		})
+	}
 	if category == "" || category == "全部模板" {
 		return all, nil
 	}
@@ -1001,6 +1020,43 @@ func (s *Service) ListOpsAppPipelineTemplates(category string) ([]map[string]any
 	return filtered, nil
 }
 
+func (s *Service) SaveOpsAppPipelineTemplate(payload OpsAppPipelineTemplatePayload) error {
+	name := Trimmed(payload.Name)
+	if name == "" {
+		return errors.New("模板名称不能为空")
+	}
+	stages, definitionJSON, err := normalizeOpsPipelineStages(payload.DefinitionJSON)
+	if err != nil {
+		return err
+	}
+	if len(stages) == 0 {
+		return errors.New("模板至少需要配置一个阶段")
+	}
+	for index, stage := range stages {
+		if strings.TrimSpace(stage.Name) == "" || strings.TrimSpace(stage.Type) == "" {
+			return fmt.Errorf("请完善第 %d 个阶段的名称与类型", index+1)
+		}
+	}
+	item := model.OpsAppPipelineTemplate{
+		Name:           name,
+		Category:       firstNonEmpty(Trimmed(payload.Category), "自定义"),
+		TechStack:      firstNonEmpty(Trimmed(payload.TechStack), "custom"),
+		Description:    Trimmed(payload.Description),
+		StageCount:     len(stages),
+		DefinitionJSON: definitionJSON,
+		Status:         1,
+	}
+	return s.db.Create(&item).Error
+}
+
+func (s *Service) NormalizeOpsAppPipelineTemplateDefinition(definition string) (map[string]any, error) {
+	stages, normalized, err := normalizeOpsPipelineStages(definition)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"stages": stages, "definitionJson": normalized}, nil
+}
+
 func normalizeOpsPipelineStages(definitionJSON string) ([]OpsAppPipelineStageDefinition, string, error) {
 	definitionJSON = strings.TrimSpace(definitionJSON)
 	if definitionJSON == "" {
@@ -1010,7 +1066,9 @@ func normalizeOpsPipelineStages(definitionJSON string) ([]OpsAppPipelineStageDef
 		Stages []OpsAppPipelineStageDefinition `json:"stages"`
 	}
 	if err := json.Unmarshal([]byte(definitionJSON), &wrapper); err != nil {
-		return nil, "", errors.New("流水线阶段配置不是有效 JSON")
+		if yamlErr := yaml.Unmarshal([]byte(definitionJSON), &wrapper); yamlErr != nil {
+			return nil, "", errors.New("流水线阶段配置不是有效 JSON 或 YAML")
+		}
 	}
 	for index := range wrapper.Stages {
 		if wrapper.Stages[index].ID == "" {

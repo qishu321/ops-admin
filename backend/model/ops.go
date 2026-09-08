@@ -492,6 +492,23 @@ type OpsImageRegistry struct {
 
 func (OpsImageRegistry) TableName() string { return "ops_image_registry" }
 
+// OpsAppPipelineTemplate stores user-defined reusable pipeline stage blueprints.
+// Built-in templates remain code-owned; custom templates are persisted here.
+type OpsAppPipelineTemplate struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	Name           string    `json:"name" gorm:"size:128;not null;uniqueIndex"`
+	Category       string    `json:"category" gorm:"size:64;index"`
+	TechStack      string    `json:"techStack" gorm:"size:64;index"`
+	Description    string    `json:"description" gorm:"size:255"`
+	StageCount     int       `json:"stageCount" gorm:"default:0"`
+	DefinitionJSON string    `json:"definitionJson" gorm:"type:longtext"`
+	Status         int       `json:"status" gorm:"default:1;index"`
+	CreatedAt      time.Time `json:"createTime"`
+	UpdatedAt      time.Time `json:"updateTime"`
+}
+
+func (OpsAppPipelineTemplate) TableName() string { return "ops_app_pipeline_template" }
+
 type OpsAppPipeline struct {
 	ID            uint   `json:"id" gorm:"primaryKey"`
 	Name          string `json:"name" gorm:"size:128;not null;index"`

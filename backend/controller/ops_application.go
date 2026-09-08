@@ -254,6 +254,35 @@ func (ctl *Controller) GetOpsAppPipelineTemplateList(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+func (ctl *Controller) SaveOpsAppPipelineTemplate(c *gin.Context) {
+	var payload service.OpsAppPipelineTemplatePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid pipeline template payload")
+		return
+	}
+	if err := ctl.service.SaveOpsAppPipelineTemplate(payload); err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, true)
+}
+
+func (ctl *Controller) NormalizeOpsAppPipelineTemplateDefinition(c *gin.Context) {
+	var payload struct {
+		Definition string `json:"definition"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid pipeline template definition")
+		return
+	}
+	data, err := ctl.service.NormalizeOpsAppPipelineTemplateDefinition(payload.Definition)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetOpsAppPipelineList(c *gin.Context) {
 	pageNum, _ := strconv.Atoi(c.DefaultQuery("pageNum", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))

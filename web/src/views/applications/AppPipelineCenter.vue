@@ -10,12 +10,14 @@ import {
   queryOpsAppPipelineList,
   queryOpsAppPipelineRunList,
   queryOpsAppPipelineTemplates,
+  normalizeOpsAppPipelineTemplateDefinition,
   queryOpsApplicationOptions,
   queryOpsImageRegistryList,
   queryNotifyRuleOptions,
   runOpsAppPipeline,
   rollbackOpsAppPipelineRun,
   saveOpsAppPipeline,
+  saveOpsAppPipelineTemplate,
   updateOpsAppPipelineStatus
 } from '../../api/ops'
 import { queryK8sClusterList } from '../../api/k8s'
@@ -33,6 +35,11 @@ const imageRegistryOptions = ref([])
 const executorHostOptions = ref([])
 const templates = ref([])
 const templateVisible = ref(false)
+const templateEditorVisible = ref(false)
+const templateSaving = ref(false)
+const templateEditorMode = ref('visual')
+const templateYaml = ref('')
+const pipelineEditorSection = ref('binding')
 const editorVisible = ref(false)
 const runVisible = ref(false)
 const runDetailVisible = ref(false)
@@ -97,6 +104,14 @@ const filteredTemplates = computed(() => {
   if (selectedCategory.value === '全部模板') return templates.value
   if (selectedCategory.value === '空模板') return []
   return templates.value.filter((item) => item.category === selectedCategory.value || item.techStack === selectedCategory.value)
+})
+
+const templateForm = reactive({
+  name: '',
+  category: '自定义',
+  techStack: 'custom',
+  description: '',
+  stages: []
 })
 
 function formatDateTime(value) {
@@ -173,6 +188,78 @@ function defaultStage(type = 'command') {
   }
   normalizeStageConfig(stage)
   return stage
+}
+
+function templateStage(type = 'checkout') {
+  const names = { checkout: '代码拉取', command: '构建命令', test: '单元测试', build: '编译打包', dockerBuild: 'Docker 镜像构建', dockerPush: '上传镜像仓库', k8sDeploy: 'K8s 发布', manual: '人工确认', notify: '消息通知' }
+  const stage = { id: `template-${type}-${Date.now()}-${templateForm.stages.length + 1}`, name: names[type] || '自定义阶段', type, timeoutSeconds: 1800, failurePolicy: type === 'notify' ? 'ignore' : 'stop', config: {}, env: {} }
+  if (['command', 'test', 'build'].includes(type)) stage.config.script = ''
+  return stage
+}
+
+function openTemplateEditor() {
+  Object.assign(templateForm, { name: '', category: '自定义', techStack: 'custom', description: '', stages: [templateStage('checkout')] })
+  templateEditorMode.value = 'visual'
+  templateYaml.value = templateStagesToYaml(templateForm.stages)
+  templateEditorVisible.value = true
+}
+
+function addTemplateStage(type) { templateForm.stages.push(templateStage(type)) }
+function removeTemplateStage(index) { templateForm.stages.splice(index, 1) }
+function moveTemplateStage(index, direction) {
+  const target = index + direction
+  if (target < 0 || target >= templateForm.stages.length) return
+  const [stage] = templateForm.stages.splice(index, 1)
+  templateForm.stages.splice(target, 0, stage)
+}
+
+function templateStagesToYaml(stages) {
+  const lines = ['stages:']
+  for (const stage of stages) {
+    lines.push(`  - id: ${JSON.stringify(stage.id)}`, `    name: ${JSON.stringify(stage.name)}`, `    type: ${JSON.stringify(stage.type)}`, `    timeoutSeconds: ${Number(stage.timeoutSeconds) || 1800}`, `    failurePolicy: ${JSON.stringify(stage.failurePolicy || 'stop')}`, `    config: ${JSON.stringify(stage.config || {})}`, `    env: ${JSON.stringify(stage.env || {})}`)
+  }
+  return lines.join('\n')
+}
+
+async function switchTemplateEditorMode(mode) {
+  if (mode === templateEditorMode.value) return
+  if (mode === 'yaml') {
+    templateYaml.value = templateStagesToYaml(templateForm.stages)
+    templateEditorMode.value = mode
+    return
+  }
+  try {
+    const data = await normalizeOpsAppPipelineTemplateDefinition({ definition: templateYaml.value })
+    templateForm.stages = data.stages || []
+    templateEditorMode.value = mode
+  } catch {
+    ElMessage.error('YAML 格式或阶段字段不正确，请修正后再切换到可视化模式')
+  }
+}
+
+async function submitTemplate() {
+  if (!templateForm.name.trim()) return ElMessage.warning('请填写模板名称')
+  if (templateEditorMode.value === 'yaml') {
+    try {
+      const data = await normalizeOpsAppPipelineTemplateDefinition({ definition: templateYaml.value })
+      templateForm.stages = data.stages || []
+    } catch {
+      return ElMessage.error('YAML 格式或阶段字段不正确，请修正后再保存')
+    }
+  }
+  if (!templateForm.stages.length) return ElMessage.warning('请至少添加一个模板阶段')
+  for (const [index, stage] of templateForm.stages.entries()) {
+    if (!String(stage.name || '').trim()) return ElMessage.warning(`请填写第 ${index + 1} 个阶段名称`)
+  }
+  templateSaving.value = true
+  try {
+    await saveOpsAppPipelineTemplate({ ...templateForm, definitionJson: JSON.stringify({ stages: templateForm.stages }) })
+    ElMessage.success('模板已保存，可在新建流水线时直接选用')
+    templateEditorVisible.value = false
+    await loadTemplates()
+  } finally {
+    templateSaving.value = false
+  }
 }
 
 function stageHint(type) {
@@ -299,6 +386,7 @@ function createBlankPipeline() {
   resetForm()
   form.stages = []
   templateVisible.value = false
+  pipelineEditorSection.value = 'binding'
   editorVisible.value = true
 }
 
@@ -318,6 +406,7 @@ function confirmTemplate() {
   form.description = selectedTemplate.value.description || ''
   form.stages = parseStages(selectedTemplate.value.definitionJson)
   templateVisible.value = false
+  pipelineEditorSection.value = 'binding'
   editorVisible.value = true
 }
 
@@ -337,6 +426,7 @@ async function openEdit(row) {
     description: item.description || '',
     stages: detail.stages || parseStages(item.definitionJson)
   })
+  pipelineEditorSection.value = 'binding'
   editorVisible.value = true
 }
 
@@ -680,11 +770,15 @@ onBeforeUnmount(stopRunRefresh)
       </el-tab-pane>
 
       <el-tab-pane label="流水线模板" name="templates">
+        <div class="template-page-toolbar">
+          <p>将常用阶段沉淀为模板，新建流水线时可一键套用并继续补齐环境、镜像与发布目标。</p>
+          <el-button type="primary" @click="openTemplateEditor">新增模板</el-button>
+        </div>
         <div class="template-grid static">
           <div v-for="item in templates" :key="item.id" class="template-card">
             <strong>{{ item.name }}</strong>
             <p>{{ item.description }}</p>
-            <span>{{ item.techStack }} / {{ item.stageCount }} 个阶段</span>
+            <span>{{ item.techStack }} / {{ item.stageCount }} 个阶段 <em v-if="!item.builtin">自定义</em></span>
           </div>
         </div>
       </el-tab-pane>
@@ -743,6 +837,35 @@ onBeforeUnmount(stopRunRefresh)
       </el-tab-pane>
     </el-tabs>
 
+    <el-dialog v-model="templateEditorVisible" title="新增流水线模板" width="1240px" top="5vh" class="template-editor-dialog" destroy-on-close>
+      <el-form label-width="90px" class="template-editor-form">
+        <div class="form-grid">
+          <el-form-item label="模板名称" required><el-input v-model="templateForm.name" maxlength="128" show-word-limit placeholder="例如：Go 服务标准发布" /></el-form-item>
+          <el-form-item label="技术栈"><el-select v-model="templateForm.techStack"><el-option label="自定义" value="custom" /><el-option label="Go" value="go" /><el-option label="Maven Java" value="maven" /><el-option label="Node.js" value="node" /><el-option label="Vue" value="vue" /><el-option label="Python" value="python" /></el-select></el-form-item>
+          <el-form-item label="模板分类"><el-input v-model="templateForm.category" placeholder="例如：后端服务" /></el-form-item>
+          <el-form-item label="说明"><el-input v-model="templateForm.description" maxlength="255" show-word-limit placeholder="说明该模板适用的交付场景" /></el-form-item>
+        </div>
+        <div class="template-stage-toolbar">
+          <div><strong>模板阶段</strong><span>模板保存结构；镜像仓库、集群等环境参数在创建流水线时补齐。</span></div>
+          <div><el-button-group><el-button size="small" :type="templateEditorMode === 'visual' ? 'primary' : 'default'" @click="switchTemplateEditorMode('visual')">按阶段编排</el-button><el-button size="small" :type="templateEditorMode === 'yaml' ? 'primary' : 'default'" @click="switchTemplateEditorMode('yaml')">YAML</el-button></el-button-group><template v-if="templateEditorMode === 'visual'"><el-button size="small" @click="addTemplateStage('checkout')">+ 拉取</el-button><el-button size="small" @click="addTemplateStage('command')">+ 命令</el-button><el-button size="small" @click="addTemplateStage('test')">+ 测试</el-button><el-button size="small" @click="addTemplateStage('build')">+ 构建</el-button><el-button size="small" @click="addTemplateStage('dockerBuild')">+ 镜像</el-button><el-button size="small" @click="addTemplateStage('k8sDeploy')">+ 发布</el-button></template></div>
+        </div>
+        <div v-if="templateEditorMode === 'visual'" class="template-stage-list">
+          <article v-for="(stage, index) in templateForm.stages" :key="stage.id" class="template-stage-row">
+            <header><span class="template-stage-index">{{ String(index + 1).padStart(2, '0') }}</span><div><strong>{{ stage.name || '未命名阶段' }}</strong><span>{{ stageHint(stage.type) }}</span></div><div class="template-stage-actions"><el-button link :disabled="index === 0" @click="moveTemplateStage(index, -1)">上移</el-button><el-button link :disabled="index === templateForm.stages.length - 1" @click="moveTemplateStage(index, 1)">下移</el-button><el-button link type="danger" @click="removeTemplateStage(index)">删除</el-button></div></header>
+            <div class="template-stage-fields">
+              <label><span>阶段名称</span><el-input v-model="stage.name" placeholder="阶段名称" /></label>
+              <label><span>阶段类型</span><el-select v-model="stage.type"><el-option label="代码拉取" value="checkout" /><el-option label="自定义命令" value="command" /><el-option label="单元测试" value="test" /><el-option label="编译构建" value="build" /><el-option label="镜像构建" value="dockerBuild" /><el-option label="镜像推送" value="dockerPush" /><el-option label="K8s 发布" value="k8sDeploy" /><el-option label="人工确认" value="manual" /><el-option label="消息通知" value="notify" /></el-select></label>
+              <label><span>超时时间（秒）</span><el-input-number v-model="stage.timeoutSeconds" :min="60" :max="86400" controls-position="right" /></label>
+              <label v-if="['command', 'test', 'build'].includes(stage.type)" class="template-stage-command"><span>执行命令</span><el-input v-model="stage.config.script" placeholder="例如：npm run build；可在创建流水线时继续编辑" /></label>
+              <div v-else class="template-stage-note">{{ stageHint(stage.type) }}。具体的镜像仓库、发布集群和通知规则会在创建流水线时配置。</div>
+            </div>
+          </article>
+        </div>
+        <div v-else class="template-yaml-editor"><div class="template-yaml-heading"><strong>模板定义（YAML）</strong><span>保存时会校验并规范化；切回可视化模式可继续调整顺序。</span></div><el-input v-model="templateYaml" type="textarea" :rows="18" spellcheck="false" placeholder="stages:\n  - id: checkout\n    name: 代码拉取\n    type: checkout" /></div>
+      </el-form>
+      <template #footer><el-button @click="templateEditorVisible = false">取消</el-button><el-button type="primary" :loading="templateSaving" @click="submitTemplate">保存模板</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="templateVisible" title="选择流水线模板" width="980px" class="template-dialog">
       <div class="template-picker">
         <aside>
@@ -772,8 +895,9 @@ onBeforeUnmount(stopRunRefresh)
     </el-dialog>
 
     <el-dialog v-model="editorVisible" :title="form.id ? '编辑流水线' : '新建流水线'" width="1180px" class="pipeline-editor">
+      <div class="pipeline-editor-steps"><button type="button" :class="{ active: pipelineEditorSection === 'binding' }" @click="pipelineEditorSection = 'binding'"><b>1</b><span>绑定应用与执行环境</span></button><i></i><button type="button" :class="{ active: pipelineEditorSection === 'stages' }" @click="pipelineEditorSection = 'stages'"><b>2</b><span>查看阶段流程</span></button><i></i><button type="button" :class="{ active: pipelineEditorSection === 'advanced' }" @click="pipelineEditorSection = 'advanced'"><b>3</b><span>高级阶段配置</span></button></div>
       <el-form label-width="100px">
-        <div class="form-grid">
+        <div v-show="pipelineEditorSection !== 'advanced'" class="form-grid">
           <el-form-item label="流水线名称" required><el-input v-model="form.name" placeholder="请输入流水线名称" /></el-form-item>
           <el-form-item label="所属应用" required>
             <el-select v-model="form.appId" filterable placeholder="请选择应用" @change="fillFromApp">
@@ -809,11 +933,12 @@ onBeforeUnmount(stopRunRefresh)
             </el-radio-group>
           </el-form-item>
         </div>
-        <el-alert type="warning" :closable="false" show-icon title="流水线阶段会通过 SSH 在所选资产主机上执行；请确保该主机已配置认证凭据，并安装 Git/SVN、Docker、kubectl 等所需工具。" />
-        <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明流水线用途、环境和风险提示" /></el-form-item>
+        <el-alert v-show="pipelineEditorSection !== 'advanced'" type="warning" :closable="false" show-icon title="流水线阶段会通过 SSH 在所选资产主机上执行；请确保该主机已配置认证凭据，并安装 Git/SVN、Docker、kubectl 等所需工具。" />
+        <el-form-item v-show="pipelineEditorSection !== 'advanced'" label="描述"><el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明流水线用途、环境和风险提示" /></el-form-item>
       </el-form>
 
-      <div class="stage-toolbar">
+      <div v-if="pipelineEditorSection === 'stages'" class="pipeline-stage-summary"><strong>当前流程</strong><div><span v-for="(stage, index) in form.stages" :key="stage.id">{{ index ? '→' : '' }} {{ stage.name }}</span></div><el-button link type="primary" @click="pipelineEditorSection = 'advanced'">编辑阶段</el-button></div>
+      <div v-if="pipelineEditorSection === 'advanced'" class="stage-toolbar">
         <strong>阶段编排</strong>
         <div>
           <el-button size="small" @click="addStage('checkout')">代码拉取</el-button>
@@ -827,7 +952,7 @@ onBeforeUnmount(stopRunRefresh)
           <el-button size="small" @click="addStage('notify')">消息通知</el-button>
         </div>
       </div>
-      <div class="stage-editor">
+      <div v-if="pipelineEditorSection === 'advanced'" class="stage-editor">
         <el-empty v-if="!form.stages.length" description="当前为空白流水线，请添加阶段" />
         <div v-for="(stage, index) in form.stages" :key="stage.id" class="stage-config-card">
           <div class="stage-card-heading">
@@ -920,6 +1045,8 @@ onBeforeUnmount(stopRunRefresh)
       </div>
       <template #footer>
         <el-button @click="editorVisible = false">取消</el-button>
+        <el-button v-if="pipelineEditorSection !== 'advanced'" @click="pipelineEditorSection = 'advanced'">高级编辑</el-button>
+        <el-button v-if="pipelineEditorSection === 'advanced'" @click="pipelineEditorSection = 'binding'">返回绑定</el-button>
         <el-button type="primary" :loading="saving" @click="submitPipeline">保存</el-button>
       </template>
     </el-dialog>
@@ -994,6 +1121,8 @@ onBeforeUnmount(stopRunRefresh)
 .hero-stats strong { display: block; color: #2f6be6; font-size: 28px; }
 .hero-stats span, .muted { color: #7d8daa; font-size: 13px; }
 .pipeline-tabs { padding: 18px 22px; border: 1px solid #e3ebf7; border-radius: 14px; background: #fff; }
+.pipeline-editor-steps { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 0 22px; padding: 12px; border: 1px solid #e0eafb; border-radius: 12px; background: #f8fbff; }.pipeline-editor-steps button { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 0; border-radius: 8px; color: #8292aa; background: transparent; cursor: pointer; }.pipeline-editor-steps button b { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; color: #68809e; background: #e7edf6; font-size: 12px; }.pipeline-editor-steps button.active { color: #2456b2; background: #eaf1ff; font-weight: 700; }.pipeline-editor-steps button.active b { color: #fff; background: #3d70e8; }.pipeline-editor-steps i { width: 40px; height: 1px; background: #d9e4f3; }.pipeline-stage-summary { display: flex; align-items: center; gap: 14px; padding: 18px; border: 1px solid #dce7f7; border-radius: 12px; background: linear-gradient(135deg, #f9fbff, #f4f8ff); }.pipeline-stage-summary strong { flex: 0 0 auto; color: #23446e; }.pipeline-stage-summary div { display: flex; flex: 1; flex-wrap: wrap; gap: 7px; min-width: 0; }.pipeline-stage-summary span { padding: 5px 8px; border-radius: 6px; color: #5f7392; background: #fff; font-size: 12px; }
+.template-yaml-editor { padding: 18px; border: 1px solid #dbe7f7; border-radius: 12px; background: #f8fbff; }.template-yaml-heading { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }.template-yaml-heading strong { color: #23446e; }.template-yaml-heading span { color: #8292aa; font-size: 13px; }.template-yaml-editor :deep(.el-textarea__inner) { min-height: 420px; padding: 16px; border-color: #cedcf0; background: #fff; color: #233a5c; font-family: Consolas, 'SFMono-Regular', Menlo, monospace; font-size: 13px; line-height: 1.7; }
 .filter-panel { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 :deep(.filter-panel .el-select) { width: 220px; }
 :deep(.filter-panel .el-input) { width: 280px; }
@@ -1014,6 +1143,9 @@ onBeforeUnmount(stopRunRefresh)
 .template-card strong, .blank-template strong { color: #10213d; font-size: 16px; }
 .template-card p, .blank-template p { color: #6b7c9b; }
 .template-card span { color: #1677ff; font-weight: 700; }
+.template-card span em { margin-left: 8px; padding: 2px 6px; border-radius: 10px; background: #ecf8f1; color: #1b9b67; font-style: normal; font-size: 11px; }
+.template-page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #e0eafb; border-radius: 10px; background: #f8fbff; }.template-page-toolbar p { margin: 0; color: #7184a1; font-size: 13px; }
+.template-editor-form { max-height: calc(90vh - 170px); overflow: auto; padding: 2px 8px 2px 2px; }.template-editor-dialog :deep(.el-dialog__body) { padding: 18px 24px; }.template-stage-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 8px 0 14px; padding: 16px 18px; border: 1px solid #dce7f8; border-radius: 12px; background: linear-gradient(135deg, #f9fbff, #f2f7ff); }.template-stage-toolbar strong,.template-stage-toolbar span { display: block; }.template-stage-toolbar strong { color: #26456f; font-size: 15px; }.template-stage-toolbar span { max-width: 420px; margin-top: 5px; color: #8292aa; font-size: 12px; line-height: 1.55; }.template-stage-toolbar > div:last-child { display: flex; flex: 1; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }.template-stage-list { display: grid; gap: 12px; }.template-stage-row { padding: 15px 18px; border: 1px solid #dde8f7; border-radius: 12px; background: #fff; box-shadow: 0 4px 14px rgba(48, 76, 122, .04); }.template-stage-row header { display: flex; align-items: center; gap: 11px; padding-bottom: 13px; border-bottom: 1px solid #edf2f8; }.template-stage-row header > div:nth-child(2) { min-width: 0; }.template-stage-row header strong,.template-stage-row header span { display: block; }.template-stage-row header strong { overflow: hidden; color: #25436b; text-overflow: ellipsis; white-space: nowrap; }.template-stage-row header span { overflow: hidden; margin-top: 3px; color: #8291a7; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.template-stage-index { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: linear-gradient(135deg, #4b7cf2, #3b65db); color: #fff; font-size: 12px; font-weight: 800; box-shadow: 0 4px 10px rgba(55, 100, 220, .24); }.template-stage-actions { display: flex; flex: 0 0 auto; gap: 5px; margin-left: auto; white-space: nowrap; }.template-stage-fields { display: grid; grid-template-columns: minmax(200px, 1.15fr) minmax(180px, .9fr) 155px; gap: 13px; padding-top: 14px; }.template-stage-fields label { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #657b99; font-size: 12px; font-weight: 600; }.template-stage-fields label > span { color: #657b99; }.template-stage-fields :deep(.el-select),.template-stage-fields :deep(.el-input-number) { width: 100%; }.template-stage-command,.template-stage-note { grid-column: 1 / -1; }.template-stage-note { padding: 10px 12px; border: 1px solid #e4edf9; border-radius: 8px; color: #7285a2; background: #f8fbff; font-size: 12px; line-height: 1.6; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); column-gap: 28px; }
 .stage-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 12px; padding: 16px; border: 1px solid #e5edf9; border-radius: 12px; background: #f8fbff; }
 .stage-toolbar strong { color: #1b3760; font-size: 15px; }
@@ -1057,7 +1189,7 @@ onBeforeUnmount(stopRunRefresh)
 .image-stage-tip { display: flex; gap: 8px; margin-top: 12px; padding: 9px 11px; border-radius: 7px; background: #f0fbf6; color: #56746c; font-size: 12px; line-height: 1.55; }
 .image-stage-tip > span { display: grid; flex: 0 0 auto; width: 17px; height: 17px; place-items: center; border-radius: 50%; background: #20b485; color: #fff; font-size: 11px; font-weight: 800; }
 .image-stage-tip p { margin: 0; }
-@media (max-width: 900px) { .stage-toolbar { align-items: flex-start; flex-direction: column; }.stage-toolbar > div { justify-content: flex-start; }.stage-main-fields, .image-stage-fields.build-fields, .image-stage-fields.push-fields, .stage-config-grid { grid-template-columns: 1fr; }.stage-config-grid .wide { grid-column: auto; } }
+@media (max-width: 900px) { .stage-toolbar, .template-stage-toolbar, .pipeline-stage-summary { align-items: flex-start; flex-direction: column; }.stage-toolbar > div, .template-stage-toolbar > div:last-child { justify-content: flex-start; }.stage-main-fields, .image-stage-fields.build-fields, .image-stage-fields.push-fields, .stage-config-grid, .template-stage-fields { grid-template-columns: 1fr; }.stage-config-grid .wide { grid-column: auto; }.template-stage-row { padding: 13px; }.template-stage-row header { align-items: flex-start; flex-wrap: wrap; }.template-stage-actions { width: 100%; margin-left: 0; }.template-editor-dialog :deep(.el-dialog) { width: calc(100vw - 24px) !important; }.pipeline-editor-steps { justify-content: flex-start; overflow-x: auto; }.pipeline-editor-steps i { flex: 0 0 16px; }.pipeline-editor-steps button { flex: 0 0 auto; } }
 .run-summary { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .run-summary div { padding: 14px; border: 1px solid #e3ebf7; border-radius: 8px; background: #fbfdff; }
 .run-summary span { display: block; margin-bottom: 6px; color: #7d8daa; }

@@ -82,6 +82,8 @@ export const queryOpsImageRegistryList = (params) => http.get('/api/v1/ops/appli
 export const saveOpsImageRegistry = (data) => http.post('/api/v1/ops/application/image-registry/save', data)
 export const deleteOpsImageRegistry = (id) => http.delete('/api/v1/ops/application/image-registry/delete', { data: { id } })
 export const queryOpsAppPipelineTemplates = (params) => http.get('/api/v1/ops/application/pipeline/template/list', { params })
+export const saveOpsAppPipelineTemplate = (data) => http.post('/api/v1/ops/application/pipeline/template/save', data)
+export const normalizeOpsAppPipelineTemplateDefinition = (data) => http.post('/api/v1/ops/application/pipeline/template/normalize', data)
 export const queryOpsAppPipelineList = (params) => http.get('/api/v1/ops/application/pipeline/list', { params })
 export const opsAppPipelineInfo = (id) => http.get('/api/v1/ops/application/pipeline/info', { params: { id } })
 export const saveOpsAppPipeline = (data) => http.post('/api/v1/ops/application/pipeline/save', data)

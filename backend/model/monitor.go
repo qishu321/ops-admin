@@ -77,11 +77,23 @@ type MonitorAlertRule struct {
 	Description                 string     `json:"description" gorm:"size:255"`
 	CreatedAt                   time.Time  `json:"createTime"`
 	UpdatedAt                   time.Time  `json:"updateTime"`
+	// DatasourceIDs and DatasourceNames are populated from the relation table.
+	// The legacy DatasourceID remains the first selected source for compatibility.
+	DatasourceIDs   []uint   `json:"datasourceIds" gorm:"-"`
+	DatasourceNames []string `json:"datasourceNames" gorm:"-"`
 }
 
 func (MonitorAlertRule) TableName() string {
 	return "monitor_alert_rule"
 }
+
+type MonitorAlertRuleDatasource struct {
+	RuleID       uint      `json:"ruleId" gorm:"primaryKey;index"`
+	DatasourceID uint      `json:"datasourceId" gorm:"primaryKey;index"`
+	CreatedAt    time.Time `json:"createTime"`
+}
+
+func (MonitorAlertRuleDatasource) TableName() string { return "monitor_alert_rule_datasource" }
 
 // MonitorAlertTemplate stores reusable alert definitions. A template is never
 // scheduled directly; it becomes an executable alert only after it is applied

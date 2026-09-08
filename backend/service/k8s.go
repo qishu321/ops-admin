@@ -3167,10 +3167,11 @@ func buildOverviewDistribution(cluster model.K8sClusterView, nodes []kubeNode, c
 	}
 }
 
-// resolveK8sNetworkCIDRs reads the cluster-level CIDRs from kubeadm's ConfigMap
-// when it is available, then falls back to the Pod CIDRs assigned to nodes.
-// Kubernetes does not expose the Service CIDR from a stable core API, so an
-// unavailable value is intentionally reported as unavailable instead of guessed.
+// resolveK8sNetworkCIDRs reads cluster networking from kubeadm where available.
+// ACK managed clusters normally do not expose kubeadm-config; Terway keeps the
+// service CIDR and Pod vSwitch mapping in kube-system/eni-config instead.
+// A Terway Pod vSwitch is deliberately shown as an identifier rather than being
+// guessed into a CIDR: its precise address range belongs to the VPC API.
 func resolveK8sNetworkCIDRs(nodes []kubeNode, configMaps []kubeConfigMap) (string, string) {
 	serviceCIDR, podCIDR := "未识别", "未识别"
 	for _, configMap := range configMaps {
@@ -3194,6 +3195,41 @@ func resolveK8sNetworkCIDRs(nodes []kubeNode, configMaps []kubeConfigMap) (strin
 						podCIDR = value
 					}
 				}
+			}
+		}
+	}
+	for _, configMap := range configMaps {
+		if configMap.Metadata.Namespace != "kube-system" || configMap.Metadata.Name != "eni-config" {
+			continue
+		}
+		var eniConfig struct {
+			ServiceCIDR string              `json:"service_cidr"`
+			VSwitches   map[string][]string `json:"vswitches"`
+		}
+		if err := json.Unmarshal([]byte(configMap.Data["eni_conf"]), &eniConfig); err != nil {
+			continue
+		}
+		if serviceCIDR == "未识别" && strings.TrimSpace(eniConfig.ServiceCIDR) != "" {
+			serviceCIDR = strings.TrimSpace(eniConfig.ServiceCIDR)
+		}
+		if podCIDR == "未识别" && len(eniConfig.VSwitches) > 0 {
+			vswitches := make([]string, 0)
+			seen := map[string]struct{}{}
+			for _, ids := range eniConfig.VSwitches {
+				for _, id := range ids {
+					id = strings.TrimSpace(id)
+					if id == "" {
+						continue
+					}
+					if _, exists := seen[id]; !exists {
+						seen[id] = struct{}{}
+						vswitches = append(vswitches, id)
+					}
+				}
+			}
+			if len(vswitches) > 0 {
+				sort.Strings(vswitches)
+				podCIDR = "Terway · Pod 虚拟交换机：" + strings.Join(vswitches, "、")
 			}
 		}
 	}

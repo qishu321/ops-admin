@@ -359,6 +359,8 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.POST("/ops/application/image-registry/save", ctl.SaveOpsImageRegistry)
 		authGroup.DELETE("/ops/application/image-registry/delete", ctl.DeleteOpsImageRegistry)
 		authGroup.GET("/ops/application/pipeline/template/list", ctl.GetOpsAppPipelineTemplateList)
+		authGroup.POST("/ops/application/pipeline/template/save", ctl.SaveOpsAppPipelineTemplate)
+		authGroup.POST("/ops/application/pipeline/template/normalize", ctl.NormalizeOpsAppPipelineTemplateDefinition)
 		authGroup.GET("/ops/application/pipeline/list", ctl.GetOpsAppPipelineList)
 		authGroup.GET("/ops/application/pipeline/info", ctl.GetOpsAppPipelineInfo)
 		authGroup.POST("/ops/application/pipeline/save", ctl.SaveOpsAppPipeline)

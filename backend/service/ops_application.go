@@ -120,6 +120,14 @@ type OpsAppPipelinePayload struct {
 	DefinitionJSON string `json:"definitionJson"`
 }
 
+type OpsAppPipelineTemplatePayload struct {
+	Name           string `json:"name"`
+	Category       string `json:"category"`
+	TechStack      string `json:"techStack"`
+	Description    string `json:"description"`
+	DefinitionJSON string `json:"definitionJson"`
+}
+
 type OpsAppPipelineStatusPayload struct {
 	ID     uint `json:"id"`
 	Status int  `json:"status"`
@@ -936,7 +944,7 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 		Stages      []OpsAppPipelineStageDefinition
 	}{
 		{
-			ID: 1, Name: "Go 后端通用模板", Category: "Go", TechStack: "go",
+			ID: 1000001, Name: "Go 后端通用模板", Category: "Go", TechStack: "go",
 			Description: "Go 编译、镜像构建、上传镜像仓库、工作负载更新",
 			Stages: []OpsAppPipelineStageDefinition{
 				{ID: "checkout", Name: "代码拉取", Type: "checkout", TimeoutSeconds: 600, FailurePolicy: "stop"},
@@ -949,7 +957,7 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 			},
 		},
 		{
-			ID: 2, Name: "Maven Java 通用模板", Category: "Java", TechStack: "maven",
+			ID: 1000002, Name: "Maven Java 通用模板", Category: "Java", TechStack: "maven",
 			Description: "Maven 打包、Jar 镜像、K8s 发布",
 			Stages: []OpsAppPipelineStageDefinition{
 				{ID: "checkout", Name: "代码拉取", Type: "checkout", TimeoutSeconds: 600, FailurePolicy: "stop"},
@@ -962,7 +970,7 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 			},
 		},
 		{
-			ID: 3, Name: "Vue 前端通用模板", Category: "Node.js", TechStack: "vue",
+			ID: 1000003, Name: "Vue 前端通用模板", Category: "Node.js", TechStack: "vue",
 			Description: "npm 构建、镜像打包、K8s 滚动发布",
 			Stages: []OpsAppPipelineStageDefinition{
 				{ID: "checkout", Name: "代码拉取", Type: "checkout", TimeoutSeconds: 600, FailurePolicy: "stop"},
@@ -989,6 +997,17 @@ func builtinOpsAppPipelineTemplates() []map[string]any {
 func (s *Service) ListOpsAppPipelineTemplates(category string) ([]map[string]any, error) {
 	category = strings.TrimSpace(category)
 	all := builtinOpsAppPipelineTemplates()
+	var custom []model.OpsAppPipelineTemplate
+	if err := s.db.Where("status = ?", 1).Order("updated_at DESC").Find(&custom).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range custom {
+		all = append(all, map[string]any{
+			"id": item.ID, "name": item.Name, "category": item.Category, "techStack": item.TechStack,
+			"description": item.Description, "stageCount": item.StageCount, "definitionJson": item.DefinitionJSON,
+			"builtin": false, "status": item.Status, "createTime": item.CreatedAt, "updateTime": item.UpdatedAt,
+		})
+	}
 	if category == "" || category == "全部模板" {
 		return all, nil
 	}
@@ -1001,6 +1020,43 @@ func (s *Service) ListOpsAppPipelineTemplates(category string) ([]map[string]any
 	return filtered, nil
 }
 
+func (s *Service) SaveOpsAppPipelineTemplate(payload OpsAppPipelineTemplatePayload) error {
+	name := Trimmed(payload.Name)
+	if name == "" {
+		return errors.New("模板名称不能为空")
+	}
+	stages, definitionJSON, err := normalizeOpsPipelineStages(payload.DefinitionJSON)
+	if err != nil {
+		return err
+	}
+	if len(stages) == 0 {
+		return errors.New("模板至少需要配置一个阶段")
+	}
+	for index, stage := range stages {
+		if strings.TrimSpace(stage.Name) == "" || strings.TrimSpace(stage.Type) == "" {
+			return fmt.Errorf("请完善第 %d 个阶段的名称与类型", index+1)
+		}
+	}
+	item := model.OpsAppPipelineTemplate{
+		Name:           name,
+		Category:       firstNonEmpty(Trimmed(payload.Category), "自定义"),
+		TechStack:      firstNonEmpty(Trimmed(payload.TechStack), "custom"),
+		Description:    Trimmed(payload.Description),
+		StageCount:     len(stages),
+		DefinitionJSON: definitionJSON,
+		Status:         1,
+	}
+	return s.db.Create(&item).Error
+}
+
+func (s *Service) NormalizeOpsAppPipelineTemplateDefinition(definition string) (map[string]any, error) {
+	stages, normalized, err := normalizeOpsPipelineStages(definition)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"stages": stages, "definitionJson": normalized}, nil
+}
+
 func normalizeOpsPipelineStages(definitionJSON string) ([]OpsAppPipelineStageDefinition, string, error) {
 	definitionJSON = strings.TrimSpace(definitionJSON)
 	if definitionJSON == "" {
@@ -1010,7 +1066,14 @@ func normalizeOpsPipelineStages(definitionJSON string) ([]OpsAppPipelineStageDef
 		Stages []OpsAppPipelineStageDefinition `json:"stages"`
 	}
 	if err := json.Unmarshal([]byte(definitionJSON), &wrapper); err != nil {
-		return nil, "", errors.New("流水线阶段配置不是有效 JSON")
+		yamlErr := yaml.Unmarshal([]byte(definitionJSON), &wrapper)
+		if yamlErr != nil || strings.Contains(definitionJSON, "steps:") {
+			stages, shorthandErr := parseOpsPipelineShorthandYAML([]byte(definitionJSON))
+			if shorthandErr != nil {
+				return nil, "", errors.New("流水线阶段配置不是有效 JSON 或 YAML")
+			}
+			wrapper.Stages = stages
+		}
 	}
 	for index := range wrapper.Stages {
 		if wrapper.Stages[index].ID == "" {
@@ -1031,6 +1094,145 @@ func normalizeOpsPipelineStages(definitionJSON string) ([]OpsAppPipelineStageDef
 	}
 	normalized, _ := json.Marshal(map[string]any{"stages": wrapper.Stages})
 	return wrapper.Stages, string(normalized), nil
+}
+
+// parseOpsPipelineShorthandYAML accepts the compact form used by the template
+// editor. It deliberately hides storage details such as IDs, timeoutSeconds and
+// config envelopes while retaining an escape hatch for stage-specific options.
+//
+// steps:
+//   - name: 运行测试
+//     type: test
+//     run: go test ./...
+//   - name: 发布
+//     uses: kubernetes-deploy
+//     with:
+//     namespace: test
+//     workload: api
+func parseOpsPipelineShorthandYAML(definition []byte) ([]OpsAppPipelineStageDefinition, error) {
+	var document map[string]any
+	if err := yaml.Unmarshal(definition, &document); err != nil {
+		return nil, err
+	}
+	rawStages, ok := document["steps"].([]any)
+	if !ok {
+		rawStages, ok = document["stages"].([]any)
+	}
+	if !ok {
+		return nil, errors.New("steps must be a list")
+	}
+	stages := make([]OpsAppPipelineStageDefinition, 0, len(rawStages))
+	for index, raw := range rawStages {
+		stage := OpsAppPipelineStageDefinition{TimeoutSeconds: 1800, FailurePolicy: "stop", Config: map[string]any{}, Env: map[string]string{}}
+		switch value := raw.(type) {
+		case string:
+			stage.Type = opsPipelineStageTypeAlias(value)
+		case map[string]any:
+			// `name/type/run/uses/with` mirrors the vocabulary operators use in
+			// Jenkins-like pipeline files. `run` is a script stage; `uses` references
+			// a built-in operation such as checkout or kubernetes-deploy.
+			if value["type"] != nil || value["uses"] != nil || value["run"] != nil {
+				if name, exists := value["name"]; exists && name != nil {
+					stage.Name = strings.TrimSpace(fmt.Sprint(name))
+				}
+				stageType := ""
+				if uses, exists := value["uses"]; exists && uses != nil {
+					stageType = fmt.Sprint(uses)
+				}
+				if stageType == "" {
+					if stageKind, exists := value["type"]; exists && stageKind != nil {
+						stageType = fmt.Sprint(stageKind)
+					}
+				}
+				if stageType == "" {
+					stageType = "command"
+				}
+				stage.Type = opsPipelineStageTypeAlias(stageType)
+				if run, exists := value["run"]; exists && run != nil {
+					stage.Config["script"] = fmt.Sprint(run)
+				}
+				if timeout, ok := value["timeout"].(int); ok && timeout > 0 {
+					stage.TimeoutSeconds = timeout
+				}
+				if policy, exists := value["onFailure"]; exists && policy != nil {
+					stage.FailurePolicy = fmt.Sprint(policy)
+				}
+				if options, ok := value["with"].(map[string]any); ok {
+					for key, option := range options {
+						stage.Config[key] = option
+					}
+				}
+			} else if len(value) != 1 {
+				return nil, errors.New("step must include type, uses, or run")
+			} else {
+				// Compatibility with the initial compact `- test: go test ./...` form.
+				for stageType, settings := range value {
+					stage.Type = opsPipelineStageTypeAlias(stageType)
+					switch option := settings.(type) {
+					case string:
+						if isOpsPipelineScriptStage(stage.Type) {
+							stage.Config["script"] = option
+						}
+					case map[string]any:
+						for key, setting := range option {
+							switch key {
+							case "name":
+								stage.Name = fmt.Sprint(setting)
+							case "timeout":
+								if timeout, ok := setting.(int); ok && timeout > 0 {
+									stage.TimeoutSeconds = timeout
+								}
+							case "onFailure":
+								stage.FailurePolicy = fmt.Sprint(setting)
+							case "script":
+								stage.Config["script"] = fmt.Sprint(setting)
+							default:
+								stage.Config[key] = setting
+							}
+						}
+					case nil:
+						// A bare map entry, e.g. `- checkout:`, only needs defaults.
+					default:
+						return nil, errors.New("stage options must be text or a map")
+					}
+				}
+			}
+		default:
+			return nil, errors.New("stage must be text or a map")
+		}
+		if stage.Type == "" {
+			return nil, errors.New("stage type cannot be empty")
+		}
+		stage.ID = fmt.Sprintf("stage-%d", index+1)
+		stage.Name = firstNonEmpty(stage.Name, opsPipelineStageDisplayName(stage.Type), fmt.Sprintf("阶段 %d", index+1))
+		stages = append(stages, stage)
+	}
+	return stages, nil
+}
+
+func opsPipelineStageTypeAlias(stageType string) string {
+	switch strings.TrimSpace(stageType) {
+	case "image", "docker-build":
+		return "dockerBuild"
+	case "push", "docker-push":
+		return "dockerPush"
+	case "deploy", "kubernetes-deploy", "k8s-deploy":
+		return "k8sDeploy"
+	default:
+		return strings.TrimSpace(stageType)
+	}
+}
+
+func isOpsPipelineScriptStage(stageType string) bool {
+	return stageType == "command" || stageType == "test" || stageType == "build"
+}
+
+func opsPipelineStageDisplayName(stageType string) string {
+	return map[string]string{
+		"checkout": "代码拉取", "command": "执行命令", "test": "自动化测试", "build": "编译构建",
+		"dockerBuild": "构建镜像", "dockerPush": "推送镜像", "k8sDeploy": "K8s 发布",
+		"manual": "人工确认", "notify": "消息通知",
+	}[stageType]
 }
 
 func validateOpsPipelineStages(stages []OpsAppPipelineStageDefinition, validateDeployTarget bool) error {

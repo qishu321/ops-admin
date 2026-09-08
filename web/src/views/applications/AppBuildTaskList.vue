@@ -433,7 +433,7 @@ onMounted(async () => {
     <el-dialog
       v-model="dialogVisible"
       :title="form.id ? '编辑构建任务' : '新建构建任务'"
-      width="min(1180px, 94vw)"
+      width="min(1520px, calc(100vw - 120px))"
       top="3vh"
       class="build-task-dialog"
     >

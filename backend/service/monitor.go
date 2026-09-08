@@ -44,6 +44,7 @@ type MonitorAlertRulePayload struct {
 	AlertType                   string  `json:"alertType"`
 	DatasourceScope             string  `json:"datasourceScope"`
 	DatasourceID                uint    `json:"datasourceId"`
+	DatasourceIDs               []uint  `json:"datasourceIds"`
 	PromQL                      string  `json:"promql"`
 	Query                       string  `json:"query"`
 	LogIndex                    string  `json:"logIndex"`
@@ -125,6 +126,8 @@ type MonitorAlertRuleBatchPayload struct {
 	NotifyRecoveryEnabled       *bool  `json:"notifyRecoveryEnabled"`
 	ForSeconds                  *int   `json:"forSeconds"`
 	EvalIntervalSeconds         *int   `json:"evalIntervalSeconds"`
+	DatasourceIDs               []uint `json:"datasourceIds"`
+	DatasourceMode              string `json:"datasourceMode"`
 }
 
 type MonitorAlertEventActionPayload struct {
@@ -2913,6 +2916,9 @@ func (s *Service) ListMonitorAlertRules(pageNum, pageSize int, keyword, status, 
 	if err := query.Order("id DESC").Offset((pageNum - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
 		return nil, err
 	}
+	if err := s.enrichMonitorAlertRuleDatasources(list); err != nil {
+		return nil, err
+	}
 	return map[string]any{"list": list, "total": total, "pageNum": pageNum, "pageSize": pageSize}, nil
 }
 
@@ -2921,7 +2927,101 @@ func (s *Service) GetMonitorAlertRule(id uint) (*model.MonitorAlertRule, error) 
 	if err := s.db.First(&item, id).Error; err != nil {
 		return nil, err
 	}
+	if err := s.enrichMonitorAlertRuleDatasources([]model.MonitorAlertRule{item}); err != nil {
+		return nil, err
+	}
+	// The slice helper intentionally mutates its elements; hydrate the single item
+	// directly so callers receive the relation-backed selection too.
+	var hydrated []model.MonitorAlertRule
+	if err := s.db.Where("id = ?", id).Find(&hydrated).Error; err != nil {
+		return nil, err
+	}
+	if err := s.enrichMonitorAlertRuleDatasources(hydrated); err != nil {
+		return nil, err
+	}
+	if len(hydrated) > 0 {
+		item = hydrated[0]
+	}
 	return &item, nil
+}
+
+func (s *Service) enrichMonitorAlertRuleDatasources(rules []model.MonitorAlertRule) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	ruleIDs := make([]uint, 0, len(rules))
+	for _, rule := range rules {
+		ruleIDs = append(ruleIDs, rule.ID)
+	}
+	var links []model.MonitorAlertRuleDatasource
+	if err := s.db.Where("rule_id IN ?", ruleIDs).Order("rule_id, datasource_id").Find(&links).Error; err != nil {
+		return err
+	}
+	byRule := map[uint][]uint{}
+	datasourceIDs := map[uint]bool{}
+	for _, link := range links {
+		byRule[link.RuleID] = append(byRule[link.RuleID], link.DatasourceID)
+		datasourceIDs[link.DatasourceID] = true
+	}
+	for _, rule := range rules {
+		if len(byRule[rule.ID]) == 0 && rule.DatasourceID > 0 {
+			byRule[rule.ID] = []uint{rule.DatasourceID}
+			datasourceIDs[rule.DatasourceID] = true
+		}
+	}
+	ids := make([]uint, 0, len(datasourceIDs))
+	for id := range datasourceIDs {
+		ids = append(ids, id)
+	}
+	nameByID := map[uint]string{}
+	if len(ids) > 0 {
+		var sources []model.MonitorDatasource
+		if err := s.db.Where("id IN ?", ids).Find(&sources).Error; err != nil {
+			return err
+		}
+		for _, source := range sources {
+			nameByID[source.ID] = source.Name
+		}
+	}
+	for index := range rules {
+		rules[index].DatasourceIDs = byRule[rules[index].ID]
+		rules[index].DatasourceNames = make([]string, 0, len(rules[index].DatasourceIDs))
+		for _, id := range rules[index].DatasourceIDs {
+			if name := nameByID[id]; name != "" {
+				rules[index].DatasourceNames = append(rules[index].DatasourceNames, name)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) syncMonitorAlertRuleDatasources(tx *gorm.DB, ruleID uint, datasourceIDs []uint) error {
+	if err := tx.Where("rule_id = ?", ruleID).Delete(&model.MonitorAlertRuleDatasource{}).Error; err != nil {
+		return err
+	}
+	links := make([]model.MonitorAlertRuleDatasource, 0, len(datasourceIDs))
+	for _, id := range datasourceIDs {
+		links = append(links, model.MonitorAlertRuleDatasource{RuleID: ruleID, DatasourceID: id})
+	}
+	if len(links) > 0 {
+		return tx.Create(&links).Error
+	}
+	return nil
+}
+
+func uniqueMonitorDatasourceIDs(ids []uint, fallback uint) []uint {
+	if len(ids) == 0 && fallback > 0 {
+		ids = []uint{fallback}
+	}
+	seen := map[uint]bool{}
+	result := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
@@ -2949,25 +3049,37 @@ func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
 		return err
 	}
 	datasourceName := ""
-	datasourceID := payload.DatasourceID
+	datasourceIDs := uniqueMonitorDatasourceIDs(payload.DatasourceIDs, payload.DatasourceID)
+	datasourceID := uint(0)
 	if datasourceScope == "specific" {
-		if datasourceID == 0 {
+		if len(datasourceIDs) == 0 {
 			return errors.New("请选择数据源")
 		}
-		ds, err := s.GetMonitorDatasource(datasourceID)
-		if err != nil {
+		var sources []model.MonitorDatasource
+		if err := s.db.Where("id IN ? AND status = ?", datasourceIDs, 1).Find(&sources).Error; err != nil {
 			return err
 		}
-		if alertType == "log" && normalizeMonitorDatasourceType(ds.Type) != "elasticsearch" {
-			return errors.New("日志告警只能选择 Elasticsearch 数据源")
+		if len(sources) != len(datasourceIDs) {
+			return errors.New("选择的数据源不存在或已禁用")
 		}
-		if alertType == "victorialogs" && normalizeMonitorDatasourceType(ds.Type) != "victorialogs" {
-			return errors.New("日志告警只能选择 VictoriaLogs 数据源")
+		names := make([]string, 0, len(sources))
+		for _, ds := range sources {
+			if alertType == "log" && normalizeMonitorDatasourceType(ds.Type) != "elasticsearch" {
+				return errors.New("日志告警只能选择 Elasticsearch 数据源")
+			}
+			if alertType == "victorialogs" && normalizeMonitorDatasourceType(ds.Type) != "victorialogs" {
+				return errors.New("日志告警只能选择 VictoriaLogs 数据源")
+			}
+			if alertType == "metric" && !isMonitorMetricDatasource(ds.Type) {
+				return errors.New("监控告警只能选择 Prometheus 或 VictoriaMetrics 数据源")
+			}
+			names = append(names, ds.Name)
 		}
-		if alertType == "metric" && !isMonitorMetricDatasource(ds.Type) {
-			return errors.New("监控告警只能选择 Prometheus 或 VictoriaMetrics 数据源")
+		datasourceID = datasourceIDs[0]
+		datasourceName = names[0]
+		if len(names) > 1 {
+			datasourceName = fmt.Sprintf("%s 等 %d 个", names[0], len(names))
 		}
-		datasourceName = ds.Name
 	} else {
 		var count int64
 		if alertType == "log" {
@@ -3024,12 +3136,18 @@ func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
 			if err := tx.Model(&model.MonitorAlertRule{}).Where("id = ?", payload.ID).Updates(updates).Error; err != nil {
 				return err
 			}
+			if err := s.syncMonitorAlertRuleDatasources(tx, payload.ID, datasourceIDs); err != nil {
+				return err
+			}
 			return tx.First(&current, payload.ID).Error
 		}
 		if err := tx.Model(&model.MonitorAlertRule{}).Create(updates).Error; err != nil {
 			return err
 		}
-		return tx.Last(&current).Error
+		if err := tx.Last(&current).Error; err != nil {
+			return err
+		}
+		return s.syncMonitorAlertRuleDatasources(tx, current.ID, datasourceIDs)
 	})
 	if err != nil {
 		return err
@@ -3044,7 +3162,13 @@ func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
 
 func (s *Service) DeleteMonitorAlertRule(id uint) error {
 	s.removeMonitorAlertRule(id)
-	return s.db.Delete(&model.MonitorAlertRule{}, id).Error
+	s.closeActiveMonitorAlertEventsForRule(id, "告警规则已删除，系统自动关闭未结束事件")
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("rule_id = ?", id).Delete(&model.MonitorAlertRuleDatasource{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.MonitorAlertRule{}, id).Error
+	})
 }
 
 func (s *Service) ListMonitorSilenceRules(pageNum, pageSize int, keyword, status string) (map[string]any, error) {
@@ -3399,6 +3523,77 @@ func (s *Service) BatchUpdateMonitorAlertRules(payload MonitorAlertRuleBatchPayl
 	}
 	updates := map[string]any{}
 	action := strings.ToLower(strings.TrimSpace(payload.Action))
+	if action == "delete" {
+		var rules []model.MonitorAlertRule
+		if err := s.db.Where("id IN ?", uniqueIDs).Find(&rules).Error; err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			s.removeMonitorAlertRule(rule.ID)
+			s.closeActiveMonitorAlertEventsForRule(rule.ID, "告警规则已批量删除，系统自动关闭未结束事件")
+		}
+		return s.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("rule_id IN ?", uniqueIDs).Delete(&model.MonitorAlertRuleDatasource{}).Error; err != nil {
+				return err
+			}
+			return tx.Delete(&model.MonitorAlertRule{}, uniqueIDs).Error
+		})
+	}
+	if action == "update_datasources" {
+		ids := uniqueMonitorDatasourceIDs(payload.DatasourceIDs, 0)
+		if len(ids) == 0 {
+			return errors.New("请选择至少一个目标数据源")
+		}
+		var rules []model.MonitorAlertRule
+		if err := s.db.Where("id IN ?", uniqueIDs).Find(&rules).Error; err != nil {
+			return err
+		}
+		var sources []model.MonitorDatasource
+		if err := s.db.Where("id IN ? AND status = ?", ids, 1).Find(&sources).Error; err != nil {
+			return err
+		}
+		if len(sources) != len(ids) {
+			return errors.New("目标数据源不存在或已禁用")
+		}
+		for _, rule := range rules {
+			for _, source := range sources {
+				if rule.AlertType == "log" && normalizeMonitorDatasourceType(source.Type) != "elasticsearch" {
+					return errors.New("所选规则包含 Elasticsearch 日志告警，只能绑定 Elasticsearch 数据源")
+				}
+				if rule.AlertType == "victorialogs" && normalizeMonitorDatasourceType(source.Type) != "victorialogs" {
+					return errors.New("所选规则包含 VictoriaLogs 告警，只能绑定 VictoriaLogs 数据源")
+				}
+				if rule.AlertType == "metric" && !isMonitorMetricDatasource(source.Type) {
+					return errors.New("所选规则包含监控告警，只能绑定 Prometheus 或 VictoriaMetrics 数据源")
+				}
+			}
+		}
+		name := sources[0].Name
+		if len(sources) > 1 {
+			name = fmt.Sprintf("%s 等 %d 个", name, len(sources))
+		}
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			for _, rule := range rules {
+				if err := tx.Model(&model.MonitorAlertRule{}).Where("id = ?", rule.ID).Updates(map[string]any{"datasource_scope": "specific", "datasource_id": ids[0], "datasource_name": name}).Error; err != nil {
+					return err
+				}
+				if err := s.syncMonitorAlertRuleDatasources(tx, rule.ID, ids); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			if rule.Status == 1 {
+				if err := s.registerMonitorAlertRule(rule); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	switch action {
 	case "enable":
 		updates["status"] = 1
@@ -3494,7 +3689,7 @@ func (s *Service) PreviewMonitorAlertRule(payload MonitorAlertRulePayload) (map[
 	rule := model.MonitorAlertRule{
 		ID: payload.ID, Name: firstNonEmpty(strings.TrimSpace(payload.Name), "规则预览"),
 		AlertType: normalizeAlertType(payload.AlertType), DatasourceScope: normalizeDatasourceScope(payload.DatasourceScope),
-		DatasourceID: payload.DatasourceID, PromQL: queryText, LogIndex: firstNonEmpty(strings.TrimSpace(payload.LogIndex), "_all"),
+		DatasourceID: payload.DatasourceID, DatasourceIDs: uniqueMonitorDatasourceIDs(payload.DatasourceIDs, payload.DatasourceID), PromQL: queryText, LogIndex: firstNonEmpty(strings.TrimSpace(payload.LogIndex), "_all"),
 		LogTimeRangeSeconds: normalizeLogTimeRangeSeconds(payload.LogTimeRangeSeconds), Comparator: normalizeComparator(payload.Comparator),
 		Threshold: payload.Threshold, Severity: normalizeSeverity(payload.Severity),
 	}
@@ -3650,11 +3845,30 @@ func (s *Service) endMonitorAlertRuleEvaluation(id uint) {
 
 func (s *Service) monitorRuleDatasources(rule model.MonitorAlertRule) ([]model.MonitorDatasource, error) {
 	if normalizeDatasourceScope(rule.DatasourceScope) == "specific" {
-		ds, err := s.GetMonitorDatasource(rule.DatasourceID)
-		if err != nil {
+		ids := rule.DatasourceIDs
+		if len(ids) == 0 {
+			var links []model.MonitorAlertRuleDatasource
+			if err := s.db.Where("rule_id = ?", rule.ID).Find(&links).Error; err != nil {
+				return nil, err
+			}
+			for _, link := range links {
+				ids = append(ids, link.DatasourceID)
+			}
+		}
+		if len(ids) == 0 && rule.DatasourceID > 0 {
+			ids = []uint{rule.DatasourceID}
+		}
+		if len(ids) == 0 {
+			return nil, errors.New("规则未指定数据源")
+		}
+		var list []model.MonitorDatasource
+		if err := s.db.Where("id IN ? AND status = ?", ids, 1).Find(&list).Error; err != nil {
 			return nil, err
 		}
-		return []model.MonitorDatasource{*ds}, nil
+		if len(list) != len(ids) {
+			return nil, errors.New("指定数据源不存在或已禁用")
+		}
+		return list, nil
 	}
 	query := s.db.Where("status = ?", 1)
 	if normalizeAlertType(rule.AlertType) == "log" {

@@ -41,6 +41,9 @@ const batchTimingSaving = ref(false)
 const batchTimingAction = ref('')
 const batchTimingValue = ref(undefined)
 const batchLoading = ref(false)
+const batchDatasourceVisible = ref(false)
+const batchDatasourceSaving = ref(false)
+const batchDatasourceIds = ref([])
 const runningRuleId = ref()
 const ruleTableRef = ref()
 const selectedRuleIds = ref([])
@@ -66,6 +69,7 @@ const form = reactive({
   alertType: 'metric',
   datasourceScope: 'specific',
   datasourceId: undefined,
+  datasourceIds: [],
   queryText: '',
   logIndex: '_all',
   logTimeRangeSeconds: 300,
@@ -94,10 +98,36 @@ const availableDatasourceOptions = computed(() => {
   if (form.alertType === 'datasource_health') return datasourceOptions.value
   return metricDatasourceOptions.value
 })
+const datasourceTypeMeta = {
+  prometheus: { label: 'Prometheus', order: 1 },
+  victoriametrics: { label: 'VictoriaMetrics', order: 2 },
+  elasticsearch: { label: 'Elasticsearch', order: 3 },
+  victorialogs: { label: 'VictoriaLogs', order: 4 },
+  jaeger: { label: 'Jaeger', order: 5 }
+}
+function groupDatasourceOptions(items) {
+  const groups = new Map()
+  items.forEach((item) => {
+    const meta = datasourceTypeMeta[item.type] || { label: item.type || '其他数据源', order: 99 }
+    const key = item.type || 'other'
+    if (!groups.has(key)) groups.set(key, { key, label: meta.label, order: meta.order, options: [] })
+    groups.get(key).options.push(item)
+  })
+  return [...groups.values()].sort((a, b) => a.order - b.order || a.label.localeCompare(b.label)).map((group) => ({ ...group, options: group.options.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN')) }))
+}
+const availableDatasourceGroups = computed(() => groupDatasourceOptions(availableDatasourceOptions.value))
+const batchDatasourceGroups = computed(() => groupDatasourceOptions(datasourceOptions.value))
+function ruleDatasourceNames(rule) {
+  if (rule.datasourceScope === 'all') return []
+  const names = (rule.datasourceNames || []).filter(Boolean)
+  if (names.length) return [...new Set(names)]
+  return rule.datasourceName ? [rule.datasourceName] : []
+}
 const alertTypeLabel = computed(() => alertTypeName(form.alertType))
 const isLogAlert = computed(() => ['log', 'victorialogs'].includes(form.alertType))
 const enabledOnPage = computed(() => rows.value.filter((item) => item.status === 1).length)
 const failedOnPage = computed(() => rows.value.filter((item) => item.lastEvalStatus === 'failed').length)
+const selectedRules = computed(() => rows.value.filter((item) => selectedRuleIds.value.includes(item.id)))
 const batchTimingTitle = computed(() => batchTimingAction.value === 'update_for_seconds' ? '批量修改持续时间' : '批量修改评估间隔')
 const batchTimingLabel = computed(() => batchTimingAction.value === 'update_for_seconds' ? '持续时间' : '评估间隔')
 const batchTimingTip = computed(() => batchTimingAction.value === 'update_for_seconds'
@@ -203,6 +233,7 @@ function resetForm() {
     alertType: 'metric',
     datasourceScope: 'specific',
     datasourceId: metricDatasourceOptions.value[0]?.id,
+    datasourceIds: metricDatasourceOptions.value[0]?.id ? [metricDatasourceOptions.value[0].id] : [],
     queryText: '',
     logIndex: '_all',
     logTimeRangeSeconds: 300,
@@ -230,10 +261,12 @@ function handleAlertTypeChange(type) {
   form.queryText = queryDrafts[type] || defaultQueryForType(type)
   previousAlertType.value = type
   form.datasourceId = form.datasourceScope === 'specific' ? datasourceOptionsForType(type)[0]?.id : undefined
+  form.datasourceIds = form.datasourceId ? [form.datasourceId] : []
 }
 
 function applyDatasourceScope() {
   form.datasourceId = form.datasourceScope === 'specific' ? availableDatasourceOptions.value[0]?.id : undefined
+  form.datasourceIds = form.datasourceId ? [form.datasourceId] : []
 }
 
 async function loadOptions() {
@@ -271,6 +304,7 @@ async function openEdit(row) {
     ...data,
     alertType: data.alertType || 'metric',
     datasourceScope: data.datasourceScope || 'specific',
+    datasourceIds: data.datasourceIds?.length ? data.datasourceIds : (data.datasourceId ? [data.datasourceId] : []),
     queryText: data.promql || '',
     logIndex: data.logIndex || '_all',
     logTimeRangeSeconds: data.logTimeRangeSeconds || 300,
@@ -294,6 +328,7 @@ async function openCopy(row) {
     name: `${data.name} - 副本`,
     alertType: data.alertType || 'metric',
     datasourceScope: data.datasourceScope || 'specific',
+    datasourceIds: data.datasourceIds?.length ? data.datasourceIds : (data.datasourceId ? [data.datasourceId] : []),
     queryText: data.promql || '',
     logIndex: data.logIndex || '_all',
     logTimeRangeSeconds: data.logTimeRangeSeconds || 300,
@@ -512,7 +547,7 @@ function validateJsonFields() {
 }
 
 async function submit() {
-  if (!form.name.trim() || (form.alertType !== 'datasource_health' && !form.queryText.trim()) || (form.datasourceScope === 'specific' && !form.datasourceId)) {
+  if (!form.name.trim() || (form.alertType !== 'datasource_health' && !form.queryText.trim()) || (form.datasourceScope === 'specific' && !form.datasourceIds.length)) {
     ElMessage.warning(`请填写规则名称、${form.datasourceScope === 'specific' ? '数据源和' : ''}${form.alertType === 'log' ? ' Elasticsearch 查询语句' : ' PromQL'}`)
     return
   }
@@ -548,7 +583,7 @@ function buildRulePayload() {
 }
 
 async function handlePreview() {
-  if (!form.queryText.trim() || (form.datasourceScope === 'specific' && !form.datasourceId)) {
+  if (!form.queryText.trim() || (form.datasourceScope === 'specific' && !form.datasourceIds.length)) {
     ElMessage.warning(`请先填写${form.datasourceScope === 'specific' ? '数据源和' : ''}${form.alertType === 'log' ? ' Elasticsearch 查询语句' : ' PromQL'}`)
     return
   }
@@ -638,6 +673,36 @@ function openBatchTiming(action) {
   batchTimingAction.value = action
   batchTimingValue.value = undefined
   batchTimingVisible.value = true
+}
+
+function openBatchDatasource() {
+  if (!selectedRuleIds.value.length) return
+  batchDatasourceIds.value = []
+  batchDatasourceVisible.value = true
+}
+
+async function submitBatchDatasource() {
+  if (!batchDatasourceIds.value.length) return ElMessage.warning('请选择至少一个目标数据源')
+  batchDatasourceSaving.value = true
+  try {
+    await batchUpdateMonitorAlertRules({ ids: selectedRuleIds.value, action: 'update_datasources', datasourceIds: batchDatasourceIds.value })
+    ElMessage.success('已批量更新指定数据源')
+    batchDatasourceVisible.value = false
+    clearSelection()
+    await loadData()
+  } finally { batchDatasourceSaving.value = false }
+}
+
+async function handleBatchDelete() {
+  if (!selectedRuleIds.value.length) return
+  await ElMessageBox.confirm(`确认删除已选中的 ${selectedRuleIds.value.length} 条告警规则吗？规则将停止评估，历史告警事件会保留。`, '批量删除告警规则', { type: 'warning', confirmButtonText: `删除 ${selectedRuleIds.value.length} 条规则`, cancelButtonText: '取消' })
+  batchLoading.value = true
+  try {
+    await batchUpdateMonitorAlertRules({ ids: selectedRuleIds.value, action: 'delete' })
+    ElMessage.success('已删除选中的告警规则，历史事件已保留')
+    clearSelection()
+    await loadData()
+  } finally { batchLoading.value = false }
 }
 
 function searchRules() {
@@ -758,9 +823,11 @@ onMounted(async () => {
       <el-button size="small" type="success" @click="handleBatchStatus(1)">批量启用</el-button>
       <el-button size="small" type="warning" @click="handleBatchStatus(2)">批量禁用</el-button>
       <el-button size="small" type="primary" plain @click="openBatchNotify">批量启用通知</el-button>
-      <el-button size="small" type="primary" @click="openBatchTiming('update_for_seconds')">批量修改持续时间</el-button>
-      <el-button size="small" type="info" plain @click="openBatchTiming('update_eval_interval')">批量修改评估间隔</el-button>
-      <el-button size="small" link @click="clearSelection">取消选择</el-button>
+       <el-button size="small" type="primary" @click="openBatchTiming('update_for_seconds')">批量修改持续时间</el-button>
+       <el-button size="small" type="info" plain @click="openBatchTiming('update_eval_interval')">批量修改评估间隔</el-button>
+       <el-button size="small" type="primary" plain @click="openBatchDatasource">批量修改数据源</el-button>
+       <el-button size="small" type="danger" plain @click="handleBatchDelete">批量删除</el-button>
+       <el-button size="small" link @click="clearSelection">取消选择</el-button>
     </div>
 
     <el-table ref="ruleTableRef" v-loading="loading" :data="rows" class="rule-table" @selection-change="handleSelectionChange">
@@ -768,7 +835,7 @@ onMounted(async () => {
       <el-table-column label="规则" min-width="255">
         <template #default="{ row }"><div class="rule-name-cell"><strong>{{ row.name }}</strong><span><el-tag :type="alertTypeTag(row.alertType)" size="small" effect="plain">{{ alertTypeName(row.alertType) }}</el-tag></span></div></template>
       </el-table-column>
-      <el-table-column label="数据源范围" min-width="180"><template #default="{ row }"><div class="scope-cell"><strong>{{ row.datasourceName || '全部同类数据源' }}</strong><span>{{ row.datasourceScope === 'all' ? '动态匹配所有已启用数据源' : '指定数据源' }}</span></div></template></el-table-column>
+      <el-table-column label="数据源范围" min-width="270"><template #default="{ row }"><div class="scope-cell"><template v-if="row.datasourceScope === 'all'"><strong>{{ row.datasourceName || '全部同类数据源' }}</strong><span>动态匹配所有已启用数据源</span></template><template v-else><el-tooltip :disabled="ruleDatasourceNames(row).length <= 3" :content="ruleDatasourceNames(row).join('、')" placement="top"><div class="scope-tag-list"><el-tag v-for="name in ruleDatasourceNames(row)" :key="name" size="small" effect="plain">{{ name }}</el-tag><span v-if="!ruleDatasourceNames(row).length" class="scope-empty">指定数据源</span></div></el-tooltip><span>指定 {{ ruleDatasourceNames(row).length || (row.datasourceId ? 1 : 0) }} 个数据源</span></template></div></template></el-table-column>
       <el-table-column label="触发条件" min-width="320" show-overflow-tooltip><template #default="{ row }"><div class="condition-cell"><code>{{ row.promql }}</code><span>{{ row.comparator }} {{ row.threshold }} · {{ row.alertType === 'metric' ? `持续 ${row.forSeconds || 0} 秒` : `窗口 ${row.logTimeRangeSeconds || 300} 秒` }}</span></div></template></el-table-column>
       <el-table-column label="等级" width="76"><template #default="{ row }"><el-tag :type="['P0','P1'].includes(row.severity) ? 'danger' : (row.severity === 'P2' ? 'warning' : 'info')" size="small">{{ row.severity }}</el-tag></template></el-table-column>
       <el-table-column label="评估状态" min-width="155"><template #default="{ row }"><div class="eval-cell"><span><el-tag :type="evalStatusType(row.lastEvalStatus)" size="small" effect="light">{{ evalStatusText(row.lastEvalStatus) }}</el-tag><em>每 {{ row.evalIntervalSeconds }} 秒</em></span><el-tooltip v-if="row.lastEvalMessage" :content="row.lastEvalMessage" placement="top"><small>{{ formatEvalTime(row.lastEvalAt) }}</small></el-tooltip><small v-else>{{ formatEvalTime(row.lastEvalAt) }}</small></div></template></el-table-column>
@@ -807,10 +874,10 @@ onMounted(async () => {
               <el-radio-button v-if="form.alertType !== 'datasource_health'" label="all">匹配所有{{ alertTypeLabel }}数据源</el-radio-button>
               <el-radio-button label="specific">指定数据源</el-radio-button>
             </el-radio-group>
-            <el-select v-if="form.datasourceScope === 'specific'" v-model="form.datasourceId" filterable style="width: 360px" placeholder="选择数据源">
-              <el-option v-for="item in availableDatasourceOptions" :key="item.id" :label="`${item.name} (${item.type})`" :value="item.id" />
+            <el-select v-if="form.datasourceScope === 'specific'" v-model="form.datasourceIds" class="datasource-multi-select" multiple filterable placeholder="选择一个或多个数据源">
+              <el-option-group v-for="group in availableDatasourceGroups" :key="group.key" :label="group.label"><el-option v-for="item in group.options" :key="item.id" :label="item.name" :value="item.id" /></el-option-group>
             </el-select>
-            <span v-else class="form-tip">将对所有已启用的{{ form.alertType === 'log' ? ' Elasticsearch' : ' Prometheus / VictoriaMetrics' }}数据源分别执行规则。</span>
+            <span v-if="form.datasourceScope === 'specific'" class="form-tip">将在 {{ form.datasourceIds.length }} 个选中数据源上分别执行规则。</span><span v-else class="form-tip">将对所有已启用的{{ form.alertType === 'log' ? ' Elasticsearch' : ' Prometheus / VictoriaMetrics' }}数据源分别执行规则。</span>
           </div>
         </el-form-item>
         <el-form-item v-if="form.alertType === 'log'" label="日志索引" required><el-input v-model="form.logIndex" placeholder="例如：logs-*、.ds-app-log-*；使用 _all 搜索全部索引" /></el-form-item>
@@ -942,6 +1009,19 @@ onMounted(async () => {
       <template #footer><el-button @click="batchNotifyVisible = false">取消</el-button><el-button type="primary" :loading="batchNotifySaving" @click="submitBatchNotify">确认启用</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="batchDatasourceVisible" title="批量修改数据源" width="760px" class="batch-datasource-dialog" append-to-body>
+      <p class="batch-dialog-tip">将把已选 {{ selectedRuleIds.length }} 条规则切换为“指定数据源”。同一查询会在每个选中数据源上独立评估。</p>
+      <el-form label-position="top">
+        <el-form-item label="目标数据源（可多选）" required>
+          <el-select v-model="batchDatasourceIds" class="batch-datasource-select" multiple filterable placeholder="选择一个或多个数据源">
+            <el-option-group v-for="group in batchDatasourceGroups" :key="group.key" :label="group.label"><el-option v-for="item in group.options" :key="item.id" :label="item.name" :value="item.id" /></el-option-group>
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div class="batch-dialog-hint">如同时选中了不同告警类型的规则，请只选择它们共同兼容的数据源；不兼容时系统会阻止提交，避免误改。</div>
+      <template #footer><el-button @click="batchDatasourceVisible = false">取消</el-button><el-button type="primary" :loading="batchDatasourceSaving" @click="submitBatchDatasource">确认修改</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="batchTimingVisible" :title="batchTimingTitle" width="520px" append-to-body>
       <p class="batch-dialog-tip">{{ batchTimingTip }}</p>
       <el-form label-width="92px">
@@ -963,9 +1043,9 @@ onMounted(async () => {
 .page-header { display: flex; align-items: center; gap: 14px; min-height: 90px; padding: 16px 20px; border: 1px solid #dce8fa; border-radius: 16px; background: linear-gradient(108deg, #fff 4%, #f6f9ff 74%, #eef7ff); box-shadow: 0 10px 24px rgba(43, 74, 128, .06); }
 .header-icon { display: grid; flex: none; width: 44px; height: 44px; place-items: center; border-radius: 12px; background: #e8f1ff; color: #3477df; font-size: 23px; }.header-copy { min-width: 0; }.page-header h2 { margin: 0 0 5px; font-size: 24px; color: #102747; }.page-header p { margin: 0; color: #7184a3; font-size: 13px; }.header-metrics { display: flex; gap: 18px; margin-left: auto; color: #7587a3; font-size: 12px; }.header-metrics b { margin-left: 4px; color: #18375f; font-size: 18px; }.header-metrics b.danger { color: #d84851; }.header-actions { display: flex; gap: 8px; margin-left: 10px; }
 .toolbar-card, .rule-table-card { border: 1px solid #e2eaf6; border-radius: 14px; background: #fff; box-shadow: 0 10px 24px rgba(36, 54, 90, .045); }.toolbar { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 16px; }.refresh-button { margin-left: auto; }.rule-table-card { overflow: hidden; }.table-card-head { display: flex; align-items: center; min-height: 54px; padding: 0 16px; border-bottom: 1px solid #e8eef6; }.table-card-head strong, .table-card-head span { display: block; }.table-card-head strong { color: #1c365b; font-size: 15px; }.table-card-head span { margin-top: 3px; color: #8392a9; font-size: 12px; }
-.batch-toolbar { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid #d7e4fa; background: #f2f6ff; color: #52637f; }.batch-toolbar b { color: #3266d6; }.rule-table :deep(.el-table__header th) { height: 46px; background: #f5f8fc; color: #526681; font-size: 12px; }.rule-table :deep(.el-table__row td) { padding: 11px 0; }.rule-name-cell, .scope-cell, .condition-cell, .eval-cell, .notify-cell { display: flex; min-width: 0; flex-direction: column; gap: 5px; }.rule-name-cell strong, .scope-cell strong { overflow: hidden; color: #1d365b; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }.rule-name-cell span, .eval-cell span { display: flex; align-items: center; gap: 5px; }.rule-name-cell em, .eval-cell em { color: #8795aa; font-size: 11px; font-style: normal; }.scope-cell span, .condition-cell span, .notify-cell span, .eval-cell small { color: #8492a8; font-size: 11px; }.condition-cell code { overflow: hidden; color: #45628f; font: 12px/1.4 Consolas, Monaco, monospace; text-overflow: ellipsis; white-space: nowrap; }.notify-cell { align-items: flex-start; }.pager { display: flex; justify-content: flex-end; padding: 14px 16px; }
+.batch-toolbar { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid #d7e4fa; background: #f2f6ff; color: #52637f; }.batch-toolbar b { color: #3266d6; }.rule-table :deep(.el-table__header th) { height: 46px; background: #f5f8fc; color: #526681; font-size: 12px; }.rule-table :deep(.el-table__row td) { padding: 11px 0; }.rule-name-cell, .scope-cell, .condition-cell, .eval-cell, .notify-cell { display: flex; min-width: 0; flex-direction: column; gap: 5px; }.rule-name-cell strong, .scope-cell strong { overflow: hidden; color: #1d365b; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }.rule-name-cell span, .eval-cell span { display: flex; align-items: center; gap: 5px; }.rule-name-cell em, .eval-cell em { color: #8795aa; font-size: 11px; font-style: normal; }.scope-cell span, .condition-cell span, .notify-cell span, .eval-cell small { color: #8492a8; font-size: 11px; }.scope-tag-list { display: flex; flex-wrap: wrap; gap: 4px; min-height: 24px; }.scope-tag-list :deep(.el-tag) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }.scope-empty { line-height: 24px; }.condition-cell code { overflow: hidden; color: #45628f; font: 12px/1.4 Consolas, Monaco, monospace; text-overflow: ellipsis; white-space: nowrap; }.notify-cell { align-items: flex-start; }.pager { display: flex; justify-content: flex-end; padding: 14px 16px; }
 :global(.rule-editor-dialog .el-dialog__body) { max-height: calc(100vh - 188px); overflow: auto; padding-top: 14px; }:global(.rule-editor-dialog .el-dialog__footer) { margin-top: 0; padding-top: 12px; border-top: 1px solid #edf1f7; }.editor-intro { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 13px 14px; border: 1px solid #dce8fa; border-radius: 10px; background: #f3f7ff; }.editor-intro > div { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 9px; background: #e2edff; color: #3872d6; }.editor-intro > span { flex: 1; }.editor-intro strong, .editor-intro small { display: block; }.editor-intro strong { color: #234369; }.editor-intro small { margin-top: 3px; color: #7588a6; }.rule-editor-form { display: flex; flex-direction: column; gap: 14px; }.form-section { padding: 16px; border: 1px solid #e0e8f4; border-radius: 12px; background: #fff; }.section-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }.section-heading > span { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 8px; background: #e9f1ff; color: #3470d7; font-size: 12px; font-weight: 700; }.section-heading strong, .section-heading small { display: block; }.section-heading strong { color: #1e385e; }.section-heading small { margin-top: 2px; color: #8492a8; font-size: 12px; }.form-grid, .json-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }.form-section :deep(.el-form-item:last-child) { margin-bottom: 0; }.datasource-scope { display: flex; align-items: center; gap: 12px; width: 100%; flex-wrap: wrap; }.form-tip { margin-top: 6px; color: #8491a9; font-size: 12px; line-height: 1.55; }.datasource-scope .form-tip { margin: 0; }.rule-parameters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }.parameter-card { min-height: 126px; padding: 14px; border: 1px solid #dfe7f2; border-radius: 10px; background: #f8faff; display: flex; flex-direction: column; gap: 9px; }.parameter-card > span { color: #51617b; font-size: 13px; font-weight: 700; }.parameter-card :deep(.el-input-number), .parameter-card :deep(.el-select) { width: 100%; }.parameter-card small { color: #8c98ad; font-size: 12px; line-height: 1.4; }.parameter-number { display: flex; align-items: center; gap: 6px; }.parameter-number :deep(.el-input-number) { flex: 1; min-width: 0; }.parameter-number b { color: #71809b; font-size: 12px; font-weight: 500; }.notify-toggle { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 10px 14px; border: 1px solid #e1e9f5; border-radius: 9px; background: #f8faff; }.notify-toggle strong, .notify-toggle small { display: block; }.notify-toggle small { margin-top: 3px; color: #8492a8; }.notify-settings { margin-top: 12px; padding: 14px; border: 1px solid #dbe7f8; border-radius: 10px; background: #f8fbff; }.rule-editor-footer { display: flex; align-items: center; justify-content: space-between; width: 100%; }.rule-editor-footer > span { color: #8190a5; font-size: 12px; }
-.preview-body { display: flex; flex-direction: column; gap: 14px; min-height: 220px; }.preview-metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid #e1e8f3; border-radius: 8px; background: #f7f9fd; }.preview-metrics > div { padding: 13px 16px; border-right: 1px solid #e1e8f3; }.preview-metrics > div:last-child { border-right: 0; }.preview-metrics span, .preview-metrics strong { display: block; }.preview-metrics span { margin-bottom: 4px; color: #8491a8; font-size: 12px; }.preview-metrics strong { color: #20395f; font-size: 20px; }.preview-metrics strong.matched { color: #dc3f48; }.preview-source { padding: 14px; border: 1px solid #e1e8f3; border-radius: 8px; }.preview-source-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: #20395f; }
+.preview-body { display: flex; flex-direction: column; gap: 14px; min-height: 220px; }.preview-metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid #e1e8f3; border-radius: 8px; background: #f7f9fd; }.preview-metrics > div { padding: 13px 16px; border-right: 1px solid #e1e8f3; }.preview-metrics > div:last-child { border-right: 0; }.preview-metrics span, .preview-metrics strong { display: block; }.preview-metrics span { margin-bottom: 4px; color: #8491a8; font-size: 12px; }.preview-metrics strong { color: #20395f; font-size: 20px; }.preview-metrics strong.matched { color: #dc3f48; }.preview-source { padding: 14px; border: 1px solid #e1e8f3; border-radius: 8px; }.preview-source-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: #20395f; }.datasource-multi-select { flex: 1 1 520px; min-width: min(100%, 360px); }.batch-datasource-select { width: 100%; }.datasource-multi-select :deep(.el-select__wrapper), .batch-datasource-select :deep(.el-select__wrapper) { min-height: 36px; height: auto; padding-top: 5px; padding-bottom: 5px; align-items: flex-start; }.datasource-multi-select :deep(.el-select__selection), .batch-datasource-select :deep(.el-select__selection) { flex-wrap: wrap; }.datasource-multi-select :deep(.el-tag), .batch-datasource-select :deep(.el-tag) { max-width: 210px; }.batch-datasource-dialog :deep(.el-dialog__body) { padding-top: 20px; }
 .template-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 14px; }.template-dialog-head strong, .template-dialog-head span { display: block; }.template-dialog-head strong { color: #1e3155; }.template-dialog-head span { margin-top: 5px; color: #8491a9; font-size: 12px; }.template-library-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 520px; overflow: hidden; border: 1px solid #e1e9f5; border-radius: 12px; background: #fff; }.template-groups { padding: 12px; border-right: 1px solid #e1e9f5; background: #f8faff; }.template-groups > button { display: flex; align-items: center; width: 100%; gap: 8px; min-height: 36px; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: #506785; cursor: pointer; transition: background-color .18s, color .18s; }.template-groups > button:hover { background: #eef4ff; }.template-groups > button.active { background: #e5efff; color: #2769d8; font-weight: 700; }.template-groups > button span { flex: 1; text-align: left; }.template-groups :deep(.el-tree) { margin-top: 8px; background: transparent; }.template-groups :deep(.el-tree-node__content) { height: 34px; border-radius: 7px; }.template-group-node { display: flex; width: 100%; min-width: 0; gap: 6px; padding-right: 6px; }.template-group-node > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.template-group-node small { margin-left: auto; color: #8a99af; }.rule-template-list { min-width: 0; padding: 12px; background: #fff; }.template-select-table { overflow: hidden; border: 1px solid #e4ebf5; border-radius: 10px; }.template-select-table :deep(.el-table__header th) { height: 44px; background: #f5f8fc; color: #526681; font-size: 12px; }.template-select-table :deep(.el-table__row td) { padding: 10px 0; }.template-select-table :deep(.el-table__row:hover > td) { background: #f7faff; }.template-name-cell { display: flex; min-width: 0; flex-direction: column; gap: 4px; }.template-name-cell strong { overflow: hidden; color: #1b3559; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }.template-name-cell span { overflow: hidden; color: #8492a8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.template-datasource { color: #536b8b; font-size: 12px; }.template-query { display: block; overflow: hidden; color: #4264c2; font: 12px/1.45 Consolas, Monaco, monospace; text-overflow: ellipsis; white-space: nowrap; }.template-dialog-footer { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 16px; }.template-dialog-footer > div:last-child { display: flex; gap: 8px; }.template-selection-summary { display: flex; align-items: center; gap: 10px; color: #71819a; font-size: 13px; }.template-selection-summary b { color: #2f67d8; font-size: 16px; }.batch-dialog-tip { margin: 0 0 18px; color: #7282a0; line-height: 1.65; }
 @media (max-width: 1000px) { .header-metrics { display: none; }.toolbar { align-items: flex-start; }.refresh-button { margin-left: 0; }.template-library-layout { grid-template-columns: 1fr; }.template-groups { max-height: 190px; overflow: auto; border-right: 0; border-bottom: 1px solid #e1e9f5; }.template-dialog-head { align-items: flex-start; flex-direction: column; }.template-dialog-head :deep(.el-input) { width: 100% !important; } }
 @media (max-width: 700px) { .page-header { align-items: flex-start; flex-wrap: wrap; }.header-actions { width: 100%; margin-left: 0; }.form-grid, .json-grid, .rule-parameters, .preview-metrics { grid-template-columns: 1fr; }.rule-editor-footer, .template-dialog-footer { align-items: flex-end; flex-direction: column; gap: 10px; }.rule-editor-footer > span, .template-selection-summary { align-self: flex-start; } }

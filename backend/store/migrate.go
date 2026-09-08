@@ -78,6 +78,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.MonitorDatasource{},
 		&model.MonitorLogShortcut{},
 		&model.MonitorAlertRule{},
+		&model.MonitorAlertRuleDatasource{},
 		&model.MonitorAlertTemplate{},
 		&model.MonitorAlertTemplateGroup{},
 		&model.MonitorAlertEvent{},

@@ -5213,7 +5213,11 @@ func (s *Service) podResourceMetricMap(ds model.MonitorDatasource, query string)
 func (s *Service) queryPodResourceDetails(ds model.MonitorDatasource, namespace string) ([]map[string]any, []string, error) {
 	memorySelector := podResourceSelector(namespace, `container!="",pod!=""`)
 	podSelector := podResourceSelector(namespace, `pod!=""`)
-	memoryQuery := fmt.Sprintf(`topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{%s}))`, memorySelector)
+	memoryExpression := fmt.Sprintf(`sum by(namespace, pod) (container_memory_working_set_bytes{%s})`, memorySelector)
+	memoryQuery := memoryExpression
+	if strings.TrimSpace(namespace) == "" {
+		memoryQuery = fmt.Sprintf(`topk(10, %s)`, memoryExpression)
+	}
 	memoryResult, err := s.prometheusQuery(ds, memoryQuery, time.Now())
 	if err != nil {
 		return nil, nil, err
@@ -5276,16 +5280,20 @@ func (s *Service) queryPodResourceDetails(ds model.MonitorDatasource, namespace 
 		cpuCores := monitorMetricValue(cpuMetrics[key])
 		memoryBytes := monitorMetricValue(memory)
 		cpuRequest := monitorMetricValue(cpuRequests[key])
+		cpuLimit := monitorMetricValue(cpuLimits[key])
 		memoryRequest := monitorMetricValue(memoryRequests[key])
 		rows = append(rows, map[string]any{
 			"namespace": memory.Metric["namespace"], "pod": memory.Metric["pod"], "node": nodeName,
 			"memoryBytes": memoryBytes, "cpuCores": cpuCores,
 			"cpuRequest": cpuRequest, "memoryRequest": memoryRequest,
-			"cpuLimit": monitorMetricValue(cpuLimits[key]), "memoryLimit": monitorMetricValue(memoryLimits[key]),
-			"cpuUsagePercent": podResourcePercentage(cpuCores, cpuRequest), "memoryUsagePercent": podResourcePercentage(memoryBytes, memoryRequest),
+			"cpuLimit": cpuLimit, "memoryLimit": monitorMetricValue(memoryLimits[key]),
+			"cpuUsagePercent": podResourcePercentage(cpuCores, cpuLimit), "memoryUsagePercent": podResourcePercentage(memoryBytes, monitorMetricValue(memoryLimits[key])),
 			"networkReceive": monitorMetricValue(networkReceive[key]), "networkTransmit": monitorMetricValue(networkTransmit[key]),
 		})
 	}
+	sort.SliceStable(rows, func(left, right int) bool {
+		return rows[left]["memoryBytes"].(float64) > rows[right]["memoryBytes"].(float64)
+	})
 	return rows, namespaces, nil
 }
 

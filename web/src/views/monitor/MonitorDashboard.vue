@@ -1213,7 +1213,7 @@ onBeforeUnmount(() => {
                 <div class="pod-resource-filter"><strong>命名空间</strong><el-select v-model="podResourceNamespace" clearable placeholder="全部命名空间" @change="handlePodNamespaceChange(panel)">
                     <el-option label="全部命名空间" value="" />
                     <el-option v-for="namespace in podResourceNamespaces(panel)" :key="namespace" :label="namespace" :value="namespace" />
-                  </el-select><span>默认展示全部命名空间，按内存使用量降序取前 10 个 Pod</span></div>
+                  </el-select><span>{{ podResourceNamespace ? '已选择命名空间，展示该命名空间内全部 Pod，并按内存使用量降序排列' : '默认展示全部命名空间，按内存使用量降序取前 10 个 Pod' }}</span></div>
               </div>
               <el-table class="pod-resource-table" :data="podDetailRows(panel)" size="small" :height="isFullscreen ? 180 : 450" :fit="true" default-sort="{ prop: 'memoryBytes', order: 'descending' }">
                 <el-table-column prop="namespace" label="命名空间" width="130" align="center" show-overflow-tooltip />

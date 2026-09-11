@@ -77,7 +77,15 @@ function metricName(metric) {
 
 function chartLabel(metric, index) {
   const labels = metric || {}
-  return labels.instance || labels.pod || labels.namespace || labels.job || metricName(labels) || `序列 ${index + 1}`
+  // Kubernetes 指标通常由同一个 kube-state-metrics 实例采集，单独显示 instance 会让所有曲线同名。
+  // 优先使用业务对象标识，再补充采集实例，既能区分 Pod，也能保留排查来源。
+  if (labels.pod) {
+    const pod = labels.namespace ? `${labels.namespace}/${labels.pod}` : labels.pod
+    const container = labels.container ? ` · ${labels.container}` : ''
+    const instance = labels.instance ? ` · ${labels.instance}` : ''
+    return `${pod}${container}${instance}`
+  }
+  return labels.instance || labels.namespace || labels.job || metricName(labels) || `序列 ${index + 1}`
 }
 
 function formatMetricValue(value) {

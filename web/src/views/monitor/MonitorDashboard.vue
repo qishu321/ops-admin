@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { CircleCheck, Coin, Connection, Cpu, DataLine, FullScreen, Monitor, MoreFilled, Plus, Refresh, Setting, TrendCharts, Warning } from '@element-plus/icons-vue'
 import {
   deleteMonitorDashboard,
   deleteMonitorDashboardPanel,
@@ -23,6 +24,7 @@ const activeDashboard = ref(null)
 const panels = ref([])
 const panelResults = reactive({})
 const panelPending = reactive({})
+const trendTooltips = reactive({})
 const dashboardDialogVisible = ref(false)
 const panelDialogVisible = ref(false)
 const editingDashboard = ref(false)
@@ -32,12 +34,41 @@ const autoRefreshSeconds = ref(30)
 const timeRangeSeconds = ref(3600)
 const isFullscreen = ref(false)
 const lastRefreshAt = ref(new Date())
+const syncingK8sPodPanels = ref(false)
 let refreshTimer = null
 let panelRefreshVersion = 0
 const panelResultCache = new Map()
 const PANEL_QUERY_CONCURRENCY = 4
 const PANEL_CACHE_TTL = 15 * 1000
 const inspectionFilter = ref('all')
+const podResourceNamespace = ref('')
+const retiredK8sPanelTitles = new Set(['Pod 累计重启次数 Top', 'Pod 最近 1 小时新增重启 Top'])
+
+const k8sPodPanelDefinitions = [
+  { title: 'Pod CPU 使用量 Top', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))' },
+  { title: 'Pod 内存使用量 Top', chartType: 'line', unit: 'B', span: 12, promql: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))' },
+  { title: 'Pod CPU 使用趋势', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))' },
+  { title: 'Pod 内存使用趋势', chartType: 'line', unit: 'B', span: 12, promql: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))' },
+  { title: 'Pod 网络接收速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])))' },
+  { title: 'Pod 网络发送速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])))' },
+  { title: 'Pod 资源明细', chartType: 'table', unit: '', span: 24, promql: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))' }
+]
+
+const k8sTrendPanelTitles = new Set([
+  'Pod CPU 使用量 Top',
+  'Pod 内存使用量 Top',
+  'Pod CPU 使用趋势',
+  'Pod 内存使用趋势'
+])
+
+const k8sPanelTitleMap = {
+  'Pod CPU 使用量 Top': 'Pod CPU 使用量 Top 10（核）',
+  'Pod 内存使用量 Top': 'Pod 内存使用量 Top 10（MiB）',
+  'Pod CPU 使用趋势': 'Pod CPU 使用趋势（核）',
+  'Pod 内存使用趋势': 'Pod 内存使用趋势（MiB）',
+  'Pod 网络接收速率 Top': 'Pod 网络流入 Top 10',
+  'Pod 网络发送速率 Top': 'Pod 网络流出 Top 10'
+}
 
 const pageMode = computed(() => route.path.includes('/monitor/inspections') ? 'inspection' : 'dashboard')
 const pageLayout = computed(() => pageMode.value === 'inspection' ? 'list' : 'grid')
@@ -87,10 +118,10 @@ const dashboardTemplates = [
       { title: '离线主机', chartType: 'stat', unit: '台', span: 6, promql: 'sum(up{job=~"node.*|node-exporter"} == 0)' },
       { title: '平均 CPU 使用率', chartType: 'gauge', unit: '%', span: 6, promql: '100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)' },
       { title: '平均内存使用率', chartType: 'gauge', unit: '%', span: 6, promql: '(1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)) * 100' },
-      { title: '平均磁盘使用率', chartType: 'gauge', unit: '%', span: 6, promql: '100 - (sum(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"}) / sum(node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"}) * 100)' },
+      { title: '平均磁盘使用率', chartType: 'gauge', unit: '%', span: 6, promql: 'avg(100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))' },
       { title: 'CPU 使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100))' },
       { title: '内存使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100)' },
-      { title: '磁盘使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"} * 100))' },
+      { title: '磁盘使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))' },
       { title: '系统负载 Top', chartType: 'bar', unit: '', span: 12, promql: 'topk(10, node_load1)' },
       { title: '网络接收速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))' },
       { title: '网络发送速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))' },
@@ -118,24 +149,37 @@ const dashboardTemplates = [
       { title: 'Service', chartType: 'stat', unit: '个', span: 8, promql: 'count(kube_service_info)' },
       { title: 'Ingress', chartType: 'stat', unit: '个', span: 8, promql: 'count(kube_ingress_info)' },
       { title: 'PVC', chartType: 'stat', unit: '个', span: 8, promql: 'count(kube_persistentvolumeclaim_info)' },
-      { title: 'CPU Request 使用率', chartType: 'gauge', unit: '%', span: 12, promql: 'sum(kube_pod_container_resource_requests{resource="cpu"}) / sum(kube_node_status_allocatable{resource="cpu"}) * 100' },
-      { title: '内存 Request 使用率', chartType: 'gauge', unit: '%', span: 12, promql: 'sum(kube_pod_container_resource_requests{resource="memory"}) / sum(kube_node_status_allocatable{resource="memory"}) * 100' },
+      { title: 'CPU Request 使用率', chartType: 'line', unit: '%', span: 12, promql: 'sum(kube_pod_container_resource_requests{resource="cpu"}) / sum(kube_node_status_allocatable{resource="cpu"}) * 100' },
+      { title: '内存 Request 使用率', chartType: 'line', unit: '%', span: 12, promql: 'sum(kube_pod_container_resource_requests{resource="memory"}) / sum(kube_node_status_allocatable{resource="memory"}) * 100' },
       { title: '命名空间 Pod 分布', chartType: 'bar', unit: '个', span: 12, promql: 'sum by (namespace) (kube_pod_info)' },
       { title: '节点 Pod 分布', chartType: 'bar', unit: '个', span: 12, promql: 'sum by (node) (kube_pod_info)' },
       { title: '工作负载副本可用率', chartType: 'bar', unit: '%', span: 12, promql: 'sum by (deployment) (kube_deployment_status_replicas_available) / sum by (deployment) (kube_deployment_spec_replicas) * 100' },
       { title: '异常原因 Top', chartType: 'bar', unit: '个', span: 12, promql: 'sum by (reason) (kube_pod_container_status_waiting_reason)' },
-      { title: 'Pod 累计重启次数 Top', chartType: 'bar', unit: '次', span: 12, promql: 'topk(10, sum by (namespace, pod) (kube_pod_container_status_restarts_total{pod!=""}))' },
-      { title: 'Pod 最近 1 小时新增重启 Top', chartType: 'bar', unit: '次', span: 12, promql: 'topk(10, sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{pod!=""}[1h])))' },
-      { title: '容器 CPU 使用趋势', chartType: 'line', unit: 'Core', span: 12, promql: 'sum by (namespace) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))' },
-      { title: '容器内存使用趋势', chartType: 'line', unit: 'B', span: 12, promql: 'sum by (namespace) (container_memory_working_set_bytes{container!="",pod!=""})' },
-      { title: 'Pod 网络接收速率', chartType: 'line', unit: 'B/s', span: 12, promql: 'sum by (namespace) (rate(container_network_receive_bytes_total[5m]))' },
-      { title: 'Pod 网络发送速率', chartType: 'line', unit: 'B/s', span: 12, promql: 'sum by (namespace) (rate(container_network_transmit_bytes_total[5m]))' },
-      { title: 'Pod 明细', chartType: 'table', unit: '', span: 24, promql: 'kube_pod_info' }
+      ...k8sPodPanelDefinitions
     ]
   }
 ]
 
-const activePanels = computed(() => panels.value.filter((item) => item.status === 1))
+const activePanels = computed(() => panels.value.filter((item) => item.status === 1 && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title))))
+const headlinePanels = computed(() => activePanels.value
+  .filter((item) => ['stat', 'gauge'].includes(item.chartType))
+  .slice(0, isK8sDashboard.value ? 9 : 8))
+const headlinePanelIds = computed(() => new Set(headlinePanels.value.map((item) => item.id)))
+const visualPanels = computed(() => {
+  const items = panels.value.filter((item) => !headlinePanelIds.value.has(item.id) && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title)))
+  const memoryTrendIndex = items.findIndex((item) => item.title === '内存使用趋势')
+  const networkReceiveIndex = items.findIndex((item) => item.title === '网络接收速率 Top')
+  if (memoryTrendIndex >= 0 && networkReceiveIndex >= 0) {
+    ;[items[memoryTrendIndex], items[networkReceiveIndex]] = [items[networkReceiveIndex], items[memoryTrendIndex]]
+  }
+  return items
+})
+const headlineSupplement = computed(() => headlinePanels.value.length > 0 && headlinePanels.value.length < 8
+  ? {
+      value: activePanels.value.length,
+      healthy: activePanels.value.filter((item) => panelStateKey(item) === 'healthy').length,
+    }
+  : null)
 const inspectionSummary = computed(() => {
   const summary = { healthy: 0, warning: 0, danger: 0, disabled: 0 }
   panels.value.forEach((panel) => { summary[panelStateKey(panel)] += 1 })
@@ -155,6 +199,11 @@ const isK8sDashboard = computed(() => {
   const name = `${activeDashboard.value?.name || ''} ${activeDashboard.value?.description || ''}`.toLowerCase()
   return name.includes('k8s') || name.includes('kubernetes') || panels.value.some((panel) => String(panel.promql || '').includes('kube_'))
 })
+const missingK8sPodPanels = computed(() => {
+  if (!isK8sDashboard.value || !activeDashboard.value) return []
+  const existingTitles = new Set(panels.value.map((panel) => panel.title))
+  return k8sPodPanelDefinitions.filter((panel) => !existingTitles.has(panel.title))
+})
 const dashboardHealth = computed(() => {
   const errors = activePanels.value.filter((panel) => panelResults[panel.id]?.error).length
   if (!activeDashboard.value) return { text: '未选择', type: 'info' }
@@ -165,6 +214,18 @@ const defaultDatasourceId = computed(() => selectedDatasourceId.value || datasou
 const currentTemplate = computed(() => dashboardTemplates.find((item) => item.key === activeTemplate.value) || dashboardTemplates[0])
 const currentDatasourceName = computed(() => datasourceOptions.value.find((item) => item.id === selectedDatasourceId.value)?.name || '未选择数据源')
 const lastRefreshText = computed(() => lastRefreshAt.value.toLocaleTimeString('zh-CN', { hour12: false }))
+const rangeStartText = computed(() => new Date(Date.now() - timeRangeSeconds.value * 1000).toLocaleTimeString('zh-CN', { hour12: false }))
+const rangeEndText = computed(() => new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+
+function panelVisualType(panel) {
+  if (isK8sDashboard.value && k8sTrendPanelTitles.has(panel?.title)) return 'line'
+  return panel?.chartType
+}
+
+function panelDisplayTitle(panel) {
+  if (!isK8sDashboard.value) return panel?.title
+  return k8sPanelTitleMap[panel?.title] || panel?.title
+}
 
 function resetDashboardForm() {
   Object.assign(dashboardForm, {
@@ -201,7 +262,8 @@ function metricText(metric) {
 
 function metricName(metric) {
   if (!metric) return 'metric'
-  return metric.instance || metric.pod || metric.namespace || metric.job || metric.__name__ || 'metric'
+  if (metric.namespace && metric.pod) return `${metric.namespace}/${metric.pod}`
+  return metric.node || metric.instance || metric.pod || metric.namespace || metric.deployment || metric.reason || metric.job || metric.__name__ || 'metric'
 }
 
 function numberValue(row) {
@@ -212,6 +274,22 @@ function numberValue(row) {
 
 function formatByUnit(value, unit = '') {
   if (!Number.isFinite(value)) return '-'
+  if (unit === 'Core') {
+    return Math.abs(value) < 1
+      ? `${(value * 1000).toFixed(Math.abs(value * 1000) >= 10 ? 0 : 1)} m`
+      : `${value.toFixed(2).replace(/\.?0+$/, '')} Core`
+  }
+  if (unit === 'B') {
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+    let current = Math.abs(value)
+    let index = 0
+    while (current >= 1024 && index < units.length - 1) {
+      current /= 1024
+      index += 1
+    }
+    const signed = value < 0 ? -current : current
+    return `${signed.toFixed(current >= 100 ? 0 : current >= 10 ? 1 : 2)} ${units[index]}`
+  }
   if (unit === 'B/s') {
     const units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s']
     let current = Math.abs(value)
@@ -231,6 +309,30 @@ function formatByUnit(value, unit = '') {
 
 function panelRows(panel) {
   return panelResults[panel.id]?.result || []
+}
+
+function isPodDetailPanel(panel) {
+  return panel?.title === 'Pod 资源明细'
+}
+
+function isHostDetailPanel(panel) {
+  return !isK8sDashboard.value && panel?.title === '主机信息'
+}
+
+function podDetailRows(panel) {
+  return panelResults[panel.id]?.podResources || []
+}
+
+function podResourceNamespaces(panel) {
+  return panelResults[panel.id]?.namespaces || []
+}
+
+function hostDetailRows(panel) {
+  return panelResults[panel.id]?.hostResources || []
+}
+
+function formatPodResourceValue(value, unit) {
+  return Number.isFinite(Number(value)) ? formatByUnit(Number(value), unit) : '-'
 }
 
 function panelValue(panel) {
@@ -267,9 +369,18 @@ const lineColors = ['#3b82f6', '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444', '#06b
 
 function panelLineSeries(panel) {
   const series = panelRows(panel)
-    .map((row) => ({ name: metricName(row.metric), values: (row.values || []).map((item) => Number(item?.[1])).filter(Number.isFinite) }))
+    .map((row) => {
+      const samples = (row.values || [])
+        .map((item) => ({ timestamp: item?.[0], value: Number(item?.[1]) }))
+        .filter((item) => Number.isFinite(item.value))
+      return {
+        name: metricName(row.metric),
+        values: samples.map((item) => item.value),
+        timestamps: samples.map((item) => item.timestamp)
+      }
+    })
     .filter((item) => item.values.length)
-    .slice(0, 8)
+    .slice(0, isK8sDashboard.value ? 10 : 8)
   const allValues = series.flatMap((item) => item.values)
   if (!allValues.length) return []
   const min = Math.min(...allValues)
@@ -303,27 +414,130 @@ function panelChartLabel(chartType) {
   return ({ stat: '指标', gauge: '仪表盘', bar: '排行', line: '趋势', table: '明细' })[chartType] || chartType
 }
 
+function panelTone(panel) {
+  const title = String(panel?.title || '').toLowerCase()
+  if (title.includes('离线') || title.includes('异常')) return 'danger'
+  if (title.includes('在线') || title.includes('正常')) return 'success'
+  if (title.includes('磁盘') || title.includes('负载')) return 'warning'
+  if (title.includes('内存')) return 'purple'
+  if (title.includes('网络') || title.includes('连接')) return 'cyan'
+  return 'primary'
+}
+
+function panelIcon(panel) {
+  const title = String(panel?.title || '').toLowerCase()
+  if (title.includes('cpu')) return Cpu
+  if (title.includes('内存')) return Coin
+  if (title.includes('磁盘')) return DataLine
+  if (title.includes('网络') || title.includes('连接')) return Connection
+  if (title.includes('负载')) return TrendCharts
+  if (title.includes('离线') || title.includes('异常')) return Warning
+  return Monitor
+}
+
+function selectTimeRange(seconds) {
+  timeRangeSeconds.value = seconds
+  refreshAllPanels()
+}
+
+function handlePodNamespaceChange(panel) {
+  panelResultCache.delete(panelCacheKey(panel))
+  refreshPanel(panel)
+}
+
+function resetDashboardFilters() {
+  timeRangeSeconds.value = 3600
+  autoRefreshSeconds.value = 30
+  restartAutoRefresh()
+  refreshAllPanels()
+}
+
+function handleDashboardManageCommand(command) {
+  if (command === 'edit') return openEditDashboard()
+  if (command === 'delete') return handleDeleteDashboard()
+}
+
 function barRows(panel) {
-  const rows = panelRows(panel)
-    .map((row) => ({ name: metricName(row.metric), value: numberValue(row), displayValue: formatByUnit(numberValue(row), panel.unit) }))
+  const rawRows = panelRows(panel)
+  const rootFilesystemRows = panel.title === '磁盘使用率 Top'
+    ? rawRows.filter((row) => row.metric?.mountpoint === '/')
+    : rawRows
+  const sourceRows = rootFilesystemRows.length ? rootFilesystemRows : rawRows
+  const rowsByResource = new Map()
+  sourceRows.forEach((row) => {
+    const name = metricName(row.metric)
+    const value = numberValue(row)
+    const previous = rowsByResource.get(name)
+    if (!previous || value > previous.value) {
+      rowsByResource.set(name, { name, value, displayValue: formatByUnit(value, panel.unit) })
+    }
+  })
+  const rows = Array.from(rowsByResource.values())
     .sort((a, b) => b.value - a.value)
-    .slice(0, 8)
+    .slice(0, isK8sDashboard.value ? 10 : 8)
   const max = Math.max(...rows.map((item) => item.value), 1)
-  return rows.map((item) => ({ ...item, percent: Math.max(4, (item.value / max) * 100) }))
+  return rows.map((item, index) => ({
+    ...item,
+    color: lineColors[index % lineColors.length],
+    percent: item.value === 0 ? 0 : Math.max(4, (item.value / max) * 100),
+  }))
+}
+
+function trendSample(series, sampleIndex, sampleCount) {
+  if (!series?.values?.length) return null
+  const index = series.values.length === 1
+    ? 0
+    : Math.round((sampleIndex / Math.max(sampleCount - 1, 1)) * (series.values.length - 1))
+  return {
+    value: series.values[index],
+    timestamp: series.timestamps?.[index]
+  }
+}
+
+function trendTooltipTime(timestamp) {
+  const numeric = Number(timestamp)
+  if (!Number.isFinite(numeric)) return rangeEndText.value
+  const milliseconds = numeric > 100000000000 ? numeric : numeric * 1000
+  return new Date(milliseconds).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+function handleTrendPointer(panel, event) {
+  const series = panelLineSeries(panel)
+  const sampleCount = Math.max(...series.map((item) => item.values.length), 0)
+  if (!sampleCount) return
+
+  const rect = event.currentTarget.getBoundingClientRect()
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+  const sampleIndex = Math.round(ratio * Math.max(sampleCount - 1, 0))
+  const firstSample = trendSample(series[0], sampleIndex, sampleCount)
+
+  trendTooltips[panel.id] = {
+    x: `${ratio * 100}%`,
+    left: `${Math.min(76, Math.max(24, ratio * 100))}%`,
+    time: trendTooltipTime(firstSample?.timestamp),
+    items: series.map((item) => {
+      const sample = trendSample(item, sampleIndex, sampleCount)
+      return {
+        name: item.name,
+        color: item.color,
+        value: Number.isFinite(sample?.value) ? formatByUnit(sample.value, panel.unit) : '-'
+      }
+    })
+  }
+}
+
+function hideTrendTooltip(panel) {
+  delete trendTooltips[panel.id]
+}
+
+function panelVisibleSeriesCount(panel) {
+  return panelVisualType(panel) === 'bar' ? barRows(panel).length : panelResultCount(panel)
 }
 
 function gaugePercent(panel) {
 	const value = numberValue(panelRows(panel)[0])
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.min(100, value))
-}
-
-function panelSpan(panel) {
-  const span = Number(panel.span || 12)
-  if (isK8sDashboard.value) {
-    return Math.max(1, Math.min(6, Math.round(span / 4)))
-  }
-  return Math.max(1, Math.min(4, Math.round(span / 6)))
 }
 
 function panelState(panel) {
@@ -520,6 +734,39 @@ async function createTemplatePanels(dashboardId) {
   })))
 }
 
+async function syncK8sPodPanels() {
+  if (!activeDashboard.value || !missingK8sPodPanels.value.length) return
+  const datasourceId = selectedDatasourceId.value || defaultDatasourceId.value
+  if (!datasourceId) {
+    ElMessage.warning('请先选择 Prometheus 或 VictoriaMetrics 数据源')
+    return
+  }
+  syncingK8sPodPanels.value = true
+  try {
+    const missingPanels = [...missingK8sPodPanels.value]
+    for (const [index, panel] of missingPanels.entries()) {
+      await saveMonitorDashboardPanel({
+        dashboardId: activeDashboard.value.id,
+        datasourceId,
+        title: panel.title,
+        promql: panel.promql,
+        unit: panel.unit,
+        chartType: panel.chartType,
+        span: panel.span,
+        sort: panels.value.length + index + 1,
+        status: 1,
+        description: '与容器管理 Pod 监控保持一致'
+      })
+    }
+    ElMessage.success(`已补全 ${missingPanels.length} 个 Pod 监控面板`)
+    const dashboardId = activeDashboard.value.id
+    await loadBase()
+    await loadDashboard(dashboardId)
+  } finally {
+    syncingK8sPodPanels.value = false
+  }
+}
+
 async function submitDashboard() {
   if (!dashboardForm.name.trim()) {
     ElMessage.warning(`请输入${pageTitle.value}名称`)
@@ -615,12 +862,13 @@ async function copyPromql(promql) {
   }
 }
 
-function panelQueryPayload(id) {
+function panelQueryPayload(panel) {
 	const endAt = Math.floor(Date.now() / 1000)
 	const startAt = endAt - timeRangeSeconds.value
 	return {
-		id,
+		id: panel.id,
 		datasourceId: selectedDatasourceId.value,
+		namespace: isPodDetailPanel(panel) ? podResourceNamespace.value : '',
 		startAt,
 		endAt,
 		stepSeconds: Math.max(15, Math.ceil(timeRangeSeconds.value / 120))
@@ -628,7 +876,7 @@ function panelQueryPayload(id) {
 }
 
 function panelCacheKey(panel) {
-  return `${selectedDatasourceId.value}:${timeRangeSeconds.value}:${panel.id}`
+  return `${selectedDatasourceId.value}:${timeRangeSeconds.value}:${panel.id}:${isPodDetailPanel(panel) ? podResourceNamespace.value : ''}`
 }
 
 async function loadPanel(panel, { force = true, version = panelRefreshVersion } = {}) {
@@ -641,7 +889,7 @@ async function loadPanel(panel, { force = true, version = panelRefreshVersion } 
 
   panelPending[panel.id] = true
   try {
-    const data = await queryMonitorDashboardPanel(panelQueryPayload(panel.id))
+    const data = await queryMonitorDashboardPanel(panelQueryPayload(panel))
     if (version !== panelRefreshVersion) return
     panelResults[panel.id] = data
     panelResultCache.set(key, { data, expiresAt: Date.now() + PANEL_CACHE_TTL })
@@ -743,12 +991,22 @@ onBeforeUnmount(() => {
 <template>
   <div class="dashboard-page">
     <section class="dashboard-workspace">
-      <div class="workspace-title">
-        <span class="brand-mark">M</span>
+      <div class="workspace-title dashboard-page-title">
+        <span class="brand-mark"><el-icon><Monitor /></el-icon></span>
         <div>
           <strong>监控大屏</strong>
           <p>{{ pageDescription }}</p>
         </div>
+      </div>
+
+      <div class="workspace-status">
+        <span><i class="health-dot"></i>数据已同步</span>
+        <small>{{ lastRefreshText }}</small>
+        <el-button :icon="Refresh" :loading="loading" @click="refreshAllPanels">刷新</el-button>
+        <el-dropdown v-if="activeDashboard" trigger="click" @command="handleDashboardManageCommand">
+          <el-button :icon="Setting" aria-label="大屏设置" />
+          <template #dropdown><el-dropdown-menu><el-dropdown-item command="edit">编辑{{ pageTitle }}</el-dropdown-item><el-dropdown-item command="delete" divided>删除{{ pageTitle }}</el-dropdown-item></el-dropdown-menu></template>
+        </el-dropdown>
       </div>
 
       <div class="dashboard-switcher">
@@ -761,58 +1019,58 @@ onBeforeUnmount(() => {
             :class="{ active: item.id === activeDashboardId }"
             @click="loadDashboard(item.id)"
           >
+            <span class="dashboard-item-icon"><el-icon><DataLine /></el-icon></span>
             <strong>{{ item.name }}</strong>
-            <span>{{ item.panelCount || 0 }} 个面板</span>
+            <span class="dashboard-item-meta">{{ item.panelCount || 0 }} 个面板</span>
+            <span class="dashboard-item-arrow">›</span>
           </button>
           <div v-if="!visibleDashboards.length" class="empty-switcher">暂无{{ pageTitle }}</div>
           </div>
         </el-scrollbar>
+        <el-button class="create-screen-btn" type="primary" plain :icon="Plus" @click="openCreateDashboard">创建{{ pageTitle }}</el-button>
       </div>
-
-      <el-button class="create-screen-btn" type="primary" @click="openCreateDashboard">创建{{ pageTitle }}</el-button>
     </section>
 
-    <main class="dashboard-main observability-canvas" v-loading="loading">
-      <section class="dashboard-hero">
-        <div>
-          <div class="eyebrow">Monitoring Dashboard</div>
-          <h2>{{ activeDashboard?.name || pageTitle }}</h2>
-          <p>{{ activeDashboard?.description || pageDescription }}</p>
-          <div v-if="activeDashboard" class="layout-hint">
-            {{ isListLayout ? '当前布局：列表巡检，适合日常排障和逐项核查。' : '当前布局：网格大屏，适合投屏展示和整体观测。' }}
+    <main class="dashboard-main observability-canvas" :class="{ 'is-k8s-dashboard': isK8sDashboard }" v-loading="loading">
+      <section class="dashboard-control-card">
+        <div class="dashboard-hero">
+          <div>
+            <div class="eyebrow">{{ isListLayout ? 'INSPECTION DASHBOARD' : 'MONITORING DASHBOARD' }}</div>
+            <h2>{{ activeDashboard?.name || pageTitle }}</h2>
+            <p>{{ activeDashboard?.description || pageDescription }}</p>
           </div>
-          <div v-if="activeDashboard" class="dashboard-context">
-            <span><i class="health-dot"></i>{{ currentDatasourceName }}</span>
-            <span>最近更新 {{ lastRefreshText }}</span>
-            <span>{{ activePanels.length }} 个启用面板</span>
+          <div class="dashboard-primary-actions">
+            <el-button v-if="!isListLayout" :icon="FullScreen" @click="toggleFullscreen" :disabled="!activeDashboard">{{ isFullscreen ? '退出全屏' : '大屏展示' }}</el-button>
+            <el-button v-else @click="exportInspectionReportPdf" :disabled="!activeDashboard">导出巡检报告 PDF</el-button>
+            <el-button v-if="!isFullscreen && missingK8sPodPanels.length" type="warning" plain :loading="syncingK8sPodPanels" @click="syncK8sPodPanels">补全 Pod 监控（{{ missingK8sPodPanels.length }}）</el-button>
+            <el-button v-if="!isFullscreen" type="primary" :icon="Plus" @click="openCreatePanel" :disabled="!activeDashboard">新增面板</el-button>
           </div>
         </div>
-		<div class="hero-actions">
-          <el-select v-model="selectedDatasourceId" placeholder="选择数据源" style="width: 180px" @change="handleDatasourceChange">
-            <el-option v-for="item in datasourceOptions" :key="item.id" :label="item.name" :value="item.id" />
-		  </el-select>
-		  <el-select v-model="timeRangeSeconds" style="width: 130px" @change="refreshAllPanels">
-			<el-option label="最近 15 分钟" :value="900" />
-			<el-option label="最近 1 小时" :value="3600" />
-			<el-option label="最近 6 小时" :value="21600" />
-			<el-option label="最近 24 小时" :value="86400" />
-		  </el-select>
-          <el-select v-model="autoRefreshSeconds" style="width: 130px" @change="restartAutoRefresh">
-            <el-option label="关闭刷新" :value="0" />
-            <el-option label="10 秒刷新" :value="10" />
-            <el-option label="30 秒刷新" :value="30" />
-            <el-option label="60 秒刷新" :value="60" />
-          </el-select>
-          <el-button @click="refreshAllPanels" :disabled="!activePanels.length">刷新全部</el-button>
-          <el-button v-if="!isListLayout" @click="toggleFullscreen" :disabled="!activeDashboard">{{ isFullscreen ? '退出全屏' : '大屏展示' }}</el-button>
-          <el-button v-else @click="exportInspectionReportPdf" :disabled="!activeDashboard">导出巡检报告 PDF</el-button>
-          <el-button v-if="!isFullscreen" @click="openEditDashboard" :disabled="!activeDashboard">编辑{{ pageTitle }}</el-button>
-          <el-button v-if="!isFullscreen" type="danger" plain @click="handleDeleteDashboard" :disabled="!activeDashboard">删除{{ pageTitle }}</el-button>
-          <el-button v-if="!isFullscreen" type="primary" @click="openCreatePanel">新增面板</el-button>
+
+        <div class="dashboard-filter-bar">
+          <div class="dashboard-filter-main">
+            <label><span>数据源</span><el-select v-model="selectedDatasourceId" placeholder="选择数据源" @change="handleDatasourceChange"><el-option v-for="item in datasourceOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
+            <label><span>时间范围</span><el-select v-model="timeRangeSeconds" @change="refreshAllPanels"><el-option label="最近 15 分钟" :value="900" /><el-option label="最近 1 小时" :value="3600" /><el-option label="最近 6 小时" :value="21600" /><el-option label="最近 24 小时" :value="86400" /></el-select></label>
+            <label><span>自动刷新</span><el-select v-model="autoRefreshSeconds" @change="restartAutoRefresh"><el-option label="关闭刷新" :value="0" /><el-option label="10 秒刷新" :value="10" /><el-option label="30 秒刷新" :value="30" /><el-option label="60 秒刷新" :value="60" /></el-select></label>
+          </div>
+          <div class="dashboard-range-presets"><el-button v-for="item in [{ label: '15分钟', value: 900 }, { label: '1小时', value: 3600 }, { label: '6小时', value: 21600 }, { label: '24小时', value: 86400 }]" :key="item.value" :type="timeRangeSeconds === item.value ? 'primary' : 'default'" @click="selectTimeRange(item.value)">{{ item.label }}</el-button><el-button link @click="resetDashboardFilters">重置筛选</el-button></div>
         </div>
       </section>
 
-      <section class="dashboard-summary">
+      <section v-if="headlinePanels.length" class="dashboard-kpi-grid">
+        <article v-for="panel in headlinePanels" :key="panel.id" :class="['dashboard-kpi-card', `tone-${panelTone(panel)}`]" v-loading="panelPending[panel.id]">
+          <div class="dashboard-kpi-head"><span><el-icon><component :is="panelIcon(panel)" /></el-icon>{{ panel.title }}</span><el-dropdown v-if="!isFullscreen" trigger="click"><el-button link :icon="MoreFilled" aria-label="面板操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item @click="refreshPanel(panel)">刷新面板</el-dropdown-item><el-dropdown-item @click="openEditPanel(panel)">编辑面板</el-dropdown-item><el-dropdown-item divided @click="handleDeletePanel(panel)">删除面板</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div>
+          <strong>{{ panelDisplayValue(panel) }}</strong>
+          <div class="dashboard-kpi-meta"><span :class="`is-${panelStateType(panel)}`"><i></i>{{ panelState(panel) }}</span><small>{{ panelResultCount(panel) }} 条序列</small></div>
+        </article>
+        <article v-if="headlineSupplement" class="dashboard-kpi-card tone-cyan dashboard-kpi-card--supplement">
+          <div class="dashboard-kpi-head"><span><el-icon><DataLine /></el-icon>监控面板</span></div>
+          <strong>{{ headlineSupplement.value }}</strong>
+          <div class="dashboard-kpi-meta"><span class="is-success"><i></i>持续采集</span><small>{{ headlineSupplement.healthy }} 个正常</small></div>
+        </article>
+      </section>
+
+      <section v-else class="dashboard-summary">
         <div class="summary-card">
           <span>面板数量</span>
           <strong>{{ panels.length }}</strong>
@@ -902,11 +1160,9 @@ onBeforeUnmount(() => {
 
       <section v-else class="dashboard-grid-shell">
         <div class="dashboard-grid-toolbar">
-          <div class="dashboard-grid-status">
-            <span class="status-chip healthy"><i></i>正常 {{ inspectionSummary.healthy }}</span>
-            <span class="status-chip warning"><i></i>待确认 {{ inspectionSummary.warning }}</span>
-            <span class="status-chip danger"><i></i>异常 {{ inspectionSummary.danger }}</span>
-            <span class="status-chip muted"><i></i>已停用 {{ inspectionSummary.disabled }}</span>
+          <div class="dashboard-grid-heading">
+            <strong>{{ isK8sDashboard ? 'K8s 资源与 Pod 监控' : '监控图表' }}</strong>
+            <div class="dashboard-grid-status"><span class="status-chip healthy"><i></i>正常 {{ inspectionSummary.healthy }}</span><span class="status-chip warning"><i></i>待确认 {{ inspectionSummary.warning }}</span><span class="status-chip danger"><i></i>异常 {{ inspectionSummary.danger }}</span><span class="status-chip muted"><i></i>已停用 {{ inspectionSummary.disabled }}</span></div>
           </div>
           <div class="dashboard-grid-actions">
             <span>最近刷新 {{ lastRefreshText }}</span>
@@ -915,11 +1171,10 @@ onBeforeUnmount(() => {
         </div>
         <div class="panel-grid" :class="{ 'k8s-panel-grid': isK8sDashboard }">
         <div
-          v-for="panel in panels"
+          v-for="panel in visualPanels"
           :key="panel.id"
           class="metric-panel chart-panel"
-           :class="[`panel-${panel.chartType}`, { disabled: panel.status !== 1 }]"
-           :style="{ gridColumn: `span ${panelSpan(panel)}` }"
+           :class="[`panel-${panelVisualType(panel)}`, { disabled: panel.status !== 1, 'k8s-pod-panel': isK8sDashboard && panel.title.startsWith('Pod '), 'k8s-wide-panel': isK8sDashboard && panel.title === 'Pod 资源明细' }]"
            v-loading="panelPending[panel.id]"
            :element-loading-background="isFullscreen ? 'rgba(8, 15, 28, 0.82)' : 'rgba(255, 255, 255, 0.72)'"
         >
@@ -928,11 +1183,12 @@ onBeforeUnmount(() => {
             <div class="panel-identity">
               <div class="panel-title-row">
                 <i class="panel-signal"></i>
-                <strong>{{ panel.title }}</strong>
+                <strong>{{ panelDisplayTitle(panel) }}</strong>
               </div>
-              <span>{{ panelChartLabel(panel.chartType) }} · {{ panelResultCount(panel) }} 条序列 · {{ currentDatasourceName }}</span>
+              <span>{{ panelChartLabel(panelVisualType(panel)) }} · {{ panelVisibleSeriesCount(panel) }} 条序列 · {{ currentDatasourceName }}</span>
             </div>
             <div class="panel-actions">
+              <span v-if="isK8sDashboard && !['table', 'stat'].includes(panelVisualType(panel)) && panelRows(panel).length" class="k8s-value-badge">{{ panelDisplayValue(panel) }}</span>
               <span class="panel-state" :class="`is-${panelStateType(panel)}`"><i></i>{{ panelState(panel) }}</span>
               <el-button link type="primary" @click="refreshPanel(panel)">刷新</el-button>
               <el-button link type="primary" @click="openEditPanel(panel)">编辑</el-button>
@@ -942,29 +1198,177 @@ onBeforeUnmount(() => {
 
           <div v-if="panelResults[panel.id]?.error" class="panel-error">{{ panelResults[panel.id].error }}</div>
 
-          <template v-else-if="panel.chartType === 'table'">
-            <el-table :data="panelRows(panel)" size="small" :height="isFullscreen ? 126 : 250">
-              <el-table-column label="Metric" min-width="240" show-overflow-tooltip>
-                <template #default="{ row }">{{ metricText(row.metric) }}</template>
-              </el-table-column>
-              <el-table-column label="Value" width="130">
-                <template #default="{ row }">{{ row.value?.[1] ?? '-' }}</template>
-              </el-table-column>
+          <template v-else-if="panelVisualType(panel) === 'table'">
+            <template v-if="isPodDetailPanel(panel)">
+              <div class="pod-resource-toolbar">
+                <div class="pod-resource-filter"><strong>命名空间</strong><el-select v-model="podResourceNamespace" clearable placeholder="全部命名空间" @change="handlePodNamespaceChange(panel)">
+                    <el-option label="全部命名空间" value="" />
+                    <el-option v-for="namespace in podResourceNamespaces(panel)" :key="namespace" :label="namespace" :value="namespace" />
+                  </el-select><span>默认展示全部命名空间，按内存使用量降序取前 10 个 Pod</span></div>
+              </div>
+              <el-table class="pod-resource-table" :data="podDetailRows(panel)" size="small" :height="isFullscreen ? 180 : 450" :fit="true" default-sort="{ prop: 'memoryBytes', order: 'descending' }">
+                <el-table-column prop="namespace" label="命名空间" width="130" align="center" show-overflow-tooltip />
+                <el-table-column prop="pod" label="Pod" width="200" align="center" show-overflow-tooltip />
+                <el-table-column prop="node" label="节点" width="200" align="center" show-overflow-tooltip />
+                <el-table-column prop="cpuCores" label="CPU 使用" width="120"  align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.cpuCores, 'Core') }}</template></el-table-column>
+                <el-table-column prop="cpuUsagePercent" label="CPU 使用率" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.cpuUsagePercent, '%') }}</template></el-table-column>
+                <el-table-column prop="cpuRequest" label="CPU Request" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.cpuRequest, 'Core') }}</template></el-table-column>
+                <el-table-column prop="cpuLimit" label="CPU Limit" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.cpuLimit, 'Core') }}</template></el-table-column>
+                <el-table-column prop="memoryBytes" label="内存使用" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.memoryBytes, 'B') }}</template></el-table-column>
+                <el-table-column prop="memoryUsagePercent" label="内存使用率" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.memoryUsagePercent, '%') }}</template></el-table-column>
+                <el-table-column prop="memoryRequest" label="内存 Request" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.memoryRequest, 'B') }}</template></el-table-column>
+                <el-table-column prop="memoryLimit" label="内存 Limit" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.memoryLimit, 'B') }}</template></el-table-column>
+                <el-table-column prop="networkReceive" label="网络流入" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.networkReceive, 'B/s') }}</template></el-table-column>
+                <el-table-column prop="networkTransmit" label="网络流出" width="120" align="center" sortable><template #default="{ row }">{{ formatPodResourceValue(row.networkTransmit, 'B/s') }}</template></el-table-column>
+              </el-table>
+            </template>
+<template v-else-if="isHostDetailPanel(panel)">
+  <div class="host-resource-toolbar">
+    <strong>主机资源明细</strong>
+    <span>可按 CPU、内存、磁盘、负载和网络指标排序</span>
+  </div>
+
+  <el-table
+    class="host-resource-table"
+    :data="hostDetailRows(panel)"
+    size="small"
+    width="100%"
+    :height="isFullscreen ? 180 : 300"
+    :default-sort="{ prop: 'memoryUsagePercent', order: 'descending' }"
+  >
+    <el-table-column
+      prop="instance"
+      label="主机"
+      min-width="180"
+      align="center"
+      header-align="center"
+      show-overflow-tooltip
+    />
+
+    <el-table-column
+      prop="os"
+      label="操作系统"
+      min-width="180"
+      align="center"
+      header-align="center"
+      show-overflow-tooltip
+    />
+
+    <el-table-column
+      prop="cpuUsagePercent"
+      label="CPU 使用率"
+      min-width="110"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.cpuUsagePercent, '%') }}
+      </template>
+    </el-table-column>
+
+    <el-table-column
+      prop="memoryUsagePercent"
+      label="内存使用率"
+      min-width="110"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.memoryUsagePercent, '%') }}
+      </template>
+    </el-table-column>
+
+    <el-table-column
+      prop="diskUsagePercent"
+      label="磁盘使用率"
+      min-width="110"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.diskUsagePercent, '%') }}
+      </template>
+    </el-table-column>
+
+    <el-table-column
+      prop="load5"
+      label="5 分钟负载"
+      min-width="105"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.load5, '') }}
+      </template>
+    </el-table-column>
+
+    <el-table-column
+      prop="networkReceive"
+      label="网络流入"
+      min-width="110"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.networkReceive, 'B/s') }}
+      </template>
+    </el-table-column>
+
+    <el-table-column
+      prop="networkTransmit"
+      label="网络流出"
+      min-width="110"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.networkTransmit, 'B/s') }}
+      </template>
+    </el-table-column>
+
+    <el-table-column
+      prop="uptimeDays"
+      label="运行时长"
+      min-width="100"
+      align="center"
+      header-align="center"
+      sortable
+    >
+      <template #default="{ row }">
+        {{ formatPodResourceValue(row.uptimeDays, '天') }}
+      </template>
+    </el-table-column>
+  </el-table>
+</template>
+            <el-table v-else :data="panelRows(panel)" size="small" :height="isFullscreen ? 126 : 250">
+              <el-table-column label="Metric" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ metricText(row.metric) }}</template></el-table-column>
+              <el-table-column label="Value" width="130"><template #default="{ row }">{{ row.value?.[1] ?? '-' }}</template></el-table-column>
             </el-table>
           </template>
 
-          <template v-else-if="panel.chartType === 'bar'">
-            <div class="bar-chart">
+          <template v-else-if="panelVisualType(panel) === 'bar'">
+            <div v-if="barRows(panel).length" class="bar-chart">
               <div v-for="item in barRows(panel)" :key="item.name" class="bar-row">
-                <span>{{ item.name }}</span>
-                <div><i :style="{ width: `${item.percent}%` }"></i></div>
+                <span :title="item.name">{{ item.name }}</span>
+                <div><i :style="{ width: `${item.percent}%`, background: isK8sDashboard ? item.color : undefined }"></i></div>
                 <b>{{ item.displayValue }}</b>
               </div>
+            </div>
+            <div v-else class="chart-empty-state">
+              <el-icon><CircleCheck /></el-icon>
+              <strong>{{ panel.title === '异常原因 Top' ? '当前时间范围内无异常' : '暂无可展示的序列' }}</strong>
+              <span>{{ panel.title === '异常原因 Top' ? '未发现等待或失败的 Pod' : '调整时间范围或检查数据源后重试' }}</span>
             </div>
             <div class="panel-query" :title="panel.promql">{{ panel.promql }}</div>
           </template>
 
-          <template v-else-if="panel.chartType === 'gauge'">
+          <template v-else-if="panelVisualType(panel) === 'gauge'">
             <div class="gauge-wrap">
               <div class="gauge" :style="{ '--value': `${gaugePercent(panel) * 3.6}deg` }">
                 <div>
@@ -976,7 +1380,7 @@ onBeforeUnmount(() => {
             <div class="panel-query" :title="panel.promql">{{ panel.promql }}</div>
           </template>
 
-          <template v-else-if="panel.chartType === 'line'">
+          <template v-else-if="panelVisualType(panel) === 'line'">
             <div class="trend-summary">
               <div class="trend-current">
                 <span>当前值</span>
@@ -988,7 +1392,12 @@ onBeforeUnmount(() => {
                 <span>最大 <b>{{ panelStats(panel).max }}</b></span>
               </div>
             </div>
-            <div class="trend-chart">
+            <div
+              v-if="panelLineSeries(panel).length"
+              class="trend-chart"
+              @mousemove="handleTrendPointer(panel, $event)"
+              @mouseleave="hideTrendTooltip(panel)"
+            >
               <svg class="sparkline" viewBox="0 0 100 52" preserveAspectRatio="none">
                 <defs>
                   <linearGradient :id="`trend-area-${panel.id}`" x1="0" y1="0" x2="0" y2="1">
@@ -1006,13 +1415,35 @@ onBeforeUnmount(() => {
                   :style="{ stroke: series.color }"
                 />
               </svg>
-              <div class="trend-axis"><span>起始</span><span>当前</span></div>
+              <div
+                v-if="trendTooltips[panel.id]"
+                class="trend-crosshair"
+                :style="{ left: trendTooltips[panel.id].x }"
+              ></div>
+              <div
+                v-if="trendTooltips[panel.id]"
+                class="trend-tooltip"
+                :style="{ left: trendTooltips[panel.id].left }"
+              >
+                <strong>{{ trendTooltips[panel.id].time }}</strong>
+                <div v-for="item in trendTooltips[panel.id].items" :key="item.name" class="trend-tooltip-item">
+                  <i :style="{ background: item.color }"></i>
+                  <span :title="item.name">{{ item.name }}</span>
+                  <b>{{ item.value }}</b>
+                </div>
+              </div>
+              <div class="trend-axis"><span>{{ isK8sDashboard ? rangeStartText : '起始' }}</span><span>{{ isK8sDashboard ? rangeEndText : '当前' }}</span></div>
             </div>
             <div v-if="panelLineSeries(panel).length > 1" class="trend-legend">
-              <span v-for="(series, index) in panelLineSeries(panel).slice(0, 4)" :key="`${series.name}-legend-${index}`">
+              <span v-for="(series, index) in panelLineSeries(panel).slice(0, 4)" :key="`${series.name}-legend-${index}`" :title="series.name">
                 <i :style="{ background: series.color }"></i>{{ series.name }}
               </span>
               <span v-if="panelLineSeries(panel).length > 4">+{{ panelLineSeries(panel).length - 4 }}</span>
+            </div>
+            <div v-if="!panelLineSeries(panel).length" class="chart-empty-state">
+              <el-icon><CircleCheck /></el-icon>
+              <strong>当前时间范围内暂无趋势</strong>
+              <span>调整时间范围或检查数据源后重试</span>
             </div>
             <div class="panel-query" :title="panel.promql">{{ panel.promql }}</div>
           </template>
@@ -2116,8 +2547,15 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 .chart-panel .bar-row {
-  grid-template-columns: minmax(90px, 132px) 1fr 76px;
+  grid-template-columns: minmax(170px, 200px) minmax(60px, 1fr) 76px;
   font-size: 12px;
+}
+.chart-panel .bar-row span {
+  overflow: visible;
+  line-height: 1.25;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
 }
 .chart-panel .bar-row div {
   height: 7px;
@@ -2183,6 +2621,7 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 .trend-chart {
+  position: relative;
   padding: 5px 14px 0;
 }
 .trend-chart .sparkline {
@@ -2192,6 +2631,63 @@ onBeforeUnmount(() => {
 .trend-chart .sparkline polyline {
   stroke-width: 1.8;
   vector-effect: non-scaling-stroke;
+}
+.trend-crosshair {
+  position: absolute;
+  z-index: 2;
+  top: 7px;
+  bottom: 24px;
+  width: 0;
+  border-left: 1px dashed #7a9dff;
+  pointer-events: none;
+}
+.trend-tooltip {
+  position: absolute;
+  z-index: 3;
+  top: 9px;
+  min-width: 210px;
+  max-width: 290px;
+  padding: 9px 12px;
+  transform: translateX(-50%);
+  border: 1px solid #bfd0f5;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 10px 24px rgba(42, 77, 143, 0.16);
+  color: #405273;
+  pointer-events: none;
+}
+.trend-tooltip > strong {
+  display: block;
+  padding-bottom: 6px;
+  margin-bottom: 5px;
+  border-bottom: 1px solid #e6edf8;
+  color: #173767;
+  font-size: 13px;
+  line-height: 1;
+}
+.trend-tooltip-item {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 20px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.trend-tooltip-item i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.trend-tooltip-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trend-tooltip-item b {
+  color: #173767;
+  font-weight: 700;
+  white-space: nowrap;
 }
 .chart-grid-line {
   stroke: #e7ecf3;
@@ -2470,7 +2966,7 @@ onBeforeUnmount(() => {
   min-height: 164px;
 }
 .observability-canvas:fullscreen .chart-panel.panel-table {
-  grid-column: span 3 !important;
+  grid-column: 1 / -1 !important;
   min-height: 174px;
 }
 .observability-canvas:fullscreen .chart-panel .panel-head {
@@ -2586,5 +3082,608 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
   .inspection-command-actions { justify-content: flex-start; }
+}
+
+/* Unified light monitoring console, aligned with the Kubernetes monitoring view. */
+.dashboard-page {
+  gap: 12px;
+  background: #f3f6fb;
+}
+.dashboard-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 20px;
+  padding: 14px 16px 12px;
+  border: 1px solid #dce5f1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(26, 54, 93, 0.05);
+}
+.dashboard-page-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.dashboard-page-title .brand-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+  background: #f2f7ff;
+  color: #3478f6;
+  font-size: 18px;
+  box-shadow: none;
+}
+.dashboard-page-title strong {
+  font-size: 17px;
+}
+.dashboard-page-title p {
+  margin-top: 2px;
+  font-size: 11px;
+}
+.workspace-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+.workspace-status > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #327a66;
+  font-weight: 600;
+}
+.workspace-status small {
+  color: #97a3b5;
+}
+.workspace-status .health-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 3px rgba(38, 185, 139, 0.12);
+}
+.workspace-status .el-button {
+  margin-left: 0;
+}
+.dashboard-switcher {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 3px;
+  border: 0;
+  border-radius: 8px;
+  background: #f5f8fc;
+}
+.dashboard-switcher .el-scrollbar {
+  min-width: 0;
+  flex: 1;
+}
+.dashboard-list {
+  min-height: 56px;
+  gap: 6px;
+}
+.dashboard-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(80px, 1fr) auto 14px;
+  align-items: center;
+  gap: 8px;
+  min-width: 210px;
+  flex: 1 0 240px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+}
+.dashboard-item-icon {
+  display: grid !important;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0 !important;
+  border-radius: 7px;
+  background: #edf3ff;
+  color: #4a7ff5 !important;
+  font-size: 15px !important;
+}
+.dashboard-item strong {
+  color: #51627d;
+  font-size: 13px;
+}
+.dashboard-item-meta {
+  margin: 0 !important;
+  color: #94a1b4 !important;
+  font-size: 11px !important;
+  white-space: nowrap;
+}
+.dashboard-item-arrow {
+  margin: 0 !important;
+  color: #b3bfd0 !important;
+  font-size: 18px !important;
+}
+.dashboard-item.active,
+.dashboard-item:hover {
+  border-color: #bfd2fb;
+  background: #fff;
+  box-shadow: 0 2px 7px rgba(44, 88, 170, 0.08);
+}
+.dashboard-item.active::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  bottom: -4px;
+  left: 10px;
+  height: 2px;
+  border-radius: 2px;
+  background: #4d7df4;
+}
+.dashboard-item.active strong {
+  color: #3168e8;
+}
+.dashboard-switcher .create-screen-btn {
+  width: auto;
+  min-width: 132px;
+  margin: 7px;
+}
+.observability-canvas {
+  padding: 12px;
+  border-color: #dce5f1;
+  border-radius: 10px;
+  background: #eef3f9;
+}
+.dashboard-control-card {
+  overflow: hidden;
+  margin-bottom: 10px;
+  border: 1px solid #dce5f1;
+  border-radius: 9px;
+  background: #fff;
+}
+.observability-canvas .dashboard-control-card .dashboard-hero {
+  min-height: 68px;
+  margin: 0;
+  padding: 13px 16px;
+  border: 0;
+  border-radius: 0;
+}
+.observability-canvas .dashboard-control-card .dashboard-hero h2 {
+  margin: 2px 0 1px;
+  font-size: 19px;
+}
+.observability-canvas .dashboard-control-card .dashboard-hero p {
+  color: #8290a6;
+  font-size: 12px;
+}
+.dashboard-primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard-primary-actions .el-button + .el-button {
+  margin-left: 0;
+}
+.dashboard-filter-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 16px;
+  border-top: 1px solid #e6ecf4;
+  background: #fbfcfe;
+}
+.dashboard-filter-main,
+.dashboard-range-presets {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.dashboard-filter-main label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #718096;
+  font-size: 11px;
+}
+.dashboard-filter-main label:first-child .el-select {
+  width: 190px;
+}
+.dashboard-filter-main .el-select {
+  width: 128px;
+}
+.dashboard-range-presets .el-button {
+  min-width: 62px;
+  margin-left: 0;
+}
+.dashboard-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 9px;
+  margin-bottom: 10px;
+}
+.dashboard-kpi-card {
+  position: relative;
+  min-height: 112px;
+  padding: 13px 14px;
+  overflow: hidden;
+  border: 1px solid #dce5f1;
+  border-radius: 9px;
+  background: #fff;
+  box-sizing: border-box;
+}
+.dashboard-kpi-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 3px;
+  background: #4d7df4;
+}
+.dashboard-kpi-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dashboard-kpi-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  color: #63738c;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboard-kpi-head .el-icon {
+  color: #4d7df4;
+}
+.dashboard-kpi-card > strong {
+  display: block;
+  margin-top: 9px;
+  color: #152541;
+  font-size: 25px;
+  line-height: 1.15;
+}
+.dashboard-kpi-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  color: #96a2b4;
+  font-size: 10px;
+}
+.dashboard-kpi-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.dashboard-kpi-meta i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22b786;
+}
+.dashboard-kpi-meta .is-warning i { background: #e7a517; }
+.dashboard-kpi-meta .is-danger i { background: #e55858; }
+.dashboard-kpi-card.tone-success::after { background: #24b982; }
+.dashboard-kpi-card.tone-success .dashboard-kpi-head .el-icon { color: #24a878; }
+.dashboard-kpi-card.tone-warning::after { background: #f0a633; }
+.dashboard-kpi-card.tone-warning .dashboard-kpi-head .el-icon { color: #df9120; }
+.dashboard-kpi-card.tone-danger::after { background: #ea5b64; }
+.dashboard-kpi-card.tone-danger .dashboard-kpi-head .el-icon { color: #dc4b56; }
+.dashboard-kpi-card.tone-purple::after { background: #8a6deb; }
+.dashboard-kpi-card.tone-purple .dashboard-kpi-head .el-icon { color: #7b60db; }
+.dashboard-kpi-card.tone-cyan::after { background: #22aebd; }
+.dashboard-kpi-card.tone-cyan .dashboard-kpi-head .el-icon { color: #1d9baa; }
+.dashboard-grid-shell {
+  padding: 0;
+  background: transparent;
+}
+.dashboard-grid-toolbar {
+  min-height: 50px;
+  margin-bottom: 9px;
+  padding: 8px 12px;
+  border: 1px solid #dce5f1;
+  border-radius: 9px;
+  background: #fff;
+}
+.dashboard-grid-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.dashboard-grid-heading > strong {
+  color: #20314c;
+  font-size: 14px;
+}
+.panel-grid,
+.k8s-panel-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-flow: row dense;
+  gap: 9px;
+}
+.chart-panel {
+  grid-column: span 2;
+  min-height: 250px;
+  padding-bottom: 10px;
+  border-color: #dce5f1;
+  border-radius: 9px;
+  box-shadow: none;
+}
+.chart-panel:hover {
+  border-color: #b9cae4;
+  box-shadow: 0 5px 14px rgba(32, 61, 105, 0.07);
+}
+.chart-panel .panel-head {
+  min-height: 48px;
+  padding: 8px 12px;
+  background: #fff;
+}
+.chart-panel .panel-head span {
+  margin-top: 2px;
+}
+.chart-panel .panel-actions .panel-state {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #f3f6fa;
+}
+.panel-query,
+.chart-panel .promql {
+  display: none;
+}
+.chart-panel.panel-stat .stat-row {
+  margin: 22px 14px 10px;
+}
+.chart-panel .bar-chart {
+  max-height: 184px;
+}
+.chart-panel .el-empty {
+  padding: 24px 0;
+}
+.panel-grid > .chart-panel:last-child:nth-child(3n + 1),
+.k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 1) {
+  grid-column: span 6;
+}
+.panel-grid > .chart-panel:nth-last-child(2):nth-child(3n + 1),
+.panel-grid > .chart-panel:last-child:nth-child(3n + 2),
+.k8s-panel-grid > .chart-panel:nth-last-child(2):nth-child(3n + 1),
+.k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 2) {
+  grid-column: span 3;
+}
+
+/* K8s keeps the spacious two-column monitoring-detail rhythm from container management. */
+.is-k8s-dashboard .dashboard-kpi-grid {
+  grid-template-columns: repeat(20, minmax(0, 1fr));
+  gap: 10px;
+}
+.is-k8s-dashboard .dashboard-kpi-card {
+  grid-column: span 4;
+  min-height: 86px;
+  padding: 14px 16px;
+}
+.is-k8s-dashboard .dashboard-kpi-card:nth-child(n + 6) {
+  grid-column: span 5;
+}
+.is-k8s-dashboard .dashboard-grid-toolbar {
+  min-height: 54px;
+  margin-bottom: 12px;
+}
+.is-k8s-dashboard .k8s-panel-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-flow: row;
+  gap: 14px;
+}
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel,
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 1),
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel:nth-last-child(2):nth-child(3n + 1),
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 2) {
+  grid-column: span 1;
+}
+.is-k8s-dashboard .k8s-panel-grid > .k8s-wide-panel,
+.is-k8s-dashboard .k8s-panel-grid > .panel-table {
+  grid-column: 1 / -1;
+}
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel.k8s-wide-panel {
+  grid-column: 1 / -1 !important;
+  width: 100%;
+}
+.is-k8s-dashboard .chart-panel {
+  min-height: 340px;
+  border-color: #d9e3f0;
+  border-radius: 10px;
+  background: #fff;
+}
+.is-k8s-dashboard .chart-panel .panel-head {
+  min-height: 58px;
+  padding: 11px 16px;
+  border-bottom-color: #e5ebf3;
+  background: #fff;
+}
+.is-k8s-dashboard .chart-panel .panel-title-row strong {
+  color: #17335f;
+  font-size: 15px;
+  font-weight: 700;
+}
+.is-k8s-dashboard .chart-panel .panel-identity > span {
+  display: none;
+}
+.is-k8s-dashboard .chart-panel .panel-signal {
+  width: 3px;
+  height: 17px;
+  background: #5b7cff;
+}
+.is-k8s-dashboard .chart-panel .panel-state.is-success {
+  display: none !important;
+}
+.k8s-value-badge {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 26px;
+  margin: 0 4px 0 0 !important;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: #f0f4ff;
+  color: #4169e8 !important;
+  font-size: 12px !important;
+  font-weight: 700;
+}
+.is-k8s-dashboard .trend-summary {
+  display: none;
+}
+.is-k8s-dashboard .trend-chart {
+  padding: 20px 18px 0;
+}
+.is-k8s-dashboard .trend-chart .sparkline {
+  height: 210px;
+}
+.is-k8s-dashboard .trend-chart .sparkline polyline {
+  stroke-width: 2;
+}
+.is-k8s-dashboard .trend-axis {
+  margin-top: 5px;
+  font-size: 10px;
+}
+.is-k8s-dashboard .trend-legend {
+  min-height: 24px;
+  gap: 12px;
+  padding: 7px 18px 0;
+  font-size: 10px;
+}
+.is-k8s-dashboard .trend-legend span {
+  max-width: 190px;
+}
+.is-k8s-dashboard .chart-panel .bar-chart {
+  max-height: 252px;
+  margin: 18px 16px;
+  gap: 10px;
+}
+.is-k8s-dashboard .chart-panel .bar-row {
+  grid-template-columns: minmax(190px, 230px) minmax(100px, 1fr) 86px;
+  gap: 12px;
+}
+.is-k8s-dashboard .chart-panel .bar-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.is-k8s-dashboard .chart-panel .bar-row div {
+  height: 9px;
+  border-radius: 3px;
+}
+.is-k8s-dashboard .chart-panel .bar-row i {
+  border-radius: 3px;
+}
+.chart-empty-state {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  min-height: 245px;
+  padding: 28px;
+  color: #91a0b5;
+  text-align: center;
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 48px, #edf2f8 49px, transparent 50px);
+}
+.chart-empty-state .el-icon {
+  margin-bottom: 9px;
+  color: #36b37e;
+  font-size: 28px;
+}
+.chart-empty-state strong {
+  color: #52657f;
+  font-size: 14px;
+}
+.chart-empty-state span {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.is-k8s-dashboard .chart-panel.panel-gauge .gauge-wrap {
+  min-height: 230px;
+}
+.is-k8s-dashboard .chart-panel.panel-table {
+  min-height: 410px;
+}
+.pod-resource-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e7edf5;
+  background: #fbfdff;
+}
+.pod-resource-filter {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+}
+.pod-resource-toolbar strong {
+  color: #1f3e6c;
+  font-size: 13px;
+}
+.pod-resource-toolbar span {
+  overflow: hidden;
+  color: #8190aa;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pod-resource-toolbar .el-select {
+  width: 330px;
+  flex: 0 0 auto;
+}
+.pod-resource-table .el-scrollbar__bar.is-horizontal { display: none; }
+.host-resource-toolbar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e7edf5;
+  background: #fbfdff;
+}
+.host-resource-toolbar strong { color: #1f3e6c; font-size: 13px; }
+.host-resource-toolbar span { color: #8190aa; font-size: 12px; }
+.host-resource-table .el-scrollbar__bar.is-horizontal { display: none; }
+@media (max-width: 1180px) {
+  .dashboard-filter-bar { align-items: flex-start; flex-direction: column; }
+  .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+  .panel-grid,.k8s-panel-grid { grid-template-columns: repeat(2, minmax(240px, 1fr)); }
+  .panel-grid > .chart-panel,
+  .k8s-panel-grid > .chart-panel { grid-column: span 1; }
+  .panel-grid > .chart-panel:last-child:nth-child(odd),
+  .k8s-panel-grid > .chart-panel:last-child:nth-child(odd) { grid-column: span 2; }
+  .is-k8s-dashboard .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+  .is-k8s-dashboard .dashboard-kpi-card,
+  .is-k8s-dashboard .dashboard-kpi-card:nth-child(n + 6) { grid-column: span 1; }
+  .is-k8s-dashboard .dashboard-kpi-card:last-child:nth-child(odd) { grid-column: span 2; }
+  .is-k8s-dashboard .k8s-panel-grid { grid-template-columns: repeat(2, minmax(240px, 1fr)); }
+}
+@media (max-width: 760px) {
+  .dashboard-workspace { grid-template-columns: 1fr; }
+  .workspace-status,.dashboard-switcher { grid-column: 1; }
+  .workspace-status { justify-content: flex-start; flex-wrap: wrap; }
+  .dashboard-switcher { align-items: stretch; flex-direction: column; }
+  .dashboard-switcher .create-screen-btn { width: auto; }
+  .observability-canvas .dashboard-control-card .dashboard-hero { align-items: flex-start; flex-direction: column; }
+  .dashboard-filter-main,.dashboard-range-presets { align-items: stretch; flex-wrap: wrap; }
+  .dashboard-filter-main label:first-child .el-select,.dashboard-filter-main .el-select { width: 100%; }
+  .dashboard-filter-main label { min-width: calc(50% - 8px); }
+  .dashboard-kpi-grid,.panel-grid,.k8s-panel-grid { grid-template-columns: 1fr; }
+  .is-k8s-dashboard .dashboard-kpi-grid { grid-template-columns: 1fr; }
+  .is-k8s-dashboard .dashboard-kpi-card,
+  .is-k8s-dashboard .dashboard-kpi-card:nth-child(n + 6),
+  .is-k8s-dashboard .dashboard-kpi-card:last-child:nth-child(odd) { grid-column: span 1; }
+  .panel-grid > .chart-panel,
+  .k8s-panel-grid > .chart-panel { grid-column: span 1; }
+  .pod-resource-toolbar { align-items: flex-start; flex-direction: column; }
+  .pod-resource-toolbar .el-select { width: 100%; }
+  .dashboard-grid-toolbar,.dashboard-grid-heading { align-items: flex-start; flex-direction: column; }
 }
 </style>

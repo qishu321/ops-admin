@@ -126,7 +126,10 @@ const workloadDrawerLoading = ref(false)
 const workloadDetail = ref(null)
 const workloadResourceDialogVisible = ref(false)
 const workloadResourceSaving = ref(false)
-const workloadResourceForm = reactive({ namespace: '', workloadType: '', workloadName: '', containers: [] })
+const workloadResourceForm = reactive({
+  namespace: '', workloadType: '', workloadName: '', replicas: 1, originalReplicas: 1,
+  activeContainerName: '', containers: [], originalContainers: []
+})
 const workloadCreateVisible = ref(false)
 const workloadCreateSaving = ref(false)
 const workloadCreateActiveTab = ref('basic')
@@ -1893,6 +1896,10 @@ async function openWorkloadResourceSettings(row) {
   workloadResourceForm.namespace = detail.namespace
   workloadResourceForm.workloadType = detail.type
   workloadResourceForm.workloadName = detail.name
+  const readyParts = String(detail.ready || row.ready || '').split('/')
+  const desiredReplicas = Number(readyParts[1] || readyParts[0] || 1)
+  workloadResourceForm.replicas = Number.isFinite(desiredReplicas) ? desiredReplicas : 1
+  workloadResourceForm.originalReplicas = workloadResourceForm.replicas
   workloadResourceForm.containers = (detail.containers || []).map((item) => ({
     name: item.name,
     image: item.image || '',
@@ -1908,6 +1915,8 @@ async function openWorkloadResourceSettings(row) {
       source: env.source || ''
     }))
   }))
+  workloadResourceForm.originalContainers = JSON.parse(JSON.stringify(workloadResourceForm.containers))
+  workloadResourceForm.activeContainerName = workloadResourceForm.containers[0]?.name || ''
   workloadResourceDialogVisible.value = true
 }
 
@@ -1922,10 +1931,52 @@ function removeWorkloadEnvironment(container, index) {
 
 async function submitWorkloadResourceSettings() {
   if (!cluster.value?.id || !workloadResourceForm.containers.length) return
+  const missingImage = workloadResourceForm.containers.find((container) => !String(container.image || '').trim())
+  if (missingImage) {
+    ElMessage.warning(`请填写容器 ${missingImage.name} 的镜像地址`)
+    workloadResourceForm.activeContainerName = missingImage.name
+    return
+  }
+  for (const container of workloadResourceForm.containers) {
+    const envNames = (container.env || []).map((item) => String(item.name || '').trim())
+    if (envNames.some((name) => !name)) {
+      ElMessage.warning(`请补全容器 ${container.name} 的环境变量名称`)
+      workloadResourceForm.activeContainerName = container.name
+      return
+    }
+    if (new Set(envNames).size !== envNames.length) {
+      ElMessage.warning(`容器 ${container.name} 存在重复的环境变量名称`)
+      workloadResourceForm.activeContainerName = container.name
+      return
+    }
+  }
+  const containerSettingsChanged = JSON.stringify(workloadResourceForm.containers) !== JSON.stringify(workloadResourceForm.originalContainers)
+  const replicasChanged = supportsScale({ type: workloadResourceForm.workloadType }) && Number(workloadResourceForm.replicas) !== Number(workloadResourceForm.originalReplicas)
+  if (!containerSettingsChanged && !replicasChanged) {
+    ElMessage.info('未检测到需要保存的变更')
+    return
+  }
   workloadResourceSaving.value = true
   try {
-    await updateK8sWorkloadResources({ clusterId: cluster.value.id, ...workloadResourceForm })
-    ElMessage.success('Pod 资源设置已更新')
+    if (containerSettingsChanged) {
+      await updateK8sWorkloadResources({
+        clusterId: cluster.value.id,
+        namespace: workloadResourceForm.namespace,
+        workloadType: workloadResourceForm.workloadType,
+        workloadName: workloadResourceForm.workloadName,
+        containers: workloadResourceForm.containers
+      })
+    }
+    if (replicasChanged) {
+      await scaleK8sWorkload({
+        clusterId: cluster.value.id,
+        namespace: workloadResourceForm.namespace,
+        workloadType: workloadResourceForm.workloadType,
+        workloadName: workloadResourceForm.workloadName,
+        replicas: Number(workloadResourceForm.replicas)
+      })
+    }
+    ElMessage.success('工作负载已更新')
     workloadResourceDialogVisible.value = false
     await refreshCurrentClusterData()
     if (workloadDrawerVisible.value && workloadDetail.value?.name === workloadResourceForm.workloadName) {

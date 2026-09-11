@@ -1912,7 +1912,7 @@ func (s *Service) UpdateK8sWorkloadImages(payload model.K8sWorkloadImageBatchPay
 }
 
 // UpdateK8sWorkloadResources updates the editable pod-template settings while preserving
-// container image and command configuration: CPU/memory resources, environment variables
+// container command configuration: image, CPU/memory resources, environment variables
 // and image pull policy.
 func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesPayload) (map[string]any, error) {
 	if payload.ClusterID == 0 || strings.TrimSpace(payload.Namespace) == "" || strings.TrimSpace(payload.WorkloadType) == "" || strings.TrimSpace(payload.WorkloadName) == "" || len(payload.Containers) == 0 {
@@ -1971,7 +1971,14 @@ func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesP
 		if len(limits) > 0 {
 			resources["limits"] = limits
 		}
-		containerPatch := map[string]any{"name": name, "resources": resources}
+		image := strings.TrimSpace(item.Image)
+		if image == "" {
+			image, _ = existing["image"].(string)
+		}
+		if strings.TrimSpace(image) == "" {
+			return nil, fmt.Errorf("container %s image is required", name)
+		}
+		containerPatch := map[string]any{"name": name, "image": image, "resources": resources}
 		if policy := strings.TrimSpace(item.ImagePullPolicy); policy != "" {
 			if policy != "Always" && policy != "IfNotPresent" && policy != "Never" {
 				return nil, errors.New("invalid image pull policy")

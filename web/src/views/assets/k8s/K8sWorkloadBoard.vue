@@ -75,7 +75,7 @@ defineProps({
         <el-table-column :label="page.t('k8sActions')" min-width="350" fixed="right">
           <template #default="{ row }">
             <div class="kuboard-actions workload-actions">
-              <el-button link type="primary" class="workload-settings-action" @click="page.openWorkloadResourceSettings(row)">更新 Pod 设置</el-button>
+              <el-button link type="primary" class="workload-settings-action" @click="page.openWorkloadResourceSettings(row)">编辑工作负载</el-button>
               <el-button link type="primary" @click="page.openWorkloadDetail(row)">{{ page.t('k8sDetail') }}</el-button>
               <el-button link type="primary" @click="page.openWorkloadYAML(row)">{{ page.t('k8sYaml') }}</el-button>
               <el-button v-if="page.supportsScale(row)" link type="primary" @click="page.openScaleDialog(row)">{{ page.t('k8sScale') }}</el-button>

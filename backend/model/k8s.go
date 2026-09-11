@@ -62,6 +62,7 @@ type K8sWorkloadImageBatchPayload struct {
 
 type K8sWorkloadContainerResources struct {
 	Name            string          `json:"name"`
+	Image           string          `json:"image"`
 	RequestCPU      string          `json:"requestCPU"`
 	LimitCPU        string          `json:"limitCPU"`
 	RequestMemory   string          `json:"requestMemory"`

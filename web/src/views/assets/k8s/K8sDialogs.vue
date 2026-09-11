@@ -509,52 +509,72 @@ defineProps({
     </template>
   </el-dialog>
 
-  <el-dialog v-model="page.workloadResourceDialogVisible" title="更新 Pod 设置" width="920px" class="workload-resource-dialog-wrap" destroy-on-close>
+  <el-dialog v-model="page.workloadResourceDialogVisible" width="1080px" class="workload-resource-dialog-wrap" destroy-on-close>
+    <template #header>
+      <div class="workload-edit-dialog-title"><strong>编辑工作负载</strong><span>修改配置后将更新 Pod 模板</span></div>
+    </template>
     <div class="workload-resource-dialog">
-      <div class="workload-resource-summary">
-        <div><span>命名空间</span><strong>{{ page.workloadResourceForm.namespace }}</strong></div>
-        <div><span>工作负载</span><strong>{{ page.workloadResourceForm.workloadName }} · {{ page.workloadResourceForm.workloadType }}</strong></div>
-      </div>
-      <p class="dialog-tip">可维护每个容器的资源 Request / Limit、镜像拉取策略与环境变量；保存后将更新 Pod 模板并触发工作负载滚动更新。</p>
-      <section v-for="container in page.workloadResourceForm.containers" :key="container.name" class="container-resource-card">
-        <div class="container-resource-head">
-          <strong>{{ container.name }}</strong>
-          <span>容器配置</span>
-        </div>
-        <el-row :gutter="14" class="container-basic-row">
-          <el-col :span="15"><el-form-item label="镜像"><el-input :model-value="container.image || '-'" readonly /></el-form-item></el-col>
-          <el-col :span="9"><el-form-item label="镜像拉取策略" class="image-pull-policy-field">
-            <el-select v-model="container.imagePullPolicy" class="image-pull-policy-select">
-              <el-option label="Always（始终拉取）" value="Always" />
-              <el-option label="IfNotPresent（本地优先）" value="IfNotPresent" />
-              <el-option label="Never（仅本地镜像）" value="Never" />
-            </el-select>
-          </el-form-item></el-col>
-        </el-row>
-        <div class="resource-setting-title">CPU / 内存 Request 与 Limit</div>
-        <el-row :gutter="14">
-          <el-col :span="6"><el-form-item label="CPU Request"><el-input v-model="container.requestCPU" placeholder="100m" /></el-form-item></el-col>
-          <el-col :span="6"><el-form-item label="CPU Limit"><el-input v-model="container.limitCPU" placeholder="1" /></el-form-item></el-col>
-          <el-col :span="6"><el-form-item label="内存 Request"><el-input v-model="container.requestMemory" placeholder="256Mi" /></el-form-item></el-col>
-          <el-col :span="6"><el-form-item label="内存 Limit"><el-input v-model="container.limitMemory" placeholder="1Gi" /></el-form-item></el-col>
-        </el-row>
-        <div class="resource-setting-title env-setting-title">环境变量</div>
-        <div v-if="container.env?.length" class="workload-env-head"><span>变量名</span><span>变量值</span><span>类型</span><span>操作</span></div>
-        <div v-if="container.env?.length" class="workload-env-list">
-          <div v-for="(env, envIndex) in container.env" :key="`${container.name}-${envIndex}`" class="workload-env-row">
-            <el-input v-model="env.name" placeholder="变量名，例如 VECTOR_LOG" />
-            <el-input :model-value="env.valueFrom ? (env.source || 'Kubernetes 引用变量') : env.value" :readonly="Boolean(env.valueFrom)" placeholder="变量值" @update:model-value="env.value = $event" />
-            <el-tag v-if="env.valueFrom" type="info" effect="plain">引用变量</el-tag>
-            <span v-else class="workload-env-type">普通变量</span>
-            <el-button link type="danger" @click="page.removeWorkloadEnvironment(container, envIndex)">删除</el-button>
+      <section class="workload-edit-section workload-edit-basic">
+        <div class="workload-edit-section-head"><strong>基础配置</strong><span>资源身份信息不可修改</span></div>
+        <el-form label-position="left" label-width="112px" class="workload-edit-form">
+          <div class="workload-edit-basic-grid">
+            <el-form-item label="工作负载类型"><div class="workload-readonly-field"><el-tag effect="plain">{{ page.workloadResourceForm.workloadType }}</el-tag></div></el-form-item>
+            <el-form-item label="名称"><el-input :model-value="page.workloadResourceForm.workloadName" readonly /></el-form-item>
+            <el-form-item label="命名空间"><el-input :model-value="page.workloadResourceForm.namespace" readonly /></el-form-item>
+            <el-form-item v-if="page.supportsScale({ type: page.workloadResourceForm.workloadType })" label="实例数量">
+              <el-input-number v-model="page.workloadResourceForm.replicas" :min="0" :max="999" />
+            </el-form-item>
           </div>
-        </div>
-        <el-button link type="primary" class="add-env-button" @click="page.addWorkloadEnvironment(container)">+ 新增环境变量</el-button>
+        </el-form>
       </section>
+
+      <section class="workload-edit-section workload-edit-containers">
+        <div class="workload-edit-section-head"><strong>容器配置</strong><span>{{ page.workloadResourceForm.containers.length }} 个容器</span></div>
+        <el-tabs v-model="page.workloadResourceForm.activeContainerName" type="card" class="workload-container-tabs">
+          <el-tab-pane v-for="container in page.workloadResourceForm.containers" :key="container.name" :label="container.name" :name="container.name">
+            <div class="container-resource-card">
+              <el-form label-position="left" label-width="112px" class="workload-edit-form">
+                <el-form-item label="容器名称"><el-input :model-value="container.name" readonly /></el-form-item>
+                <el-form-item label="镜像" required><el-input v-model.trim="container.image" placeholder="请输入完整的镜像地址" /></el-form-item>
+                <el-form-item label="拉取策略">
+                  <el-radio-group v-model="container.imagePullPolicy" class="workload-pull-policy">
+                    <el-radio-button value="Always">Always</el-radio-button>
+                    <el-radio-button value="IfNotPresent">IfNotPresent</el-radio-button>
+                    <el-radio-button value="Never">Never</el-radio-button>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item label="CPU / 内存限制">
+                  <div class="workload-resource-grid">
+                    <el-input v-model.trim="container.requestCPU" placeholder="CPU request，例如 100m" />
+                    <el-input v-model.trim="container.limitCPU" placeholder="CPU limit，例如 500m" />
+                    <el-input v-model.trim="container.requestMemory" placeholder="内存 request，例如 128Mi" />
+                    <el-input v-model.trim="container.limitMemory" placeholder="内存 limit，例如 512Mi" />
+                  </div>
+                </el-form-item>
+              </el-form>
+              <div class="workload-env-section">
+                <div class="workload-env-title"><div><strong>环境变量</strong><span>引用变量保留其原始 ConfigMap 或 Secret 来源</span></div><el-button type="primary" plain size="small" class="workload-add-env-button" @click="page.addWorkloadEnvironment(container)">+ 新增环境变量</el-button></div>
+                <div v-if="container.env?.length" class="workload-env-head"><span>变量名</span><span>变量值</span><span>类型</span><span>操作</span></div>
+                <div v-if="container.env?.length" class="workload-env-list">
+                  <div v-for="(env, envIndex) in container.env" :key="`${container.name}-${envIndex}`" class="workload-env-row">
+                    <el-input v-model.trim="env.name" placeholder="变量名，例如 APP_ENV" />
+                    <el-input :model-value="env.valueFrom ? (env.source || 'Kubernetes 引用变量') : env.value" :readonly="Boolean(env.valueFrom)" placeholder="变量值" @update:model-value="env.value = $event" />
+                    <el-tag v-if="env.valueFrom" type="info" effect="plain">引用变量</el-tag>
+                    <span v-else class="workload-env-type">普通变量</span>
+                    <el-button link type="danger" @click="page.removeWorkloadEnvironment(container, envIndex)">删除</el-button>
+                  </div>
+                </div>
+                <el-empty v-else description="暂无环境变量" :image-size="42" />
+              </div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </section>
+      <div class="workload-rollout-notice"><strong>保存影响</strong><span>修改容器配置后，Kubernetes 将触发工作负载滚动更新；仅修改实例数量不会重建现有 Pod。</span></div>
     </div>
     <template #footer>
       <el-button @click="page.workloadResourceDialogVisible = false">{{ page.t('cancel') }}</el-button>
-      <el-button type="primary" :loading="page.workloadResourceSaving" @click="page.submitWorkloadResourceSettings">保存设置</el-button>
+      <el-button type="primary" :loading="page.workloadResourceSaving" @click="page.submitWorkloadResourceSettings">保存更改</el-button>
     </template>
   </el-dialog>
 

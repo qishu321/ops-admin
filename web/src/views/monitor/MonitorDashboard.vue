@@ -30,7 +30,7 @@ const panelDialogVisible = ref(false)
 const editingDashboard = ref(false)
 const editingPanel = ref(false)
 const activeTemplate = ref('blank')
-const autoRefreshSeconds = ref(30)
+const autoRefreshSeconds = ref(0)
 const timeRangeSeconds = ref(3600)
 const isFullscreen = ref(false)
 const lastRefreshAt = ref(new Date())
@@ -383,8 +383,11 @@ function panelLineSeries(panel) {
     .slice(0, isK8sDashboard.value ? 10 : 8)
   const allValues = series.flatMap((item) => item.values)
   if (!allValues.length) return []
-  const min = Math.min(...allValues)
-  const max = Math.max(...allValues)
+  // Percentage trends must share an absolute 0-100 scale. Scaling each panel
+  // to its local min/max makes stable request-utilization data look like a flat
+  // line at the bottom of the chart instead of its real utilization level.
+  const min = panel.unit === '%' ? 0 : Math.min(...allValues)
+  const max = panel.unit === '%' ? 100 : Math.max(...allValues)
   return series.map((item, index) => ({
     ...item,
     color: lineColors[index % lineColors.length],
@@ -1159,16 +1162,16 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else class="dashboard-grid-shell">
-        <div class="dashboard-grid-toolbar">
-          <div class="dashboard-grid-heading">
+        <!-- <div class="dashboard-grid-toolbar"> -->
+          <!-- <div class="dashboard-grid-heading">
             <strong>{{ isK8sDashboard ? 'K8s 资源与 Pod 监控' : '监控图表' }}</strong>
             <div class="dashboard-grid-status"><span class="status-chip healthy"><i></i>正常 {{ inspectionSummary.healthy }}</span><span class="status-chip warning"><i></i>待确认 {{ inspectionSummary.warning }}</span><span class="status-chip danger"><i></i>异常 {{ inspectionSummary.danger }}</span><span class="status-chip muted"><i></i>已停用 {{ inspectionSummary.disabled }}</span></div>
-          </div>
-          <div class="dashboard-grid-actions">
+          </div> -->
+          <!-- <div class="dashboard-grid-actions">
             <span>最近刷新 {{ lastRefreshText }}</span>
             <el-button size="small" @click="refreshProblemPanels" :disabled="!activePanels.length">复核异常</el-button>
-          </div>
-        </div>
+          </div> -->
+        <!-- </div> -->
         <div class="panel-grid" :class="{ 'k8s-panel-grid': isK8sDashboard }">
         <div
           v-for="panel in visualPanels"

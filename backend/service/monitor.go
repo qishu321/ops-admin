@@ -38,6 +38,17 @@ type MonitorDatasourcePayload struct {
 	Description string `json:"description"`
 }
 
+const (
+	legacyAverageDiskUsagePromQL = `100 - (sum(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"}) / sum(node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"}) * 100)`
+	averageRootDiskUsagePromQL   = `avg(100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))`
+	legacyDiskUsageTopPromQL     = `topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} * 100))`
+	diskUsageTopPromQL           = `topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))`
+	defaultPodDetailPromQL       = `kube_pod_info`
+	podResourceDetailPromQL      = `topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))`
+	cpuRequestUsagePromQL        = `sum(kube_pod_container_resource_requests{resource="cpu"}) / sum(kube_node_status_allocatable{resource="cpu"}) * 100`
+	memoryRequestUsagePromQL     = `sum(kube_pod_container_resource_requests{resource="memory"}) / sum(kube_node_status_allocatable{resource="memory"}) * 100`
+)
+
 type MonitorAlertRulePayload struct {
 	ID                          uint    `json:"id"`
 	Name                        string  `json:"name"`
@@ -212,11 +223,12 @@ type MonitorDashboardPanelPayload struct {
 }
 
 type MonitorDashboardPanelQueryPayload struct {
-	ID           uint  `json:"id"`
-	DatasourceID uint  `json:"datasourceId"`
-	StartAt      int64 `json:"startAt"`
-	EndAt        int64 `json:"endAt"`
-	StepSeconds  int   `json:"stepSeconds"`
+	ID           uint   `json:"id"`
+	DatasourceID uint   `json:"datasourceId"`
+	Namespace    string `json:"namespace"`
+	StartAt      int64  `json:"startAt"`
+	EndAt        int64  `json:"endAt"`
+	StepSeconds  int    `json:"stepSeconds"`
 }
 
 type MonitorLogQueryPayload struct {
@@ -4959,7 +4971,74 @@ func (s *Service) GetMonitorDashboard(id uint) (map[string]any, error) {
 	if err := s.db.Where("dashboard_id = ?", id).Order("sort ASC, id ASC").Find(&panels).Error; err != nil {
 		return nil, err
 	}
+	if err := s.upgradeDefaultDiskUsagePanels(panels); err != nil {
+		return nil, err
+	}
+	if err := s.removeDuplicateDefaultPodResourcePanels(&panels); err != nil {
+		return nil, err
+	}
 	return map[string]any{"dashboard": dashboard, "panels": panels}, nil
+}
+
+// upgradeDefaultDiskUsagePanels keeps dashboards created by earlier releases on
+// the same root-filesystem metric definition used by the disk Top panel. Exact
+// query matching preserves any user-customized panel PromQL.
+func (s *Service) upgradeDefaultDiskUsagePanels(panels []model.MonitorDashboardPanel) error {
+	for index := range panels {
+		panel := &panels[index]
+		updates := map[string]any{}
+		switch {
+		case panel.Title == "平均磁盘使用率" && panel.PromQL == legacyAverageDiskUsagePromQL:
+			updates["prom_ql"] = averageRootDiskUsagePromQL
+		case panel.Title == "磁盘使用率 Top" && panel.PromQL == legacyDiskUsageTopPromQL:
+			updates["prom_ql"] = diskUsageTopPromQL
+		case panel.Title == "CPU Request 使用率" && panel.PromQL == cpuRequestUsagePromQL && panel.ChartType == "gauge":
+			updates["chart_type"] = "line"
+		case panel.Title == "内存 Request 使用率" && panel.PromQL == memoryRequestUsagePromQL && panel.ChartType == "gauge":
+			updates["chart_type"] = "line"
+		case panel.Title == "Pod 明细" && panel.PromQL == defaultPodDetailPromQL:
+			updates["title"] = "Pod 资源明细"
+			updates["prom_ql"] = podResourceDetailPromQL
+		default:
+			continue
+		}
+		if err := s.db.Model(&model.MonitorDashboardPanel{}).Where("id = ?", panel.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		if value, ok := updates["prom_ql"].(string); ok {
+			panel.PromQL = value
+		}
+		if value, ok := updates["chart_type"].(string); ok {
+			panel.ChartType = value
+		}
+		if value, ok := updates["title"].(string); ok {
+			panel.Title = value
+		}
+	}
+	return nil
+}
+
+// removeDuplicateDefaultPodResourcePanels cleans up the one-time overlap between
+// the old Pod detail migration and automatic panel completion. Only identical
+// shipped defaults are removed; customized resource-detail panels are retained.
+func (s *Service) removeDuplicateDefaultPodResourcePanels(panels *[]model.MonitorDashboardPanel) error {
+	seenDefault := false
+	filtered := make([]model.MonitorDashboardPanel, 0, len(*panels))
+	for _, panel := range *panels {
+		isDefaultResourcePanel := panel.Title == "Pod 资源明细" && panel.PromQL == podResourceDetailPromQL
+		if isDefaultResourcePanel && seenDefault {
+			if err := s.db.Delete(&model.MonitorDashboardPanel{}, panel.ID).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		if isDefaultResourcePanel {
+			seenDefault = true
+		}
+		filtered = append(filtered, panel)
+	}
+	*panels = filtered
+	return nil
 }
 
 func (s *Service) SaveMonitorDashboard(payload MonitorDashboardPayload) (*model.MonitorDashboard, error) {
@@ -5063,6 +5142,26 @@ func (s *Service) QueryMonitorDashboardPanel(payload MonitorDashboardPanelQueryP
 		}
 		ds = &fallback
 	}
+	if panel.Title == "Pod 资源明细" {
+		rows, namespaces, err := s.queryPodResourceDetails(*ds, payload.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"panel": panel, "datasource": ds, "resultType": "vector", "result": []PromMetricSample{},
+			"podResources": rows, "namespaces": namespaces,
+		}, nil
+	}
+	if panel.Title == "主机信息" {
+		rows, err := s.queryHostResourceDetails(*ds)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"panel": panel, "datasource": ds, "resultType": "vector", "result": []PromMetricSample{},
+			"hostResources": rows,
+		}, nil
+	}
 	var result *PromQueryResult
 	if payload.StartAt > 0 && payload.EndAt > payload.StartAt {
 		result, err = s.prometheusRangeQuery(*ds, panel.PromQL, time.Unix(payload.StartAt, 0), time.Unix(payload.EndAt, 0), payload.StepSeconds)
@@ -5075,4 +5174,178 @@ func (s *Service) QueryMonitorDashboardPanel(payload MonitorDashboardPanelQueryP
 	return map[string]any{
 		"panel": panel, "datasource": ds, "resultType": result.Data.ResultType, "result": result.Data.Result,
 	}, nil
+}
+
+func monitorMetricValue(sample PromMetricSample) float64 {
+	if len(sample.Value) < 2 {
+		return 0
+	}
+	value, err := strconv.ParseFloat(fmt.Sprint(sample.Value[1]), 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func podResourceSelector(namespace, base string) string {
+	if strings.TrimSpace(namespace) == "" {
+		return base
+	}
+	return base + `,namespace=` + strconv.Quote(strings.TrimSpace(namespace))
+}
+
+func podResourceKey(metric map[string]string) string {
+	return metric["namespace"] + "\x00" + metric["pod"]
+}
+
+func (s *Service) podResourceMetricMap(ds model.MonitorDatasource, query string) (map[string]PromMetricSample, error) {
+	result, err := s.prometheusQuery(ds, query, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	items := make(map[string]PromMetricSample, len(result.Data.Result))
+	for _, sample := range result.Data.Result {
+		items[podResourceKey(sample.Metric)] = sample
+	}
+	return items, nil
+}
+
+func (s *Service) queryPodResourceDetails(ds model.MonitorDatasource, namespace string) ([]map[string]any, []string, error) {
+	memorySelector := podResourceSelector(namespace, `container!="",pod!=""`)
+	podSelector := podResourceSelector(namespace, `pod!=""`)
+	memoryQuery := fmt.Sprintf(`topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{%s}))`, memorySelector)
+	memoryResult, err := s.prometheusQuery(ds, memoryQuery, time.Now())
+	if err != nil {
+		return nil, nil, err
+	}
+	cpuMetrics, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{%s}[5m]))`, memorySelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	cpuRequests, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (kube_pod_container_resource_requests{%s,resource="cpu"})`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	memoryRequests, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (kube_pod_container_resource_requests{%s,resource="memory"})`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	cpuLimits, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (kube_pod_container_resource_limits{%s,resource="cpu"})`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	memoryLimits, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (kube_pod_container_resource_limits{%s,resource="memory"})`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	networkReceive, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (rate(container_network_receive_bytes_total{%s}[5m]))`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	networkTransmit, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (rate(container_network_transmit_bytes_total{%s}[5m]))`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	podInfo, err := s.podResourceMetricMap(ds, fmt.Sprintf(`max by(namespace, pod, node) (kube_pod_info{%s})`, podSelector))
+	if err != nil {
+		return nil, nil, err
+	}
+	namespaceResult, err := s.prometheusQuery(ds, `count by(namespace) (kube_pod_info)`, time.Now())
+	if err != nil {
+		return nil, nil, err
+	}
+	namespaces := make([]string, 0, len(namespaceResult.Data.Result))
+	for _, sample := range namespaceResult.Data.Result {
+		if value := sample.Metric["namespace"]; value != "" {
+			namespaces = append(namespaces, value)
+		}
+	}
+	sort.Strings(namespaces)
+
+	rows := make([]map[string]any, 0, len(memoryResult.Data.Result))
+	for _, memory := range memoryResult.Data.Result {
+		key := podResourceKey(memory.Metric)
+		info := podInfo[key]
+		cpuCores := monitorMetricValue(cpuMetrics[key])
+		memoryBytes := monitorMetricValue(memory)
+		cpuRequest := monitorMetricValue(cpuRequests[key])
+		memoryRequest := monitorMetricValue(memoryRequests[key])
+		rows = append(rows, map[string]any{
+			"namespace": memory.Metric["namespace"], "pod": memory.Metric["pod"], "node": info.Metric["node"],
+			"memoryBytes": memoryBytes, "cpuCores": cpuCores,
+			"cpuRequest": cpuRequest, "memoryRequest": memoryRequest,
+			"cpuLimit": monitorMetricValue(cpuLimits[key]), "memoryLimit": monitorMetricValue(memoryLimits[key]),
+			"cpuUsagePercent": podResourcePercentage(cpuCores, cpuRequest), "memoryUsagePercent": podResourcePercentage(memoryBytes, memoryRequest),
+			"networkReceive": monitorMetricValue(networkReceive[key]), "networkTransmit": monitorMetricValue(networkTransmit[key]),
+		})
+	}
+	return rows, namespaces, nil
+}
+
+func podResourcePercentage(used, request float64) float64 {
+	if request <= 0 {
+		return 0
+	}
+	return used / request * 100
+}
+
+func (s *Service) hostResourceMetricMap(ds model.MonitorDatasource, query string) (map[string]PromMetricSample, error) {
+	result, err := s.prometheusQuery(ds, query, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	items := make(map[string]PromMetricSample, len(result.Data.Result))
+	for _, sample := range result.Data.Result {
+		items[sample.Metric["instance"]] = sample
+	}
+	return items, nil
+}
+
+func (s *Service) queryHostResourceDetails(ds model.MonitorDatasource) ([]map[string]any, error) {
+	info, err := s.prometheusQuery(ds, `node_uname_info`, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	cpu, err := s.hostResourceMetricMap(ds, `100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`)
+	if err != nil {
+		return nil, err
+	}
+	memory, err := s.hostResourceMetricMap(ds, `(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100`)
+	if err != nil {
+		return nil, err
+	}
+	disk, err := s.hostResourceMetricMap(ds, `100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100)`)
+	if err != nil {
+		return nil, err
+	}
+	load, err := s.hostResourceMetricMap(ds, `node_load5`)
+	if err != nil {
+		return nil, err
+	}
+	networkReceive, err := s.hostResourceMetricMap(ds, `sum by(instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))`)
+	if err != nil {
+		return nil, err
+	}
+	networkTransmit, err := s.hostResourceMetricMap(ds, `sum by(instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))`)
+	if err != nil {
+		return nil, err
+	}
+	uptime, err := s.hostResourceMetricMap(ds, `(time() - node_boot_time_seconds) / 86400`)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]map[string]any, 0, len(info.Data.Result))
+	for _, item := range info.Data.Result {
+		instance := item.Metric["instance"]
+		osName := strings.TrimSpace(strings.Join([]string{item.Metric["sysname"], item.Metric["release"]}, " "))
+		rows = append(rows, map[string]any{
+			"instance": instance, "os": osName,
+			"cpuUsagePercent": monitorMetricValue(cpu[instance]), "memoryUsagePercent": monitorMetricValue(memory[instance]),
+			"diskUsagePercent": monitorMetricValue(disk[instance]), "load5": monitorMetricValue(load[instance]),
+			"networkReceive": monitorMetricValue(networkReceive[instance]), "networkTransmit": monitorMetricValue(networkTransmit[instance]),
+			"uptimeDays": monitorMetricValue(uptime[instance]),
+		})
+	}
+	return rows, nil
 }

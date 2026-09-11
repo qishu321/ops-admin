@@ -374,7 +374,7 @@ function panelLineSeries(panel) {
         .map((item) => ({ timestamp: item?.[0], value: Number(item?.[1]) }))
         .filter((item) => Number.isFinite(item.value))
       return {
-        name: metricName(row.metric),
+        name: metricName(row.metric) === 'metric' ? trendSeriesName(panel) : metricName(row.metric),
         values: samples.map((item) => item.value),
         timestamps: samples.map((item) => item.timestamp)
       }
@@ -393,6 +393,12 @@ function panelLineSeries(panel) {
     color: lineColors[index % lineColors.length],
     points: trendPoints(item.values, min, max)
   }))
+}
+
+function trendSeriesName(panel) {
+  if (panel?.title?.includes('CPU Request')) return 'CPU Request 使用率'
+  if (panel?.title?.includes('内存 Request')) return '内存 Request 使用率'
+  return panel?.title || 'metric'
 }
 
 function sparklineAreaPoints(panel) {
@@ -1418,6 +1424,10 @@ onBeforeUnmount(() => {
                   :style="{ stroke: series.color }"
                 />
               </svg>
+              <div v-if="panel.unit === '%'" class="trend-y-axis" aria-hidden="true">
+                <span>100%</span>
+                <span>0%</span>
+              </div>
               <div
                 v-if="trendTooltips[panel.id]"
                 class="trend-crosshair"
@@ -2634,6 +2644,19 @@ onBeforeUnmount(() => {
 .trend-chart .sparkline polyline {
   stroke-width: 1.8;
   vector-effect: non-scaling-stroke;
+}
+.trend-y-axis {
+  position: absolute;
+  top: 18px;
+  bottom: 27px;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #8a9ab5;
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
 }
 .trend-crosshair {
   position: absolute;

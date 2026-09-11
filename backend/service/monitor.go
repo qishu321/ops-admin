@@ -5266,12 +5266,19 @@ func (s *Service) queryPodResourceDetails(ds model.MonitorDatasource, namespace 
 	for _, memory := range memoryResult.Data.Result {
 		key := podResourceKey(memory.Metric)
 		info := podInfo[key]
+		nodeName := info.Metric["node"]
+		if nodeName == "" {
+			nodeName = memory.Metric["node"]
+		}
+		if nodeName == "" {
+			nodeName = memory.Metric["instance"]
+		}
 		cpuCores := monitorMetricValue(cpuMetrics[key])
 		memoryBytes := monitorMetricValue(memory)
 		cpuRequest := monitorMetricValue(cpuRequests[key])
 		memoryRequest := monitorMetricValue(memoryRequests[key])
 		rows = append(rows, map[string]any{
-			"namespace": memory.Metric["namespace"], "pod": memory.Metric["pod"], "node": info.Metric["node"],
+			"namespace": memory.Metric["namespace"], "pod": memory.Metric["pod"], "node": nodeName,
 			"memoryBytes": memoryBytes, "cpuCores": cpuCores,
 			"cpuRequest": cpuRequest, "memoryRequest": memoryRequest,
 			"cpuLimit": monitorMetricValue(cpuLimits[key]), "memoryLimit": monitorMetricValue(memoryLimits[key]),
@@ -5335,10 +5342,31 @@ func (s *Service) queryHostResourceDetails(ds model.MonitorDatasource) ([]map[st
 		return nil, err
 	}
 
-	rows := make([]map[string]any, 0, len(info.Data.Result))
+	hostInfo := make(map[string]PromMetricSample, len(info.Data.Result))
 	for _, item := range info.Data.Result {
-		instance := item.Metric["instance"]
+		hostInfo[item.Metric["instance"]] = item
+	}
+	hostInstances := make(map[string]struct{}, len(hostInfo))
+	for instance := range hostInfo {
+		hostInstances[instance] = struct{}{}
+	}
+	for _, metrics := range []map[string]PromMetricSample{cpu, memory, disk, load, networkReceive, networkTransmit, uptime} {
+		for instance := range metrics {
+			hostInstances[instance] = struct{}{}
+		}
+	}
+	instances := make([]string, 0, len(hostInstances))
+	for instance := range hostInstances {
+		instances = append(instances, instance)
+	}
+	sort.Strings(instances)
+	rows := make([]map[string]any, 0, len(instances))
+	for _, instance := range instances {
+		item := hostInfo[instance]
 		osName := strings.TrimSpace(strings.Join([]string{item.Metric["sysname"], item.Metric["release"]}, " "))
+		if osName == "" {
+			osName = "-"
+		}
 		rows = append(rows, map[string]any{
 			"instance": instance, "os": osName,
 			"cpuUsagePercent": monitorMetricValue(cpu[instance]), "memoryUsagePercent": monitorMetricValue(memory[instance]),

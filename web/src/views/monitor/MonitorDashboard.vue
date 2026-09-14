@@ -43,6 +43,12 @@ const PANEL_CACHE_TTL = 15 * 1000
 const inspectionFilter = ref('all')
 const podResourceNamespace = ref('')
 const retiredK8sPanelTitles = new Set(['Pod 累计重启次数 Top', 'Pod 最近 1 小时新增重启 Top'])
+const hostAggregateTrendModes = new Map([
+  ['CPU 使用趋势', 'average'],
+  ['内存使用趋势', 'average'],
+  ['磁盘使用率', 'average'],
+  ['磁盘 IOPS（次/秒）', 'sum']
+])
 
 const k8sPodPanelDefinitions = [
   { title: 'Pod CPU 使用量 Top', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))' },
@@ -118,20 +124,17 @@ const dashboardTemplates = [
       { title: '离线主机', chartType: 'stat', unit: '台', span: 6, promql: 'sum(up{job=~"node.*|node-exporter"} == 0)' },
       { title: '平均 CPU 使用率', chartType: 'gauge', unit: '%', span: 6, promql: '100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)' },
       { title: '平均内存使用率', chartType: 'gauge', unit: '%', span: 6, promql: '(1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)) * 100' },
-      { title: '平均磁盘使用率', chartType: 'gauge', unit: '%', span: 6, promql: 'avg(100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))' },
+      { title: '磁盘使用率', chartType: 'line', unit: '%', span: 12, promql: '100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100)' },
       { title: 'CPU 使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100))' },
       { title: '内存使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100)' },
-      { title: '磁盘使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))' },
+      { title: '磁盘 IOPS（次/秒）', chartType: 'line', unit: '次/秒', span: 12, promql: 'topk(10, sum by (instance) (rate(node_disk_reads_completed_total[5m]) + rate(node_disk_writes_completed_total[5m])))' },
       { title: '系统负载 Top', chartType: 'bar', unit: '', span: 12, promql: 'topk(10, node_load1)' },
-      { title: '网络接收速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))' },
-      { title: '网络发送速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))' },
-      { title: '磁盘读取速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_disk_read_bytes_total[5m])))' },
-      { title: '磁盘写入速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_disk_written_bytes_total[5m])))' },
+      { title: '网络接收速率', chartType: 'line', unit: 'B/s', span: 12, promql: 'sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))' },
+      { title: '网络发送速率', chartType: 'line', unit: 'B/s', span: 12, promql: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))' },
       { title: 'CPU 使用趋势', chartType: 'line', unit: '%', span: 12, promql: '100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)' },
       { title: '内存使用趋势', chartType: 'line', unit: '%', span: 12, promql: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100' },
       { title: '文件句柄使用率', chartType: 'gauge', unit: '%', span: 6, promql: 'sum(node_filefd_allocated) / sum(node_filefd_maximum) * 100' },
       { title: '运行进程数', chartType: 'stat', unit: '个', span: 6, promql: 'sum(node_procs_running)' },
-      { title: '系统运行时间 Top', chartType: 'bar', unit: '天', span: 12, promql: 'topk(10, (time() - node_boot_time_seconds) / 86400)' },
       { title: '主机信息', chartType: 'table', unit: '', span: 12, promql: 'node_uname_info' }
     ]
   },
@@ -161,6 +164,10 @@ const dashboardTemplates = [
 ]
 
 const activePanels = computed(() => panels.value.filter((item) => item.status === 1 && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title))))
+const isHostDashboard = computed(() => !isK8sDashboard.value && (
+  String(activeDashboard.value?.name || '').includes('主机') ||
+  panels.value.some((panel) => String(panel.promql || '').includes('node_cpu_seconds_total'))
+))
 const headlinePanels = computed(() => activePanels.value
   .filter((item) => ['stat', 'gauge'].includes(item.chartType))
   .slice(0, isK8sDashboard.value ? 9 : 8))
@@ -189,6 +196,21 @@ const visualPanels = computed(() => {
     return [...items].sort((left, right) => {
       const leftOrder = orderByTitle.get(left.title) ?? k8sOrder.length
       const rightOrder = orderByTitle.get(right.title) ?? k8sOrder.length
+      return leftOrder - rightOrder || Number(left.sort || 0) - Number(right.sort || 0)
+    })
+  }
+  if (isHostDashboard.value) {
+    const hostOrder = [
+      'CPU 使用趋势', 'CPU 使用率 Top', '系统负载 Top',
+      '内存使用趋势', '内存使用率 Top', '网络发送速率', '网络发送速率 Top',
+      // Retain the legacy title here so an existing dashboard still places the
+      // card in the middle while its server-side migration turns it into IOPS.
+      '磁盘使用率', '磁盘 IOPS（次/秒）', '磁盘使用率 Top', '网络接收速率', '网络接收速率 Top'
+    ]
+    const orderByTitle = new Map(hostOrder.map((title, index) => [title, index]))
+    return [...items].sort((left, right) => {
+      const leftOrder = orderByTitle.get(left.title) ?? hostOrder.length
+      const rightOrder = orderByTitle.get(right.title) ?? hostOrder.length
       return leftOrder - rightOrder || Number(left.sort || 0) - Number(right.sort || 0)
     })
   }
@@ -373,16 +395,59 @@ function formatPodResourceValue(value, unit) {
 }
 
 function panelValue(panel) {
-	const value = numberValue(panelRows(panel)[0])
+  const value = panelSummaryValue(panel)
   if (!Number.isFinite(value)) return '-'
   const formatted = formatByUnit(value, panel.unit)
   return panel.unit && formatted.endsWith(panel.unit) ? formatted.slice(0, -panel.unit.length).trim() : formatted
 }
 
+function hostTrendAggregateMode(panel) {
+  return isHostDashboard.value ? hostAggregateTrendModes.get(panel?.title) : undefined
+}
+
+function aggregateHostTrend(panel, mode) {
+  const samplesByTimestamp = new Map()
+  panelRows(panel).forEach((row) => {
+    ;(row.values || []).forEach((sample) => {
+      const timestamp = Number(sample?.[0])
+      const value = Number(sample?.[1])
+      if (!Number.isFinite(timestamp) || !Number.isFinite(value)) return
+      const values = samplesByTimestamp.get(timestamp) || []
+      values.push(value)
+      samplesByTimestamp.set(timestamp, values)
+    })
+  })
+  return Array.from(samplesByTimestamp.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([, values]) => mode === 'sum'
+      ? values.reduce((sum, value) => sum + value, 0)
+      : values.reduce((sum, value) => sum + value, 0) / values.length)
+}
+
 function panelTrend(panel) {
+	const aggregateMode = hostTrendAggregateMode(panel)
+	if (aggregateMode) {
+		const values = aggregateHostTrend(panel, aggregateMode)
+		if (values.length) return values
+	}
 	const firstSeries = panelRows(panel)[0]
 	if (firstSeries?.values?.length) return firstSeries.values.map((item) => Number(item?.[1])).filter(Number.isFinite)
 	return panelRows(panel).slice(0, 24).map((item) => numberValue(item))
+}
+
+function panelSummaryValue(panel) {
+  if (panelVisualType(panel) === 'line') {
+    const values = panelTrend(panel)
+    if (values.length) return values[values.length - 1]
+  }
+  return numberValue(panelRows(panel)[0])
+}
+
+function trendCurrentLabel(panel) {
+  const aggregateMode = hostTrendAggregateMode(panel)
+  if (aggregateMode === 'sum') return '当前总计'
+  if (aggregateMode === 'average') return '当前均值'
+  return '当前值'
 }
 
 function sparklinePoints(panel) {
@@ -505,7 +570,7 @@ function handleDashboardManageCommand(command) {
 
 function barRows(panel) {
   const rawRows = panelRows(panel)
-  const rootFilesystemRows = panel.title === '磁盘使用率 Top'
+  const rootFilesystemRows = ['磁盘使用率 Top', '磁盘使用率'].includes(panel.title)
     ? rawRows.filter((row) => row.metric?.mountpoint === '/')
     : rawRows
   const sourceRows = rootFilesystemRows.length ? rootFilesystemRows : rawRows
@@ -612,7 +677,7 @@ function panelResultCount(panel) {
 }
 
 function panelDisplayValue(panel) {
-	const value = numberValue(panelRows(panel)[0])
+  const value = panelSummaryValue(panel)
   if (!Number.isFinite(value)) return '-'
   return formatByUnit(value, panel.unit)
 }
@@ -1430,7 +1495,7 @@ onBeforeUnmount(() => {
           <template v-else-if="panelVisualType(panel) === 'line'">
             <div class="trend-summary">
               <div class="trend-current">
-                <span>当前值</span>
+                <span>{{ trendCurrentLabel(panel) }}</span>
                 <strong>{{ panelDisplayValue(panel) }}</strong>
               </div>
               <div class="trend-stats">

@@ -41,8 +41,16 @@ type MonitorDatasourcePayload struct {
 const (
 	legacyAverageDiskUsagePromQL = `100 - (sum(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"}) / sum(node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*|/boot.*"}) * 100)`
 	averageRootDiskUsagePromQL   = `avg(100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))`
-	legacyDiskUsageTopPromQL     = `topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} * 100))`
-	diskUsageTopPromQL           = `topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))`
+	dashboardRootDiskUsagePromQL = `100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100)`
+	hostDiskIOPSPromQL           = `topk(10, sum by (instance) (rate(node_disk_reads_completed_total[5m]) + rate(node_disk_writes_completed_total[5m])))`
+	hostDiskReadTopPromQL        = `topk(10, sum by (instance) (rate(node_disk_read_bytes_total[5m])))`
+	hostDiskWriteTopPromQL       = `topk(10, sum by (instance) (rate(node_disk_written_bytes_total[5m])))`
+	hostUptimeTopPromQL          = `topk(10, (time() - node_boot_time_seconds) / 86400)`
+	hostCPUUsageTopPromQL        = `topk(10, 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100))`
+	hostNetworkReceiveTopPromQL  = `topk(10, sum by (instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))`
+	hostNetworkTransmitTopPromQL = `topk(10, sum by (instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))`
+	hostNetworkReceivePromQL     = `sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))`
+	hostNetworkTransmitPromQL    = `sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))`
 	defaultPodDetailPromQL       = `kube_pod_info`
 	podResourceDetailPromQL      = `topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))`
 	cpuRequestUsagePromQL        = `sum(kube_pod_container_resource_requests{resource="cpu"}) / sum(kube_node_status_allocatable{resource="cpu"}) * 100`
@@ -4971,7 +4979,7 @@ func (s *Service) GetMonitorDashboard(id uint) (map[string]any, error) {
 	if err := s.db.Where("dashboard_id = ?", id).Order("sort ASC, id ASC").Find(&panels).Error; err != nil {
 		return nil, err
 	}
-	if err := s.upgradeDefaultDiskUsagePanels(panels); err != nil {
+	if err := s.upgradeDefaultDiskUsagePanels(&panels); err != nil {
 		return nil, err
 	}
 	if err := s.removeDuplicateDefaultPodResourcePanels(&panels); err != nil {
@@ -4980,18 +4988,51 @@ func (s *Service) GetMonitorDashboard(id uint) (map[string]any, error) {
 	return map[string]any{"dashboard": dashboard, "panels": panels}, nil
 }
 
-// upgradeDefaultDiskUsagePanels keeps dashboards created by earlier releases on
-// the same root-filesystem metric definition used by the disk Top panel. Exact
-// query matching preserves any user-customized panel PromQL.
-func (s *Service) upgradeDefaultDiskUsagePanels(panels []model.MonitorDashboardPanel) error {
-	for index := range panels {
-		panel := &panels[index]
+// upgradeDefaultDiskUsagePanels applies the current host disk panel semantics
+// to shipped defaults only. Exact title and query matching preserves user-made
+// panels, including panels that happen to use similar metrics.
+func (s *Service) upgradeDefaultDiskUsagePanels(panels *[]model.MonitorDashboardPanel) error {
+	filtered := make([]model.MonitorDashboardPanel, 0, len(*panels))
+	for index := range *panels {
+		panel := &(*panels)[index]
+		isRetiredDefault := (panel.Title == "磁盘读取速率 Top" && panel.PromQL == hostDiskReadTopPromQL) ||
+			(panel.Title == "磁盘写入速率 Top" && panel.PromQL == hostDiskWriteTopPromQL) ||
+			(panel.Title == "系统运行时间 Top" && panel.PromQL == hostUptimeTopPromQL)
+		if isRetiredDefault {
+			if err := s.db.Delete(&model.MonitorDashboardPanel{}, panel.ID).Error; err != nil {
+				return err
+			}
+			continue
+		}
 		updates := map[string]any{}
 		switch {
-		case panel.Title == "平均磁盘使用率" && panel.PromQL == legacyAverageDiskUsagePromQL:
-			updates["prom_ql"] = averageRootDiskUsagePromQL
-		case panel.Title == "磁盘使用率 Top" && panel.PromQL == legacyDiskUsageTopPromQL:
-			updates["prom_ql"] = diskUsageTopPromQL
+		case panel.Title == "平均磁盘使用率" && (panel.PromQL == legacyAverageDiskUsagePromQL || panel.PromQL == averageRootDiskUsagePromQL):
+			updates["title"] = "磁盘使用率"
+			updates["prom_ql"] = dashboardRootDiskUsagePromQL
+			updates["chart_type"] = "line"
+		case panel.Title == "磁盘使用率 Top":
+			// Historical releases shipped this host card as either a line or bar.
+			// Its title identifies the retired default; convert it unconditionally
+			// so it becomes the requested per-node IOPS ranking.
+			updates["title"] = "磁盘 IOPS（次/秒）"
+			updates["prom_ql"] = hostDiskIOPSPromQL
+			updates["unit"] = "次/秒"
+			updates["chart_type"] = "line"
+		case panel.Title == "磁盘使用率" && panel.PromQL == dashboardRootDiskUsagePromQL && panel.ChartType != "line":
+			updates["chart_type"] = "line"
+		case panel.Title == "磁盘 IOPS（次/秒）" && panel.PromQL == hostDiskIOPSPromQL && panel.ChartType != "line":
+			updates["chart_type"] = "line"
+		case panel.Title == "CPU 使用率 Top" && panel.PromQL == hostCPUUsageTopPromQL && panel.ChartType == "line":
+			// A Top panel represents the latest ranking, not a time series.
+			updates["chart_type"] = "bar"
+		case panel.Title == "网络接收速率 Top" && panel.PromQL == hostNetworkReceiveTopPromQL:
+			updates["title"] = "网络接收速率"
+			updates["prom_ql"] = hostNetworkReceivePromQL
+			updates["chart_type"] = "line"
+		case panel.Title == "网络发送速率 Top" && panel.PromQL == hostNetworkTransmitTopPromQL:
+			updates["title"] = "网络发送速率"
+			updates["prom_ql"] = hostNetworkTransmitPromQL
+			updates["chart_type"] = "line"
 		case panel.Title == "CPU Request 使用率" && panel.PromQL == cpuRequestUsagePromQL && panel.ChartType == "gauge":
 			updates["chart_type"] = "line"
 		case panel.Title == "内存 Request 使用率" && panel.PromQL == memoryRequestUsagePromQL && panel.ChartType == "gauge":
@@ -5000,21 +5041,28 @@ func (s *Service) upgradeDefaultDiskUsagePanels(panels []model.MonitorDashboardP
 			updates["title"] = "Pod 资源明细"
 			updates["prom_ql"] = podResourceDetailPromQL
 		default:
-			continue
+			// No migration required. Keep the panel in the response unchanged.
 		}
-		if err := s.db.Model(&model.MonitorDashboardPanel{}).Where("id = ?", panel.ID).Updates(updates).Error; err != nil {
-			return err
+		if len(updates) > 0 {
+			if err := s.db.Model(&model.MonitorDashboardPanel{}).Where("id = ?", panel.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+			if value, ok := updates["prom_ql"].(string); ok {
+				panel.PromQL = value
+			}
+			if value, ok := updates["chart_type"].(string); ok {
+				panel.ChartType = value
+			}
+			if value, ok := updates["title"].(string); ok {
+				panel.Title = value
+			}
+			if value, ok := updates["unit"].(string); ok {
+				panel.Unit = value
+			}
 		}
-		if value, ok := updates["prom_ql"].(string); ok {
-			panel.PromQL = value
-		}
-		if value, ok := updates["chart_type"].(string); ok {
-			panel.ChartType = value
-		}
-		if value, ok := updates["title"].(string); ok {
-			panel.Title = value
-		}
+		filtered = append(filtered, *panel)
 	}
+	*panels = filtered
 	return nil
 }
 

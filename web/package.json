@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:regression": "node --test tests/*.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

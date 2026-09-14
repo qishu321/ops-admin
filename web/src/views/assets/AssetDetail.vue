@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Connection, EditPen, Monitor } from '@element-plus/icons-vue'
 import { assetDatabaseInfo, assetHostInfo, queryAssetChangeLogs } from '../../api/asset'
@@ -12,6 +12,7 @@ const props = defineProps({ resourceType: { type: String, required: true } })
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
+const detailReady = ref(false)
 const asset = ref({})
 const changes = ref([])
 const { environmentName } = useEnvironmentOptions()
@@ -57,6 +58,8 @@ function actionText(action) {
 
 async function loadData() {
   loading.value = true
+  detailReady.value = false
+  asset.value = {}
   try {
     const id = Number(route.params.id)
     const loaders = { host: assetHostInfo, database: assetDatabaseInfo, k8s: queryK8sClusterInfo }
@@ -67,6 +70,7 @@ async function loadData() {
     asset.value = detail || {}
     changes.value = logs || []
   } finally {
+    detailReady.value = true
     loading.value = false
   }
 }
@@ -76,7 +80,7 @@ function enterConsole() {
   if (props.resourceType === 'k8s') router.push({ path: '/containers/k8s/overview', query: { clusterId: route.params.id } })
 }
 
-onMounted(loadData)
+watch(() => [props.resourceType, route.params.id], loadData, { immediate: true })
 </script>
 
 <template>
@@ -113,7 +117,7 @@ onMounted(loadData)
     </section>
 
     <HostMetrics v-if="resourceType === 'host'" :host-id="Number(route.params.id)" />
-    <DatabaseMetrics v-if="resourceType === 'database'" :database-id="Number(route.params.id)" :enabled="Boolean(asset.monitorEnabled)" />
+    <DatabaseMetrics v-if="resourceType === 'database' && detailReady" :key="`database-metrics-${route.params.id}`" :database-id="Number(route.params.id)" :enabled="Boolean(asset.monitorEnabled)" />
 
     <section class="detail-section">
       <div class="section-heading"><h3>最近变更</h3><span>记录关键资产操作，便于追溯</span></div>

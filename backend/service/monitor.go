@@ -225,6 +225,10 @@ type MonitorDashboardPanelPayload struct {
 	Unit         string `json:"unit"`
 	ChartType    string `json:"chartType"`
 	Span         int    `json:"span"`
+	GridX        int    `json:"gridX"`
+	GridY        int    `json:"gridY"`
+	GridW        int    `json:"gridW"`
+	GridH        int    `json:"gridH"`
 	Sort         int    `json:"sort"`
 	Status       int    `json:"status"`
 	Description  string `json:"description"`
@@ -4905,6 +4909,8 @@ func normalizeDashboardLayout(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "list":
 		return "list"
+	case "grid-custom":
+		return "grid-custom"
 	default:
 		return "grid"
 	}
@@ -4931,6 +4937,16 @@ func normalizePanelSpan(value int) int {
 	}
 	if value > 24 {
 		return 24
+	}
+	return value
+}
+
+func clampInt(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
 	}
 	return value
 }
@@ -5156,6 +5172,10 @@ func (s *Service) SaveMonitorDashboardPanel(payload MonitorDashboardPanelPayload
 		"unit":            strings.TrimSpace(payload.Unit),
 		"chart_type":      normalizePanelChartType(payload.ChartType),
 		"span":            normalizePanelSpan(payload.Span),
+		"grid_x":          clampInt(payload.GridX, 0, 23),
+		"grid_y":          max(payload.GridY, 0),
+		"grid_w":          clampInt(payload.GridW, 0, 24),
+		"grid_h":          clampInt(payload.GridH, 0, 40),
 		"sort":            payload.Sort,
 		"status":          normalizeMonitorStatus(payload.Status),
 		"description":     Trimmed(payload.Description),

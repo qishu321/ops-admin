@@ -291,6 +291,10 @@ type MonitorDashboardPanel struct {
 	Unit           string    `json:"unit" gorm:"size:32"`
 	ChartType      string    `json:"chartType" gorm:"size:32;default:stat"`
 	Span           int       `json:"span" gorm:"default:8"`
+	GridX          int       `json:"gridX" gorm:"default:0"`
+	GridY          int       `json:"gridY" gorm:"default:0"`
+	GridW          int       `json:"gridW" gorm:"default:0"`
+	GridH          int       `json:"gridH" gorm:"default:0"`
 	Sort           int       `json:"sort" gorm:"default:0;index"`
 	Status         int       `json:"status" gorm:"default:1;index"`
 	Description    string    `json:"description" gorm:"size:255"`

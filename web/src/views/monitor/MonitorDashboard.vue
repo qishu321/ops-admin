@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleCheck, Coin, Connection, Cpu, DataLine, FullScreen, Monitor, MoreFilled, Plus, Refresh, Setting, TrendCharts, Warning } from '@element-plus/icons-vue'
+import { BottomRight, CircleCheck, Coin, Connection, Cpu, DataLine, FullScreen, Monitor, MoreFilled, Plus, Rank, Refresh, Setting, TrendCharts, Warning } from '@element-plus/icons-vue'
 import {
   deleteMonitorDashboard,
   deleteMonitorDashboardPanel,
@@ -30,6 +30,10 @@ const panelDialogVisible = ref(false)
 const editingDashboard = ref(false)
 const editingPanel = ref(false)
 const activeTemplate = ref('blank')
+const layoutEditing = ref(false)
+const layoutInteraction = ref(null)
+const layoutSaving = ref(false)
+const layoutNeedsMigration = ref(false)
 const autoRefreshSeconds = ref(0)
 const timeRangeSeconds = ref(3600)
 const isFullscreen = ref(false)
@@ -40,6 +44,11 @@ let panelRefreshVersion = 0
 const panelResultCache = new Map()
 const PANEL_QUERY_CONCURRENCY = 4
 const PANEL_CACHE_TTL = 15 * 1000
+const GRID_COLUMNS = 24
+const GRID_ROW_HEIGHT = 32
+const GRID_GAP = 9
+const GRID_MIN_WIDTH = 6
+const GRID_MIN_HEIGHT = 7
 const inspectionFilter = ref('all')
 const podResourceNamespace = ref('')
 const retiredK8sPanelTitles = new Set(['Pod 累计重启次数 Top', 'Pod 最近 1 小时新增重启 Top'])
@@ -78,6 +87,7 @@ const k8sPanelTitleMap = {
 
 const pageMode = computed(() => route.path.includes('/monitor/inspections') ? 'inspection' : 'dashboard')
 const pageLayout = computed(() => pageMode.value === 'inspection' ? 'list' : 'grid')
+const isCustomGridLayout = computed(() => activeDashboard.value?.layout === 'grid-custom')
 const pageTitle = computed(() => pageMode.value === 'inspection' ? '巡检大屏' : '监控大屏')
 const pageDescription = computed(() => (
   pageMode.value === 'inspection'
@@ -102,6 +112,10 @@ const panelForm = reactive({
   unit: '',
   chartType: 'stat',
   span: 12,
+  gridX: 0,
+  gridY: 0,
+  gridW: 0,
+  gridH: 0,
   sort: 0,
   status: 1,
   description: ''
@@ -174,6 +188,7 @@ const headlinePanels = computed(() => activePanels.value
 const headlinePanelIds = computed(() => new Set(headlinePanels.value.map((item) => item.id)))
 const visualPanels = computed(() => {
   const items = panels.value.filter((item) => !headlinePanelIds.value.has(item.id) && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title)))
+  if (isCustomGridLayout.value) return [...items].sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0))
   if (isK8sDashboard.value) {
     // Keep the fullscreen six-column grid visually coherent: trends share one
     // row, ranking/status cards share the next, and the resource table stays last.
@@ -239,7 +254,11 @@ const inspectionPanels = computed(() => {
     .slice()
     .sort((left, right) => priority[panelStateKey(left)] - priority[panelStateKey(right)] || Number(left.sort || 0) - Number(right.sort || 0))
 })
-const visibleDashboards = computed(() => dashboards.value.filter((item) => (item.layout || 'grid') === pageLayout.value))
+const visibleDashboards = computed(() => dashboards.value.filter((item) => (
+  pageMode.value === 'inspection'
+    ? item.layout === 'list'
+    : ['grid', 'grid-custom'].includes(item.layout || 'grid')
+)))
 const isListLayout = computed(() => pageMode.value === 'inspection')
 const isK8sDashboard = computed(() => {
   if (isListLayout.value) return false
@@ -307,6 +326,10 @@ function resetPanelForm() {
     unit: '',
     chartType: 'stat',
     span: 12,
+    gridX: 0,
+    gridY: 0,
+    gridW: 0,
+    gridH: 0,
     sort: panels.value.length + 1,
     status: 1,
     description: ''
@@ -804,6 +827,7 @@ async function loadDashboard(id = activeDashboardId.value) {
     activeDashboard.value = data.dashboard
     panels.value = data.panels || []
     activeDashboardId.value = id
+    layoutNeedsMigration.value = data.dashboard?.layout === 'grid-custom' && initializePanelGrid().length > 0
     // Render the dashboard shell immediately. Panels fill in progressively so a
     // large K8s dashboard does not block the first paint on dozens of queries.
     Object.keys(panelResults).forEach((key) => delete panelResults[key])
@@ -820,10 +844,246 @@ function openCreateDashboard() {
   dashboardDialogVisible.value = true
 }
 
+function panelGridStyle(panel) {
+  if (!isCustomGridLayout.value || isFullscreen.value) return {}
+  return {
+    gridColumn: `${Number(panel.gridX || 0) + 1} / span ${normalizeGridWidth(panel.gridW || panel.span)}`,
+    gridRow: `${Number(panel.gridY || 0) + 1} / span ${normalizeGridHeight(panel.gridH, panel)}`
+  }
+}
+
+function normalizeGridWidth(value) {
+  return Math.max(GRID_MIN_WIDTH, Math.min(GRID_COLUMNS, Math.round(Number(value || 12))))
+}
+
+function normalizeGridHeight(value, panel) {
+  const fallback = panel?.chartType === 'table' ? 14 : panel?.chartType === 'stat' ? 7 : 9
+  return Math.max(GRID_MIN_HEIGHT, Math.min(40, Math.round(Number(value || fallback))))
+}
+
+function panelGridRect(panel) {
+  return {
+    x: Math.max(0, Math.min(GRID_COLUMNS - normalizeGridWidth(panel.gridW || panel.span), Number(panel.gridX || 0))),
+    y: Math.max(0, Number(panel.gridY || 0)),
+    w: normalizeGridWidth(panel.gridW || panel.span),
+    h: normalizeGridHeight(panel.gridH, panel)
+  }
+}
+
+function gridRectsOverlap(left, right) {
+  return left.x < right.x + right.w && left.x + left.w > right.x && left.y < right.y + right.h && left.y + left.h > right.y
+}
+
+function initializePanelGrid(items = visualPanels.value) {
+  const placed = []
+  const changed = []
+  ;[...items].sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0)).forEach((panel) => {
+    const hadGridPosition = Number(panel.gridW || 0) > 0 && Number(panel.gridH || 0) > 0
+    const rect = panelGridRect(panel)
+    if (!hadGridPosition || placed.some((item) => gridRectsOverlap(rect, item))) {
+      rect.x = 0
+      rect.y = 0
+      let found = false
+      for (let y = 0; y < 1000 && !found; y += 1) {
+        for (let x = 0; x <= GRID_COLUMNS - rect.w; x += 1) {
+          const candidate = { ...rect, x, y }
+          if (!placed.some((item) => gridRectsOverlap(candidate, item))) {
+            Object.assign(rect, candidate)
+            found = true
+            break
+          }
+        }
+      }
+    }
+    if (panel.gridX !== rect.x || panel.gridY !== rect.y || panel.gridW !== rect.w || panel.gridH !== rect.h) changed.push(panel)
+    Object.assign(panel, { gridX: rect.x, gridY: rect.y, gridW: rect.w, gridH: rect.h, span: rect.w })
+    placed.push(rect)
+  })
+  return changed
+}
+
+function captureCurrentPanelGrid() {
+  const grid = document.querySelector('.panel-grid')
+  if (!grid) return initializePanelGrid()
+  const gridRect = grid.getBoundingClientRect()
+  if (!gridRect.width) return initializePanelGrid()
+
+  const panelsById = new Map(visualPanels.value.map((panel) => [String(panel.id), panel]))
+  const captured = []
+  grid.querySelectorAll(':scope > .chart-panel').forEach((element, index) => {
+    const panel = panelsById.get(String(element.dataset.panelId || ''))
+    if (!panel) return
+    const rect = element.getBoundingClientRect()
+    const width = normalizeGridWidth(Math.round((rect.width / gridRect.width) * GRID_COLUMNS))
+    const x = Math.max(0, Math.min(GRID_COLUMNS - width, Math.round(((rect.left - gridRect.left) / gridRect.width) * GRID_COLUMNS)))
+    const rowStep = GRID_ROW_HEIGHT + GRID_GAP
+    const y = Math.max(0, Math.round((rect.top - gridRect.top) / rowStep))
+    const height = normalizeGridHeight(Math.round((rect.height + GRID_GAP) / rowStep), panel)
+    Object.assign(panel, {
+      gridX: x,
+      gridY: y,
+      gridW: width,
+      gridH: height,
+      span: width,
+      sort: index + 1
+    })
+    captured.push(panel)
+  })
+
+  if (captured.length !== visualPanels.value.length) return initializePanelGrid()
+  return captured
+}
+
+async function savePanelLayout(panel) {
+  await saveMonitorDashboardPanel({
+    id: panel.id, dashboardId: panel.dashboardId, datasourceId: panel.datasourceId,
+    title: panel.title, promql: panel.promql, unit: panel.unit, chartType: panel.chartType,
+    span: panel.gridW || panel.span, gridX: panel.gridX, gridY: panel.gridY, gridW: panel.gridW, gridH: panel.gridH,
+    sort: panel.sort, status: panel.status, description: panel.description
+  })
+}
+
+async function enableLayoutEditing() {
+  if (!activeDashboard.value) return
+  if (layoutEditing.value) {
+    layoutEditing.value = false
+    return
+  }
+  if (!isCustomGridLayout.value) {
+    const captured = captureCurrentPanelGrid()
+    await saveMonitorDashboard({ ...activeDashboard.value, layout: 'grid-custom' })
+    activeDashboard.value.layout = 'grid-custom'
+    await Promise.all(captured.map(savePanelLayout))
+    layoutNeedsMigration.value = false
+  } else {
+    const changed = initializePanelGrid()
+    if (changed.length || layoutNeedsMigration.value) {
+      await Promise.all(visualPanels.value.map(savePanelLayout))
+      layoutNeedsMigration.value = false
+    }
+  }
+  layoutEditing.value = true
+}
+
+function startPanelInteraction(event, panel, type) {
+  if (!layoutEditing.value || event.button !== 0) return
+  const grid = event.currentTarget.closest('.panel-grid')
+  if (!grid) return
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  const rect = panelGridRect(panel)
+  const gridRect = grid.getBoundingClientRect()
+  layoutInteraction.value = {
+    pointerId: event.pointerId,
+    panel,
+    type,
+    startX: event.clientX,
+    startY: event.clientY,
+    origin: rect,
+    columnStep: (gridRect.width - GRID_GAP * (GRID_COLUMNS - 1)) / GRID_COLUMNS + GRID_GAP,
+    rowStep: GRID_ROW_HEIGHT + GRID_GAP
+  }
+}
+
+function updatePanelInteraction(event) {
+  const interaction = layoutInteraction.value
+  if (!interaction || interaction.pointerId !== event.pointerId) return
+  const dx = Math.round((event.clientX - interaction.startX) / interaction.columnStep)
+  const dy = Math.round((event.clientY - interaction.startY) / interaction.rowStep)
+  const { panel, origin } = interaction
+  if (interaction.type === 'move') {
+    panel.gridX = Math.max(0, Math.min(GRID_COLUMNS - origin.w, origin.x + dx))
+    panel.gridY = Math.max(0, origin.y + dy)
+  } else {
+    panel.gridW = Math.max(GRID_MIN_WIDTH, Math.min(GRID_COLUMNS - origin.x, origin.w + dx))
+    panel.gridH = Math.max(GRID_MIN_HEIGHT, Math.min(40, origin.h + dy))
+    panel.span = panel.gridW
+  }
+}
+
+function pushGridCollisions(activePanel) {
+  const queue = [activePanel]
+  const seen = new Set()
+  while (queue.length) {
+    const current = queue.shift()
+    const currentRect = panelGridRect(current)
+    visualPanels.value.forEach((panel) => {
+      if (panel.id === current.id || panel.id === activePanel.id && current.id !== activePanel.id) return
+      const key = `${current.id}:${panel.id}:${panel.gridY}`
+      if (!seen.has(key) && gridRectsOverlap(currentRect, panelGridRect(panel))) {
+        seen.add(key)
+        panel.gridY = currentRect.y + currentRect.h
+        queue.push(panel)
+      }
+    })
+  }
+}
+
+async function persistGridLayout() {
+  const ordered = [...visualPanels.value].sort((left, right) => Number(left.gridY || 0) - Number(right.gridY || 0) || Number(left.gridX || 0) - Number(right.gridX || 0))
+  ordered.forEach((panel, index) => { panel.sort = index + 1 })
+  layoutSaving.value = true
+  try {
+    await Promise.all(ordered.map(savePanelLayout))
+    ElMessage.success('布局已保存')
+  } catch {
+    ElMessage.error('保存布局失败')
+  } finally {
+    layoutSaving.value = false
+  }
+}
+
+async function finishPanelInteraction(event) {
+  const interaction = layoutInteraction.value
+  if (!interaction || interaction.pointerId !== event.pointerId) return
+  pushGridCollisions(interaction.panel)
+  layoutInteraction.value = null
+  await persistGridLayout()
+}
+
+async function movePanelWithKeyboard(event, panel) {
+  const changes = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+  const delta = changes[event.key]
+  if (!delta) return
+  event.preventDefault()
+  const step = event.shiftKey ? 4 : 1
+  const rect = panelGridRect(panel)
+  panel.gridX = Math.max(0, Math.min(GRID_COLUMNS - rect.w, rect.x + delta[0] * step))
+  panel.gridY = Math.max(0, rect.y + delta[1] * step)
+  pushGridCollisions(panel)
+  await persistGridLayout()
+}
+
+async function resizePanelWithKeyboard(event, panel) {
+  const changes = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+  const delta = changes[event.key]
+  if (!delta) return
+  event.preventDefault()
+  const step = event.shiftKey ? 4 : 1
+  const rect = panelGridRect(panel)
+  panel.gridW = Math.max(GRID_MIN_WIDTH, Math.min(GRID_COLUMNS - rect.x, rect.w + delta[0] * step))
+  panel.gridH = Math.max(GRID_MIN_HEIGHT, Math.min(40, rect.h + delta[1] * step))
+  panel.span = panel.gridW
+  pushGridCollisions(panel)
+  await persistGridLayout()
+}
+
+async function restoreDefaultLayout() {
+  if (!activeDashboard.value) return
+  await saveMonitorDashboard({ ...activeDashboard.value, layout: 'grid' })
+  activeDashboard.value.layout = 'grid'
+  layoutEditing.value = false
+  ElMessage.success('已恢复默认布局')
+}
+
+function selectDashboardTemplate(templateKey) {
+  activeTemplate.value = templateKey
+}
+
 function openEditDashboard() {
   if (!activeDashboard.value) return
   editingDashboard.value = true
-  Object.assign(dashboardForm, { ...activeDashboard.value, layout: pageLayout.value })
+  Object.assign(dashboardForm, activeDashboard.value)
   activeTemplate.value = 'blank'
   dashboardDialogVisible.value = true
 }
@@ -883,7 +1143,7 @@ async function submitDashboard() {
     ElMessage.warning(`请输入${pageTitle.value}名称`)
     return
   }
-  dashboardForm.layout = pageLayout.value
+  if (!editingDashboard.value) dashboardForm.layout = pageLayout.value
   if (!editingDashboard.value && currentTemplate.value.panels.length && !defaultDatasourceId.value) {
     ElMessage.warning('请先创建 Prometheus 数据源，再使用模板创建大屏')
     return
@@ -1152,7 +1412,9 @@ onBeforeUnmount(() => {
           </div>
           <div class="dashboard-primary-actions">
             <el-button v-if="!isListLayout" :icon="FullScreen" @click="toggleFullscreen" :disabled="!activeDashboard">{{ isFullscreen ? '退出全屏' : '大屏展示' }}</el-button>
-            <el-button v-else @click="exportInspectionReportPdf" :disabled="!activeDashboard">导出巡检报告 PDF</el-button>
+            <el-button v-if="!isListLayout && !isFullscreen" :type="layoutEditing ? 'primary' : 'default'" @click="enableLayoutEditing" :loading="layoutSaving" :disabled="!activeDashboard">{{ layoutEditing ? '完成布局' : '编辑布局' }}</el-button>
+            <el-button v-if="!isListLayout && !isFullscreen && isCustomGridLayout" @click="restoreDefaultLayout">恢复默认布局</el-button>
+            <el-button v-if="isListLayout" @click="exportInspectionReportPdf" :disabled="!activeDashboard">导出巡检报告 PDF</el-button>
             <el-button v-if="!isFullscreen && missingK8sPodPanels.length" type="warning" plain :loading="syncingK8sPodPanels" @click="syncK8sPodPanels">补全 Pod 监控（{{ missingK8sPodPanels.length }}）</el-button>
             <el-button v-if="!isFullscreen" type="primary" :icon="Plus" @click="openCreatePanel" :disabled="!activeDashboard">新增面板</el-button>
           </div>
@@ -1270,6 +1532,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else class="dashboard-grid-shell">
+        <div v-if="layoutEditing" class="dashboard-layout-tip" role="status">
+          <el-icon><Rank /></el-icon>
+          <span>拖动面板标题栏调整位置，拖动右下角调整宽度和高度；位置按 24 列网格自动对齐。</span>
+          <span class="dashboard-layout-saving">{{ layoutSaving ? '正在保存…' : '松开后自动保存' }}</span>
+        </div>
         <!-- <div class="dashboard-grid-toolbar"> -->
           <!-- <div class="dashboard-grid-heading">
             <strong>{{ isK8sDashboard ? 'K8s 资源与 Pod 监控' : '监控图表' }}</strong>
@@ -1280,32 +1547,61 @@ onBeforeUnmount(() => {
             <el-button size="small" @click="refreshProblemPanels" :disabled="!activePanels.length">复核异常</el-button>
           </div> -->
         <!-- </div> -->
-        <div class="panel-grid" :class="{ 'k8s-panel-grid': isK8sDashboard }">
+        <div class="panel-grid" :class="{ 'k8s-panel-grid': isK8sDashboard, 'is-custom-layout': isCustomGridLayout && !isFullscreen, 'is-layout-editing': layoutEditing }">
         <div
           v-for="panel in visualPanels"
           :key="panel.id"
           class="metric-panel chart-panel"
+          :data-panel-id="panel.id"
            :class="[`panel-${panelVisualType(panel)}`, { disabled: panel.status !== 1, 'k8s-pod-panel': isK8sDashboard && panel.title.startsWith('Pod '), 'k8s-wide-panel': isK8sDashboard && panel.title === 'Pod 资源明细' }]"
-           v-loading="panelPending[panel.id]"
+            :style="panelGridStyle(panel)"
+            v-loading="panelPending[panel.id]"
            :element-loading-background="isFullscreen ? 'rgba(8, 15, 28, 0.82)' : 'rgba(255, 255, 255, 0.72)'"
         >
           <div class="panel-glow"></div>
           <div class="panel-head">
             <div class="panel-identity">
               <div class="panel-title-row">
+                <button
+                  v-if="layoutEditing"
+                  type="button"
+                  class="panel-move-handle"
+                  aria-label="拖动面板；也可使用方向键移动，按住 Shift 可一次移动四格"
+                  @pointerdown.stop="startPanelInteraction($event, panel, 'move')"
+                  @pointermove="updatePanelInteraction"
+                  @pointerup="finishPanelInteraction"
+                  @pointercancel="finishPanelInteraction"
+                  @keydown="movePanelWithKeyboard($event, panel)"
+                ><el-icon><Rank /></el-icon></button>
                 <i class="panel-signal"></i>
                 <strong>{{ panelDisplayTitle(panel) }}</strong>
               </div>
               <span>{{ panelChartLabel(panelVisualType(panel)) }} · {{ panelVisibleSeriesCount(panel) }} 条序列 · {{ currentDatasourceName }}</span>
             </div>
             <div class="panel-actions">
-              <span v-if="isK8sDashboard && !['table', 'stat'].includes(panelVisualType(panel)) && panelRows(panel).length" class="k8s-value-badge">{{ panelDisplayValue(panel) }}</span>
-              <span class="panel-state" :class="`is-${panelStateType(panel)}`"><i></i>{{ panelState(panel) }}</span>
-              <el-button link type="primary" @click="refreshPanel(panel)">刷新</el-button>
-              <el-button link type="primary" @click="openEditPanel(panel)">编辑</el-button>
-              <el-button link type="danger" @click="handleDeletePanel(panel)">删除</el-button>
+              <template v-if="layoutEditing">
+                <span class="panel-drag-hint">{{ panel.gridW }} × {{ panel.gridH }}</span>
+              </template>
+              <template v-else>
+                <span v-if="isK8sDashboard && !['table', 'stat'].includes(panelVisualType(panel)) && panelRows(panel).length" class="k8s-value-badge">{{ panelDisplayValue(panel) }}</span>
+                <span class="panel-state" :class="`is-${panelStateType(panel)}`"><i></i>{{ panelState(panel) }}</span>
+                <el-button link type="primary" @click="refreshPanel(panel)">刷新</el-button>
+                <el-button link type="primary" @click="openEditPanel(panel)">编辑</el-button>
+                <el-button link type="danger" @click="handleDeletePanel(panel)">删除</el-button>
+              </template>
             </div>
           </div>
+          <button
+            v-if="layoutEditing"
+            type="button"
+            class="panel-resize-handle"
+            aria-label="调整面板大小；也可使用方向键调整，按住 Shift 可一次调整四格"
+            @pointerdown.stop="startPanelInteraction($event, panel, 'resize')"
+            @pointermove="updatePanelInteraction"
+            @pointerup="finishPanelInteraction"
+            @pointercancel="finishPanelInteraction"
+            @keydown="resizePanelWithKeyboard($event, panel)"
+          ><el-icon><BottomRight /></el-icon></button>
 
           <div v-if="panelResults[panel.id]?.error" class="panel-error">{{ panelResults[panel.id].error }}</div>
 
@@ -1588,11 +1884,15 @@ onBeforeUnmount(() => {
       <el-form label-width="100px">
         <el-form-item label="名称" required><el-input v-model="dashboardForm.name" :placeholder="`例如：生产环境${pageTitle}`" /></el-form-item>
         <el-form-item v-if="!editingDashboard" label="大屏模板">
-          <div class="template-grid">
-            <button v-for="item in dashboardTemplates" :key="item.key" type="button" class="template-card" :class="{ active: activeTemplate === item.key }" @click="activeTemplate = item.key">
+          <div class="template-picker">
+            <div class="template-grid" role="radiogroup" aria-label="大屏模板">
+            <button v-for="item in dashboardTemplates" :key="item.key" type="button" class="template-card" :class="{ active: activeTemplate === item.key }" role="radio" :aria-checked="activeTemplate === item.key" @click="selectDashboardTemplate(item.key)">
+              <span v-if="activeTemplate === item.key" class="template-selected"><el-icon><CircleCheck /></el-icon>已选择</span>
               <strong>{{ item.name }}</strong>
               <span>{{ item.description }}</span>
             </button>
+            </div>
+            <div class="template-selection-hint" aria-live="polite">当前选择：<strong>{{ currentTemplate.name }}</strong><span>{{ currentTemplate.panels.length ? `，创建后将生成 ${currentTemplate.panels.length} 个默认面板` : '，创建后可手动新增 PromQL 面板' }}</span></div>
           </div>
         </el-form-item>
         <el-form-item label="类型">
@@ -1977,6 +2277,70 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(240px, 1fr));
   gap: 14px;
+}
+.panel-grid.is-layout-editing > .chart-panel {
+  outline: 1px dashed rgba(59, 130, 246, .42);
+  outline-offset: 3px;
+  user-select: none;
+}
+.panel-grid.is-layout-editing > .chart-panel:hover {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, .2), 0 10px 24px rgba(37, 99, 235, .12);
+}
+.dashboard-layout-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  background: #eff6ff;
+  color: #315b89;
+  font-size: 12px;
+}
+.dashboard-layout-tip .el-icon { color: #2563eb; font-size: 16px; }
+.dashboard-layout-saving { margin-left: auto; color: #64748b; white-space: nowrap; }
+.panel-drag-hint {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.panel-move-handle,
+.panel-resize-handle {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: #2563eb;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+.panel-move-handle {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: #eff6ff;
+}
+.panel-move-handle:active,
+.panel-resize-handle:active { cursor: grabbing; }
+.panel-move-handle:focus-visible,
+.panel-resize-handle:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.panel-resize-handle {
+  position: absolute;
+  z-index: 5;
+  right: 3px;
+  bottom: 3px;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: rgba(239, 246, 255, .94);
+  cursor: nwse-resize;
 }
 .dashboard-grid-shell {
   min-width: 0;
@@ -2421,7 +2785,11 @@ onBeforeUnmount(() => {
   gap: 12px;
   width: 100%;
 }
+.template-picker {
+  width: 100%;
+}
 .template-card {
+  position: relative;
   min-height: 118px;
   padding: 14px;
   border: 1px solid #dce7f7;
@@ -2430,6 +2798,15 @@ onBeforeUnmount(() => {
   color: #263b5f;
   text-align: left;
   cursor: pointer;
+  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.template-card:hover {
+  border-color: #8cb7ff;
+  background: #f4f8ff;
+}
+.template-card:focus-visible {
+  outline: 3px solid rgba(59, 130, 246, .25);
+  outline-offset: 2px;
 }
 .template-card strong,
 .template-card span {
@@ -2441,9 +2818,41 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 .template-card.active {
-  border-color: #3b82f6;
-  background: #eff6ff;
-  box-shadow: inset 0 0 0 1px #3b82f6;
+  border: 2px solid #3b82f6;
+  background: linear-gradient(145deg, #eff6ff, #f8fbff);
+  box-shadow: 0 8px 20px rgba(59, 130, 246, .16), inset 0 0 0 1px rgba(255, 255, 255, .75);
+  transform: translateY(-1px);
+}
+.template-selected {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 3px;
+  margin: 0 !important;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #3b82f6;
+  color: #fff !important;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.template-selected .el-icon {
+  font-size: 12px;
+}
+.template-selection-hint {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid #d6e6ff;
+  border-radius: 8px;
+  background: #f6faff;
+  color: #64748b;
+  font-size: 13px;
+}
+.template-selection-hint strong {
+  color: #2563eb;
 }
 
 /* Grafana/Nightingale inspired observability workspace. */
@@ -3678,6 +4087,19 @@ onBeforeUnmount(() => {
   display: flex;
   min-height: 58px;
 }
+@media (min-width: 761px) {
+  .panel-grid.is-custom-layout {
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    grid-auto-rows: 32px;
+    grid-auto-flow: row;
+    gap: 9px;
+  }
+  .panel-grid.is-custom-layout > .chart-panel {
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+  }
+}
 .is-k8s-dashboard .trend-chart {
   padding: 20px 18px 0;
 }
@@ -4071,6 +4493,7 @@ onBeforeUnmount(() => {
   .is-k8s-dashboard .dashboard-kpi-card:last-child:nth-child(odd) { grid-column: span 1; }
   .panel-grid > .chart-panel,
   .k8s-panel-grid > .chart-panel { grid-column: span 1; }
+  .panel-grid.is-custom-layout > .chart-panel { grid-column: 1 !important; grid-row: auto !important; min-height: 260px; }
   .pod-resource-toolbar { align-items: flex-start; flex-direction: column; }
   .pod-resource-toolbar .el-select { width: 100%; }
   .dashboard-grid-toolbar,.dashboard-grid-heading { align-items: flex-start; flex-direction: column; }

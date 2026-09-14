@@ -167,6 +167,31 @@ const headlinePanels = computed(() => activePanels.value
 const headlinePanelIds = computed(() => new Set(headlinePanels.value.map((item) => item.id)))
 const visualPanels = computed(() => {
   const items = panels.value.filter((item) => !headlinePanelIds.value.has(item.id) && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title)))
+  if (isK8sDashboard.value) {
+    // Keep the fullscreen six-column grid visually coherent: trends share one
+    // row, ranking/status cards share the next, and the resource table stays last.
+    const k8sOrder = [
+      'CPU Request 使用率',
+      '内存 Request 使用率',
+      'Pod CPU 使用量 Top',
+      'Pod 内存使用量 Top',
+      'Pod CPU 使用趋势',
+      'Pod 内存使用趋势',
+      '命名空间 Pod 分布',
+      '节点 Pod 分布',
+      '工作负载副本可用率',
+      'Pod 网络接收速率 Top',
+      'Pod 网络发送速率 Top',
+      '异常原因 Top',
+      'Pod 资源明细'
+    ]
+    const orderByTitle = new Map(k8sOrder.map((title, index) => [title, index]))
+    return [...items].sort((left, right) => {
+      const leftOrder = orderByTitle.get(left.title) ?? k8sOrder.length
+      const rightOrder = orderByTitle.get(right.title) ?? k8sOrder.length
+      return leftOrder - rightOrder || Number(left.sort || 0) - Number(right.sort || 0)
+    })
+  }
   const memoryTrendIndex = items.findIndex((item) => item.title === '内存使用趋势')
   const networkReceiveIndex = items.findIndex((item) => item.title === '网络接收速率 Top')
   if (memoryTrendIndex >= 0 && networkReceiveIndex >= 0) {
@@ -225,6 +250,18 @@ function panelVisualType(panel) {
 function panelDisplayTitle(panel) {
   if (!isK8sDashboard.value) return panel?.title
   return k8sPanelTitleMap[panel?.title] || panel?.title
+}
+
+function isK8sTopRankingPanel(panel) {
+  return isK8sDashboard.value && panelVisualType(panel) === 'bar' && String(panel?.title || '').includes('Top')
+}
+
+function isK8sDistributionPanel(panel) {
+  return isK8sDashboard.value && [
+    '命名空间 Pod 分布',
+    '节点 Pod 分布',
+    '工作负载副本可用率'
+  ].includes(panel?.title)
 }
 
 function resetDashboardForm() {
@@ -1058,9 +1095,9 @@ onBeforeUnmount(() => {
 
         <div class="dashboard-filter-bar">
           <div class="dashboard-filter-main">
-            <label><span>数据源</span><el-select v-model="selectedDatasourceId" placeholder="选择数据源" @change="handleDatasourceChange"><el-option v-for="item in datasourceOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
-            <label><span>时间范围</span><el-select v-model="timeRangeSeconds" @change="refreshAllPanels"><el-option label="最近 15 分钟" :value="900" /><el-option label="最近 1 小时" :value="3600" /><el-option label="最近 6 小时" :value="21600" /><el-option label="最近 24 小时" :value="86400" /></el-select></label>
-            <label><span>自动刷新</span><el-select v-model="autoRefreshSeconds" @change="restartAutoRefresh"><el-option label="关闭刷新" :value="0" /><el-option label="10 秒刷新" :value="10" /><el-option label="30 秒刷新" :value="30" /><el-option label="60 秒刷新" :value="60" /></el-select></label>
+            <label><span>数据源</span><el-select v-model="selectedDatasourceId" :teleported="!isFullscreen" placeholder="选择数据源" @change="handleDatasourceChange"><el-option v-for="item in datasourceOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
+            <label><span>时间范围</span><el-select v-model="timeRangeSeconds" :teleported="!isFullscreen" @change="refreshAllPanels"><el-option label="最近 15 分钟" :value="900" /><el-option label="最近 1 小时" :value="3600" /><el-option label="最近 6 小时" :value="21600" /><el-option label="最近 24 小时" :value="86400" /></el-select></label>
+            <label><span>自动刷新</span><el-select v-model="autoRefreshSeconds" :teleported="!isFullscreen" @change="restartAutoRefresh"><el-option label="关闭刷新" :value="0" /><el-option label="10 秒刷新" :value="10" /><el-option label="30 秒刷新" :value="30" /><el-option label="60 秒刷新" :value="60" /></el-select></label>
           </div>
           <div class="dashboard-range-presets"><el-button v-for="item in [{ label: '15分钟', value: 900 }, { label: '1小时', value: 3600 }, { label: '6小时', value: 21600 }, { label: '24小时', value: 86400 }]" :key="item.value" :type="timeRangeSeconds === item.value ? 'primary' : 'default'" @click="selectTimeRange(item.value)">{{ item.label }}</el-button><el-button link @click="resetDashboardFilters">重置筛选</el-button></div>
         </div>
@@ -1210,7 +1247,7 @@ onBeforeUnmount(() => {
           <template v-else-if="panelVisualType(panel) === 'table'">
             <template v-if="isPodDetailPanel(panel)">
               <div class="pod-resource-toolbar">
-                <div class="pod-resource-filter"><strong>命名空间</strong><el-select v-model="podResourceNamespace" clearable placeholder="全部命名空间" @change="handlePodNamespaceChange(panel)">
+                <div class="pod-resource-filter"><strong>命名空间</strong><el-select v-model="podResourceNamespace" :teleported="!isFullscreen" clearable placeholder="全部命名空间" @change="handlePodNamespaceChange(panel)">
                     <el-option label="全部命名空间" value="" />
                     <el-option v-for="namespace in podResourceNamespaces(panel)" :key="namespace" :label="namespace" :value="namespace" />
                   </el-select><span>{{ podResourceNamespace ? '已选择命名空间，展示该命名空间内全部 Pod，并按内存使用量降序排列' : '默认展示全部命名空间，按内存使用量降序取前 10 个 Pod' }}</span></div>
@@ -1362,10 +1399,11 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="panelVisualType(panel) === 'bar'">
-            <div v-if="barRows(panel).length" class="bar-chart">
-              <div v-for="item in barRows(panel)" :key="item.name" class="bar-row">
+            <div v-if="barRows(panel).length" :class="['bar-chart', { 'k8s-top-ranking-list': isK8sTopRankingPanel(panel), 'k8s-distribution-list': isK8sDistributionPanel(panel) }]">
+              <div v-for="(item, index) in barRows(panel)" :key="item.name" :class="['bar-row', { 'top-ranking-row': isK8sTopRankingPanel(panel) }]">
+                <em v-if="isK8sTopRankingPanel(panel)">{{ index + 1 }}</em>
                 <span :title="item.name">{{ item.name }}</span>
-                <div><i :style="{ width: `${item.percent}%`, background: isK8sDashboard ? item.color : undefined }"></i></div>
+                <div v-if="!isK8sTopRankingPanel(panel)"><i :style="{ width: `${item.percent}%`, background: isK8sDashboard ? item.color : undefined }"></i></div>
                 <b>{{ item.displayValue }}</b>
               </div>
             </div>
@@ -2948,6 +2986,16 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 18px;
 }
+.observability-canvas:fullscreen .dashboard-control-card {
+  overflow: visible;
+}
+.observability-canvas:fullscreen .dashboard-filter-bar {
+  position: relative;
+  z-index: 10;
+}
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__popper) {
+  z-index: 30;
+}
 .observability-canvas:fullscreen .dashboard-context {
   gap: 10px;
   margin-top: 5px;
@@ -3562,7 +3610,8 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 .is-k8s-dashboard .trend-summary {
-  display: none;
+  display: flex;
+  min-height: 58px;
 }
 .is-k8s-dashboard .trend-chart {
   padding: 20px 18px 0;
@@ -3677,6 +3726,255 @@ onBeforeUnmount(() => {
 .host-resource-toolbar strong { color: #1f3e6c; font-size: 13px; }
 .host-resource-toolbar span { color: #8190aa; font-size: 12px; }
 .host-resource-table .el-scrollbar__bar.is-horizontal { display: none; }
+/* K8s fullscreen overrides come after the light K8s skin so the dark
+   presentation keeps readable contrast for every panel and table surface. */
+.observability-canvas:fullscreen .dashboard-control-card,
+.observability-canvas:fullscreen .dashboard-kpi-card {
+  border-color: #283442;
+  background: #111923;
+  color: #d7e0ea;
+}
+.observability-canvas:fullscreen .dashboard-filter-bar {
+  border-top-color: #283442;
+  background: #151e29;
+}
+.observability-canvas:fullscreen .dashboard-filter-main label {
+  color: #9badc2;
+}
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__wrapper) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  box-shadow: none;
+}
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__selected-item),
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__placeholder),
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__caret) {
+  color: #d7e0ea;
+}
+.observability-canvas:fullscreen .dashboard-range-presets :deep(.el-button:not(.el-button--primary)) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  color: #b9c8d8;
+}
+.observability-canvas:fullscreen .dashboard-range-presets :deep(.el-button.is-link) {
+  border-color: transparent;
+  background: transparent;
+  color: #9badc2;
+}
+.observability-canvas:fullscreen .dashboard-kpi-head > span {
+  color: #a9bad0;
+}
+.observability-canvas:fullscreen .dashboard-kpi-head .el-icon {
+  color: #72a8ff;
+}
+.observability-canvas:fullscreen .dashboard-kpi-card > strong {
+  color: #f1f6fc;
+}
+.observability-canvas:fullscreen .dashboard-kpi-meta,
+.observability-canvas:fullscreen .dashboard-kpi-meta small {
+  color: #879ab1;
+}
+.observability-canvas:fullscreen .host-resource-toolbar {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas:fullscreen .host-resource-toolbar strong,
+.observability-canvas:fullscreen .host-resource-toolbar span {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-card,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-grid-toolbar,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-control-card {
+  border-color: #283442;
+  background: #111923;
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid {
+  align-items: stretch;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid > .chart-panel {
+  min-height: 0;
+  align-self: stretch;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid > .chart-panel.panel-line {
+  min-height: 312px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-chart .sparkline {
+  height: 160px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-summary {
+  min-height: 44px;
+  padding: 5px 9px 0;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-current strong {
+  font-size: 15px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-stats {
+  gap: 5px;
+  font-size: 8px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list {
+  max-height: 178px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list .top-ranking-row {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 7px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list .top-ranking-row em {
+  color: #6f90bd;
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list .top-ranking-row b {
+  min-width: 54px;
+  color: #dce8f7;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar {
+  display: flex;
+  flex-direction: column;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-distribution-list {
+  flex: 1;
+  max-height: none;
+  justify-content: flex-start;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state {
+  flex: 1;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-bar {
+  position: relative;
+  z-index: 10;
+  border-top-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-control-card {
+  overflow: visible;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__popper),
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__popper) {
+  z-index: 30;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main label {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__wrapper) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  box-shadow: none;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__selected-item),
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__placeholder),
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__caret) {
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-range-presets :deep(.el-button:not(.el-button--primary)) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  color: #b9c8d8;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-range-presets :deep(.el-button:not(.el-button--primary):hover) {
+  border-color: #5b7cff;
+  color: #8bb5ff;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-range-presets :deep(.el-button.is-link) {
+  border-color: transparent;
+  background: transparent;
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel .panel-head {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel .panel-title-row strong,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-grid-heading > strong {
+  color: #e6eef8;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-head > span {
+  color: #a9bad0;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-head .el-icon {
+  color: #72a8ff;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-card > strong {
+  color: #f1f6fc;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-meta,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-meta small {
+  color: #879ab1;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel .panel-head span,
+.observability-canvas.is-k8s-dashboard:fullscreen .panel-state,
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-empty-state span,
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar span,
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar strong {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-current span,
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-stats {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-current strong,
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-stats b {
+  color: #e6eef8;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-empty-state {
+  color: #9badc2;
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 48px, #263241 49px, transparent 50px);
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state {
+  min-height: 118px;
+  padding: 14px;
+  background-image: none;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state .el-icon {
+  margin-bottom: 5px;
+  font-size: 22px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state span {
+  margin-top: 3px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-empty-state strong {
+  color: #d7e3f0;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-input__wrapper),
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__wrapper) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  box-shadow: none;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__selected-item),
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__placeholder) {
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-table .el-table,
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-table .el-table__inner-wrapper::before {
+  --el-table-bg-color: #111923;
+  --el-table-tr-bg-color: #111923;
+  --el-table-header-bg-color: #151e29;
+  --el-table-border-color: #283442;
+  --el-table-text-color: #c7d2df;
+  --el-table-header-text-color: #a8b8cb;
+  background: #111923;
+}
+/* Keep the K8s presentation grid at six cards per row in fullscreen;
+   the generic six-column dashboard layout must not override it. */
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  grid-auto-flow: row;
+  gap: 10px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid > .chart-panel:not(.k8s-wide-panel):not(.panel-table) {
+  grid-column: span 1 !important;
+}
 @media (max-width: 1180px) {
   .dashboard-filter-bar { align-items: flex-start; flex-direction: column; }
   .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }

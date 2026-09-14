@@ -829,3 +829,35 @@ func (ctl *Controller) QueryMonitorDashboardPanel(c *gin.Context) {
 	}
 	httpx.Success(c, data)
 }
+
+func (ctl *Controller) RunMonitorInspection(c *gin.Context) {
+	var payload service.MonitorInspectionRunPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid inspection payload")
+		return
+	}
+	data, err := ctl.service.RunMonitorInspection(payload)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
+func (ctl *Controller) GetLatestMonitorInspectionRun(c *gin.Context) {
+	data, err := ctl.service.GetLatestMonitorInspectionRun(uint(mustAtoi(c.Query("dashboardId"))))
+	if err != nil {
+		httpx.Failed(c, 500, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
+func (ctl *Controller) GetMonitorInspectionRunInfo(c *gin.Context) {
+	data, err := ctl.service.GetMonitorInspectionRun(uint(mustAtoi(c.Query("id"))))
+	if err != nil {
+		httpx.Failed(c, 404, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}

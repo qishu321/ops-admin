@@ -2,14 +2,16 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleCheck, Coin, Connection, Cpu, DataLine, FullScreen, Monitor, MoreFilled, Plus, Refresh, Setting, TrendCharts, Warning } from '@element-plus/icons-vue'
+import { BottomRight, CircleCheck, Coin, Connection, Cpu, DataLine, FullScreen, Monitor, MoreFilled, Plus, Rank, Refresh, Setting, TrendCharts, Warning } from '@element-plus/icons-vue'
 import {
   deleteMonitorDashboard,
   deleteMonitorDashboardPanel,
   monitorDashboardInfo,
   queryMonitorDashboardList,
   queryMonitorDashboardPanel,
+  queryLatestMonitorInspectionRun,
   queryMonitorDatasourceOptions,
+  runMonitorInspection,
   saveMonitorDashboard,
   saveMonitorDashboardPanel
 } from '../../api/monitor'
@@ -30,8 +32,18 @@ const panelDialogVisible = ref(false)
 const editingDashboard = ref(false)
 const editingPanel = ref(false)
 const activeTemplate = ref('blank')
-const autoRefreshSeconds = ref(30)
+const layoutEditing = ref(false)
+const layoutInteraction = ref(null)
+const layoutSaving = ref(false)
+const layoutNeedsMigration = ref(false)
+const autoRefreshSeconds = ref(0)
 const timeRangeSeconds = ref(3600)
+const timeRangeOption = ref(3600)
+const customTimeRange = ref([])
+const inspectionRunning = ref(false)
+const lastInspectionAt = ref(null)
+const inspectionReport = ref(null)
+const inspectionReportResults = ref([])
 const isFullscreen = ref(false)
 const lastRefreshAt = ref(new Date())
 const syncingK8sPodPanels = ref(false)
@@ -40,9 +52,20 @@ let panelRefreshVersion = 0
 const panelResultCache = new Map()
 const PANEL_QUERY_CONCURRENCY = 4
 const PANEL_CACHE_TTL = 15 * 1000
+const GRID_COLUMNS = 24
+const GRID_ROW_HEIGHT = 32
+const GRID_GAP = 9
+const GRID_MIN_WIDTH = 6
+const GRID_MIN_HEIGHT = 7
 const inspectionFilter = ref('all')
 const podResourceNamespace = ref('')
 const retiredK8sPanelTitles = new Set(['Pod 累计重启次数 Top', 'Pod 最近 1 小时新增重启 Top'])
+const hostAggregateTrendModes = new Map([
+  ['CPU 使用趋势', 'average'],
+  ['内存使用趋势', 'average'],
+  ['磁盘使用率', 'average'],
+  ['磁盘 IOPS（次/秒）', 'sum']
+])
 
 const k8sPodPanelDefinitions = [
   { title: 'Pod CPU 使用量 Top', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))' },
@@ -72,10 +95,11 @@ const k8sPanelTitleMap = {
 
 const pageMode = computed(() => route.path.includes('/monitor/inspections') ? 'inspection' : 'dashboard')
 const pageLayout = computed(() => pageMode.value === 'inspection' ? 'list' : 'grid')
+const isCustomGridLayout = computed(() => activeDashboard.value?.layout === 'grid-custom')
 const pageTitle = computed(() => pageMode.value === 'inspection' ? '巡检大屏' : '监控大屏')
 const pageDescription = computed(() => (
   pageMode.value === 'inspection'
-    ? '以巡检清单方式核查 PromQL 面板状态，并支持导出巡检报告 PDF。'
+    ? '按巡检项核查 PromQL 查询状态，异常优先展示，并支持导出巡检报告 PDF。'
     : '以网格大屏方式展示指标卡、趋势、排行和仪表盘，适合投屏观测。'
 ))
 
@@ -96,6 +120,17 @@ const panelForm = reactive({
   unit: '',
   chartType: 'stat',
   span: 12,
+  gridX: 0,
+  gridY: 0,
+  gridW: 0,
+  gridH: 0,
+  inspectionKind: 'rule',
+  reducer: 'max',
+  operator: 'gte',
+  warningValue: 80,
+  criticalValue: 90,
+  noDataState: 'warning',
+  category: '自定义',
   sort: 0,
   status: 1,
   description: ''
@@ -118,20 +153,17 @@ const dashboardTemplates = [
       { title: '离线主机', chartType: 'stat', unit: '台', span: 6, promql: 'sum(up{job=~"node.*|node-exporter"} == 0)' },
       { title: '平均 CPU 使用率', chartType: 'gauge', unit: '%', span: 6, promql: '100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)' },
       { title: '平均内存使用率', chartType: 'gauge', unit: '%', span: 6, promql: '(1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)) * 100' },
-      { title: '平均磁盘使用率', chartType: 'gauge', unit: '%', span: 6, promql: 'avg(100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))' },
+      { title: '磁盘使用率', chartType: 'line', unit: '%', span: 12, promql: '100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100)' },
       { title: 'CPU 使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100))' },
       { title: '内存使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100)' },
-      { title: '磁盘使用率 Top', chartType: 'bar', unit: '%', span: 12, promql: 'topk(10, 100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100))' },
+      { title: '磁盘 IOPS（次/秒）', chartType: 'line', unit: '次/秒', span: 12, promql: 'topk(10, sum by (instance) (rate(node_disk_reads_completed_total[5m]) + rate(node_disk_writes_completed_total[5m])))' },
       { title: '系统负载 Top', chartType: 'bar', unit: '', span: 12, promql: 'topk(10, node_load1)' },
-      { title: '网络接收速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))' },
-      { title: '网络发送速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m])))' },
-      { title: '磁盘读取速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_disk_read_bytes_total[5m])))' },
-      { title: '磁盘写入速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by (instance) (rate(node_disk_written_bytes_total[5m])))' },
+      { title: '网络接收速率', chartType: 'line', unit: 'B/s', span: 12, promql: 'sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))' },
+      { title: '网络发送速率', chartType: 'line', unit: 'B/s', span: 12, promql: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[5m]))' },
       { title: 'CPU 使用趋势', chartType: 'line', unit: '%', span: 12, promql: '100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)' },
       { title: '内存使用趋势', chartType: 'line', unit: '%', span: 12, promql: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100' },
       { title: '文件句柄使用率', chartType: 'gauge', unit: '%', span: 6, promql: 'sum(node_filefd_allocated) / sum(node_filefd_maximum) * 100' },
       { title: '运行进程数', chartType: 'stat', unit: '个', span: 6, promql: 'sum(node_procs_running)' },
-      { title: '系统运行时间 Top', chartType: 'bar', unit: '天', span: 12, promql: 'topk(10, (time() - node_boot_time_seconds) / 86400)' },
       { title: '主机信息', chartType: 'table', unit: '', span: 12, promql: 'node_uname_info' }
     ]
   },
@@ -160,13 +192,100 @@ const dashboardTemplates = [
   }
 ]
 
-const activePanels = computed(() => panels.value.filter((item) => item.status === 1 && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title))))
+const inspectionTemplates = [
+  {
+    key: 'blank',
+    name: '空白巡检方案',
+    description: '创建空白方案，按时间窗口配置 PromQL、统计方式和判定阈值。',
+    panels: []
+  },
+  {
+    key: 'host',
+    name: '主机资源巡检',
+    description: '检查所选时间范围内的可用性、资源高水位、IO、网络错误和进程阻塞。',
+    panels: [
+      { title: '主机离线检测', category: '可用性', unit: '台', promql: 'sum(up{job=~"node.*|node-exporter"} == 0)', reducer: 'max', warningValue: 0.5, criticalValue: 0.5, description: '时间范围内任一采样点存在离线主机即判定异常。' },
+      { title: 'CPU 高负载', category: '计算资源', unit: '%', promql: '100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', reducer: 'p95', warningValue: 80, criticalValue: 90, description: '按主机计算 CPU 使用率，使用窗口 P95 避免瞬时毛刺。' },
+      { title: '内存高使用率', category: '内存资源', unit: '%', promql: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100', reducer: 'p95', warningValue: 85, criticalValue: 95, description: '检查各主机在窗口内的内存使用率 P95。' },
+      { title: '根分区磁盘使用率', category: '存储资源', unit: '%', promql: '100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} * 100)', reducer: 'max', warningValue: 80, criticalValue: 90, description: '取所有主机根分区在时间窗口内的最大使用率。' },
+      { title: '磁盘 IO 利用率', category: '存储资源', unit: '%', promql: 'rate(node_disk_io_time_seconds_total[5m]) * 100', reducer: 'p95', warningValue: 70, criticalValue: 90, description: '检查磁盘繁忙程度的窗口 P95。' },
+      { title: '文件句柄使用率', category: '系统资源', unit: '%', promql: 'node_filefd_allocated / node_filefd_maximum * 100', reducer: 'max', warningValue: 70, criticalValue: 85, description: '检查文件句柄占用高水位。' },
+      { title: '网络接收错误增量', category: '稳定性', unit: '次', promql: 'node_network_receive_errs_total{device!="lo"}', reducer: 'increase', warningValue: 1, criticalValue: 10, description: '统计窗口内网卡接收错误计数的增量。' },
+      { title: '网络发送错误增量', category: '稳定性', unit: '次', promql: 'node_network_transmit_errs_total{device!="lo"}', reducer: 'increase', warningValue: 1, criticalValue: 10, description: '统计窗口内网卡发送错误计数的增量。' },
+      { title: '阻塞进程', category: '系统资源', unit: '个', promql: 'node_procs_blocked', reducer: 'max', warningValue: 1, criticalValue: 5, description: '检查时间窗口内阻塞进程数峰值。' }
+    ]
+  },
+  {
+    key: 'k8s',
+    name: 'Kubernetes 巡检',
+    description: '检查所选时间范围内的节点、Pod、工作负载、存储和容器资源异常。',
+    panels: [
+      { title: 'NotReady 节点', category: '可用性', unit: '个', promql: 'sum(kube_node_status_condition{condition="Ready",status="true"} == 0)', reducer: 'max', warningValue: 0.5, criticalValue: 0.5, description: '检查窗口内是否出现过 NotReady 节点。' },
+      { title: 'Pending Pod', category: '工作负载', unit: '个', promql: 'sum(kube_pod_status_phase{phase="Pending"} == 1)', reducer: 'max', warningValue: 1, criticalValue: 5, description: '检查 Pending Pod 数量峰值。' },
+      { title: '失败或未知 Pod', category: '工作负载', unit: '个', promql: 'sum(kube_pod_status_phase{phase=~"Failed|Unknown"} == 1)', reducer: 'max', warningValue: 1, criticalValue: 3, description: '检查 Failed 或 Unknown Pod 数量峰值。' },
+      { title: 'Pod 重启增量', category: '稳定性', unit: '次', promql: 'sum by(namespace, pod) (kube_pod_container_status_restarts_total)', reducer: 'increase', warningValue: 1, criticalValue: 5, description: '统计窗口内各 Pod 容器重启次数增量。' },
+      { title: 'CrashLoopBackOff 容器', category: '稳定性', unit: '个', promql: 'sum(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1)', reducer: 'max', warningValue: 0.5, criticalValue: 0.5, description: '检查窗口内是否出现 CrashLoopBackOff。' },
+      { title: 'OOMKilled 容器', category: '稳定性', unit: '个', promql: 'sum(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1)', reducer: 'max', warningValue: 0.5, criticalValue: 0.5, description: '检查窗口内是否出现 OOMKilled。' },
+      { title: 'Deployment 不可用副本', category: '工作负载', unit: '个', promql: 'sum(kube_deployment_status_replicas_unavailable)', reducer: 'max', warningValue: 1, criticalValue: 3, description: '检查 Deployment 不可用副本峰值。' },
+      { title: 'PVC Pending', category: '存储资源', unit: '个', promql: 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1)', reducer: 'max', warningValue: 0.5, criticalValue: 0.5, description: '检查窗口内是否存在 Pending PVC。' },
+      { title: 'CPU 节流率', category: '计算资源', unit: '%', promql: 'sum by(namespace, pod) (rate(container_cpu_cfs_throttled_periods_total{container!="",pod!=""}[5m])) / sum by(namespace, pod) (rate(container_cpu_cfs_periods_total{container!="",pod!=""}[5m])) * 100', reducer: 'p95', warningValue: 10, criticalValue: 25, description: '按 Pod 检查 CPU 节流率窗口 P95。' },
+      { title: '容器内存使用率', category: '内存资源', unit: '%', promql: 'sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}) / sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"} > 0) * 100', reducer: 'p95', warningValue: 80, criticalValue: 95, description: '按 Pod 检查有内存限制容器的窗口 P95。' }
+    ]
+  }
+]
+
+const activePanels = computed(() => panels.value.filter((item) => item.status === 1 && !(!isListLayout.value && isK8sDashboard.value && retiredK8sPanelTitles.has(item.title))))
+const isHostDashboard = computed(() => !isK8sDashboard.value && (
+  String(activeDashboard.value?.name || '').includes('主机') ||
+  panels.value.some((panel) => String(panel.promql || '').includes('node_cpu_seconds_total'))
+))
 const headlinePanels = computed(() => activePanels.value
   .filter((item) => ['stat', 'gauge'].includes(item.chartType))
   .slice(0, isK8sDashboard.value ? 9 : 8))
 const headlinePanelIds = computed(() => new Set(headlinePanels.value.map((item) => item.id)))
 const visualPanels = computed(() => {
   const items = panels.value.filter((item) => !headlinePanelIds.value.has(item.id) && !(isK8sDashboard.value && retiredK8sPanelTitles.has(item.title)))
+  if (isCustomGridLayout.value) return [...items].sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0))
+  if (isK8sDashboard.value) {
+    // Keep the fullscreen six-column grid visually coherent: trends share one
+    // row, ranking/status cards share the next, and the resource table stays last.
+    const k8sOrder = [
+      'CPU Request 使用率',
+      '内存 Request 使用率',
+      'Pod CPU 使用量 Top',
+      'Pod 内存使用量 Top',
+      'Pod CPU 使用趋势',
+      'Pod 内存使用趋势',
+      '命名空间 Pod 分布',
+      '节点 Pod 分布',
+      '工作负载副本可用率',
+      'Pod 网络接收速率 Top',
+      'Pod 网络发送速率 Top',
+      '异常原因 Top',
+      'Pod 资源明细'
+    ]
+    const orderByTitle = new Map(k8sOrder.map((title, index) => [title, index]))
+    return [...items].sort((left, right) => {
+      const leftOrder = orderByTitle.get(left.title) ?? k8sOrder.length
+      const rightOrder = orderByTitle.get(right.title) ?? k8sOrder.length
+      return leftOrder - rightOrder || Number(left.sort || 0) - Number(right.sort || 0)
+    })
+  }
+  if (isHostDashboard.value) {
+    const hostOrder = [
+      'CPU 使用趋势', 'CPU 使用率 Top', '系统负载 Top',
+      '内存使用趋势', '内存使用率 Top', '网络发送速率', '网络发送速率 Top',
+      // Retain the legacy title here so an existing dashboard still places the
+      // card in the middle while its server-side migration turns it into IOPS.
+      '磁盘使用率', '磁盘 IOPS（次/秒）', '磁盘使用率 Top', '网络接收速率', '网络接收速率 Top'
+    ]
+    const orderByTitle = new Map(hostOrder.map((title, index) => [title, index]))
+    return [...items].sort((left, right) => {
+      const leftOrder = orderByTitle.get(left.title) ?? hostOrder.length
+      const rightOrder = orderByTitle.get(right.title) ?? hostOrder.length
+      return leftOrder - rightOrder || Number(left.sort || 0) - Number(right.sort || 0)
+    })
+  }
   const memoryTrendIndex = items.findIndex((item) => item.title === '内存使用趋势')
   const networkReceiveIndex = items.findIndex((item) => item.title === '网络接收速率 Top')
   if (memoryTrendIndex >= 0 && networkReceiveIndex >= 0) {
@@ -180,27 +299,63 @@ const headlineSupplement = computed(() => headlinePanels.value.length > 0 && hea
       healthy: activePanels.value.filter((item) => panelStateKey(item) === 'healthy').length,
     }
   : null)
+const inspectionResultMap = computed(() => new Map(inspectionReportResults.value.map((item) => [Number(item.panelId), item])))
+const inspectionResultFor = (panel) => panel?.reportResult || inspectionResultMap.value.get(Number(panel.id))
+const inspectionRows = computed(() => {
+  if (!inspectionReport.value) return panels.value
+  const currentById = new Map(panels.value.map((panel) => [Number(panel.id), panel]))
+  const rows = inspectionReportResults.value.map((result) => {
+    const current = currentById.get(Number(result.panelId))
+    currentById.delete(Number(result.panelId))
+    return {
+      ...(current || {}),
+      id: result.panelId,
+      title: result.title,
+      promql: result.promql,
+      unit: result.unit,
+      reducer: result.reducer,
+      operator: result.operator,
+      warningValue: result.warningValue,
+      criticalValue: result.criticalValue,
+      noDataState: result.noDataState,
+      category: result.category,
+      inspectionKind: result.inspectionKind,
+      status: current?.status ?? 1,
+      panelExists: Boolean(current),
+      reportResult: result
+    }
+  })
+  currentById.forEach((panel) => rows.push({ ...panel, panelExists: true }))
+  return rows
+})
+const inspectionStateKey = (panel) => {
+  if (panel.status !== 1) return 'disabled'
+  return inspectionResultFor(panel)?.status || 'uninspected'
+}
 const inspectionSummary = computed(() => {
-  const summary = { healthy: 0, warning: 0, danger: 0, disabled: 0 }
-  panels.value.forEach((panel) => { summary[panelStateKey(panel)] += 1 })
+  const summary = { healthy: 0, warning: 0, danger: 0, disabled: 0, uninspected: 0 }
+  inspectionRows.value.forEach((panel) => { summary[inspectionStateKey(panel)] += 1 })
   return summary
 })
 const inspectionPanels = computed(() => {
-  const priority = { danger: 0, warning: 1, healthy: 2, disabled: 3 }
-  return panels.value
-    .filter((panel) => inspectionFilter.value === 'all' || panelStateKey(panel) === inspectionFilter.value)
+  const priority = { danger: 0, warning: 1, healthy: 2, uninspected: 3, disabled: 4 }
+  return inspectionRows.value
+    .filter((panel) => inspectionFilter.value === 'all' || inspectionStateKey(panel) === inspectionFilter.value)
     .slice()
-    .sort((left, right) => priority[panelStateKey(left)] - priority[panelStateKey(right)] || Number(left.sort || 0) - Number(right.sort || 0))
+    .sort((left, right) => priority[inspectionStateKey(left)] - priority[inspectionStateKey(right)] || Number(left.sort || 0) - Number(right.sort || 0))
 })
-const visibleDashboards = computed(() => dashboards.value.filter((item) => (item.layout || 'grid') === pageLayout.value))
+const visibleDashboards = computed(() => dashboards.value.filter((item) => (
+  pageMode.value === 'inspection'
+    ? item.layout === 'list'
+    : ['grid', 'grid-custom'].includes(item.layout || 'grid')
+)))
 const isListLayout = computed(() => pageMode.value === 'inspection')
 const isK8sDashboard = computed(() => {
-  if (isListLayout.value) return false
   const name = `${activeDashboard.value?.name || ''} ${activeDashboard.value?.description || ''}`.toLowerCase()
   return name.includes('k8s') || name.includes('kubernetes') || panels.value.some((panel) => String(panel.promql || '').includes('kube_'))
 })
 const missingK8sPodPanels = computed(() => {
-  if (!isK8sDashboard.value || !activeDashboard.value) return []
+  if (isListLayout.value || !isK8sDashboard.value || !activeDashboard.value) return []
   const existingTitles = new Set(panels.value.map((panel) => panel.title))
   return k8sPodPanelDefinitions.filter((panel) => !existingTitles.has(panel.title))
 })
@@ -211,11 +366,12 @@ const dashboardHealth = computed(() => {
   return { text: '正常', type: 'success' }
 })
 const defaultDatasourceId = computed(() => selectedDatasourceId.value || datasourceOptions.value[0]?.id)
-const currentTemplate = computed(() => dashboardTemplates.find((item) => item.key === activeTemplate.value) || dashboardTemplates[0])
+const availableTemplates = computed(() => isListLayout.value ? inspectionTemplates : dashboardTemplates)
+const currentTemplate = computed(() => availableTemplates.value.find((item) => item.key === activeTemplate.value) || availableTemplates.value[0])
 const currentDatasourceName = computed(() => datasourceOptions.value.find((item) => item.id === selectedDatasourceId.value)?.name || '未选择数据源')
 const lastRefreshText = computed(() => lastRefreshAt.value.toLocaleTimeString('zh-CN', { hour12: false }))
-const rangeStartText = computed(() => new Date(Date.now() - timeRangeSeconds.value * 1000).toLocaleTimeString('zh-CN', { hour12: false }))
-const rangeEndText = computed(() => new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+const rangeStartText = computed(() => new Date(currentTimeBounds().startAt * 1000).toLocaleTimeString('zh-CN', { hour12: false }))
+const rangeEndText = computed(() => new Date(currentTimeBounds().endAt * 1000).toLocaleTimeString('zh-CN', { hour12: false }))
 
 function panelVisualType(panel) {
   if (isK8sDashboard.value && k8sTrendPanelTitles.has(panel?.title)) return 'line'
@@ -225,6 +381,18 @@ function panelVisualType(panel) {
 function panelDisplayTitle(panel) {
   if (!isK8sDashboard.value) return panel?.title
   return k8sPanelTitleMap[panel?.title] || panel?.title
+}
+
+function isK8sTopRankingPanel(panel) {
+  return isK8sDashboard.value && panelVisualType(panel) === 'bar' && String(panel?.title || '').includes('Top')
+}
+
+function isK8sDistributionPanel(panel) {
+  return isK8sDashboard.value && [
+    '命名空间 Pod 分布',
+    '节点 Pod 分布',
+    '工作负载副本可用率'
+  ].includes(panel?.title)
 }
 
 function resetDashboardForm() {
@@ -248,6 +416,17 @@ function resetPanelForm() {
     unit: '',
     chartType: 'stat',
     span: 12,
+    gridX: 0,
+    gridY: 0,
+    gridW: 0,
+    gridH: 0,
+    inspectionKind: 'rule',
+    reducer: 'max',
+    operator: 'gte',
+    warningValue: 80,
+    criticalValue: 90,
+    noDataState: 'warning',
+    category: '自定义',
     sort: panels.value.length + 1,
     status: 1,
     description: ''
@@ -336,16 +515,59 @@ function formatPodResourceValue(value, unit) {
 }
 
 function panelValue(panel) {
-	const value = numberValue(panelRows(panel)[0])
+  const value = panelSummaryValue(panel)
   if (!Number.isFinite(value)) return '-'
   const formatted = formatByUnit(value, panel.unit)
   return panel.unit && formatted.endsWith(panel.unit) ? formatted.slice(0, -panel.unit.length).trim() : formatted
 }
 
+function hostTrendAggregateMode(panel) {
+  return isHostDashboard.value ? hostAggregateTrendModes.get(panel?.title) : undefined
+}
+
+function aggregateHostTrend(panel, mode) {
+  const samplesByTimestamp = new Map()
+  panelRows(panel).forEach((row) => {
+    ;(row.values || []).forEach((sample) => {
+      const timestamp = Number(sample?.[0])
+      const value = Number(sample?.[1])
+      if (!Number.isFinite(timestamp) || !Number.isFinite(value)) return
+      const values = samplesByTimestamp.get(timestamp) || []
+      values.push(value)
+      samplesByTimestamp.set(timestamp, values)
+    })
+  })
+  return Array.from(samplesByTimestamp.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([, values]) => mode === 'sum'
+      ? values.reduce((sum, value) => sum + value, 0)
+      : values.reduce((sum, value) => sum + value, 0) / values.length)
+}
+
 function panelTrend(panel) {
+	const aggregateMode = hostTrendAggregateMode(panel)
+	if (aggregateMode) {
+		const values = aggregateHostTrend(panel, aggregateMode)
+		if (values.length) return values
+	}
 	const firstSeries = panelRows(panel)[0]
 	if (firstSeries?.values?.length) return firstSeries.values.map((item) => Number(item?.[1])).filter(Number.isFinite)
 	return panelRows(panel).slice(0, 24).map((item) => numberValue(item))
+}
+
+function panelSummaryValue(panel) {
+  if (panelVisualType(panel) === 'line') {
+    const values = panelTrend(panel)
+    if (values.length) return values[values.length - 1]
+  }
+  return numberValue(panelRows(panel)[0])
+}
+
+function trendCurrentLabel(panel) {
+  const aggregateMode = hostTrendAggregateMode(panel)
+  if (aggregateMode === 'sum') return '当前总计'
+  if (aggregateMode === 'average') return '当前均值'
+  return '当前值'
 }
 
 function sparklinePoints(panel) {
@@ -374,7 +596,7 @@ function panelLineSeries(panel) {
         .map((item) => ({ timestamp: item?.[0], value: Number(item?.[1]) }))
         .filter((item) => Number.isFinite(item.value))
       return {
-        name: metricName(row.metric),
+        name: metricName(row.metric) === 'metric' ? trendSeriesName(panel) : metricName(row.metric),
         values: samples.map((item) => item.value),
         timestamps: samples.map((item) => item.timestamp)
       }
@@ -383,13 +605,22 @@ function panelLineSeries(panel) {
     .slice(0, isK8sDashboard.value ? 10 : 8)
   const allValues = series.flatMap((item) => item.values)
   if (!allValues.length) return []
-  const min = Math.min(...allValues)
-  const max = Math.max(...allValues)
+  // Percentage trends must share an absolute 0-100 scale. Scaling each panel
+  // to its local min/max makes stable request-utilization data look like a flat
+  // line at the bottom of the chart instead of its real utilization level.
+  const min = panel.unit === '%' ? 0 : Math.min(...allValues)
+  const max = panel.unit === '%' ? 100 : Math.max(...allValues)
   return series.map((item, index) => ({
     ...item,
     color: lineColors[index % lineColors.length],
     points: trendPoints(item.values, min, max)
   }))
+}
+
+function trendSeriesName(panel) {
+  if (panel?.title?.includes('CPU Request')) return 'CPU Request 使用率'
+  if (panel?.title?.includes('内存 Request')) return '内存 Request 使用率'
+  return panel?.title || 'metric'
 }
 
 function sparklineAreaPoints(panel) {
@@ -436,8 +667,53 @@ function panelIcon(panel) {
 }
 
 function selectTimeRange(seconds) {
+  timeRangeOption.value = seconds
   timeRangeSeconds.value = seconds
   refreshAllPanels()
+}
+
+function currentTimeBounds() {
+  if (isListLayout.value && timeRangeOption.value === 'custom' && customTimeRange.value?.length === 2) {
+    const startAt = Math.floor(new Date(customTimeRange.value[0]).getTime() / 1000)
+    const endAt = Math.floor(new Date(customTimeRange.value[1]).getTime() / 1000)
+    if (Number.isFinite(startAt) && Number.isFinite(endAt) && endAt > startAt) return { startAt, endAt }
+  }
+  const endAt = Math.floor(Date.now() / 1000)
+  return { startAt: endAt - timeRangeSeconds.value, endAt }
+}
+
+function handleTimeRangeChange(value) {
+  if (value === 'custom') {
+    if (!customTimeRange.value?.length) {
+      const endAt = new Date()
+      customTimeRange.value = [new Date(endAt.getTime() - 3600 * 1000), endAt]
+    }
+    return
+  }
+  timeRangeSeconds.value = Number(value)
+  if (!isListLayout.value) refreshAllPanels()
+}
+
+function handleCustomTimeRangeChange(value) {
+  if (!value?.length) customTimeRange.value = []
+}
+
+function disableFutureDate(date) {
+  return date.getTime() > Date.now()
+}
+
+function inspectionRangeLabel() {
+  const labels = {
+    3600: '最近 1 小时',
+    21600: '最近 6 小时',
+    86400: '最近 24 小时',
+    259200: '最近三天',
+    604800: '最近七天'
+  }
+  if (timeRangeOption.value !== 'custom') return labels[timeRangeOption.value] || '所选时间范围'
+  const { startAt, endAt } = currentTimeBounds()
+  const format = (timestamp) => new Date(timestamp * 1000).toLocaleString('zh-CN', { hour12: false })
+  return `${format(startAt)} 至 ${format(endAt)}`
 }
 
 function handlePodNamespaceChange(panel) {
@@ -446,7 +722,9 @@ function handlePodNamespaceChange(panel) {
 }
 
 function resetDashboardFilters() {
+  timeRangeOption.value = 3600
   timeRangeSeconds.value = 3600
+  customTimeRange.value = []
   autoRefreshSeconds.value = 30
   restartAutoRefresh()
   refreshAllPanels()
@@ -459,7 +737,7 @@ function handleDashboardManageCommand(command) {
 
 function barRows(panel) {
   const rawRows = panelRows(panel)
-  const rootFilesystemRows = panel.title === '磁盘使用率 Top'
+  const rootFilesystemRows = ['磁盘使用率 Top', '磁盘使用率'].includes(panel.title)
     ? rawRows.filter((row) => row.metric?.mountpoint === '/')
     : rawRows
   const sourceRows = rootFilesystemRows.length ? rootFilesystemRows : rawRows
@@ -566,9 +844,41 @@ function panelResultCount(panel) {
 }
 
 function panelDisplayValue(panel) {
-	const value = numberValue(panelRows(panel)[0])
+  const value = panelSummaryValue(panel)
   if (!Number.isFinite(value)) return '-'
   return formatByUnit(value, panel.unit)
+}
+
+function inspectionState(panel) {
+  const state = inspectionStateKey(panel)
+  return { healthy: '正常', warning: '待核查', danger: '异常', disabled: '已禁用', uninspected: '未巡检' }[state] || '未巡检'
+}
+
+function inspectionStateType(panel) {
+  return { healthy: 'success', warning: 'warning', danger: 'danger', disabled: 'info', uninspected: 'info' }[inspectionStateKey(panel)] || 'info'
+}
+
+function inspectionDisplayValue(panel) {
+  return inspectionResultFor(panel)?.valueText || '--'
+}
+
+function inspectionSeriesCount(panel) {
+  const result = inspectionResultFor(panel)
+  return result ? result.seriesCount : '--'
+}
+
+function reducerLabel(value) {
+  return { last: '末值', max: '最大值', min: '最小值', avg: '平均值', p95: 'P95', sum: '合计', increase: '增量', count: '样本数' }[value] || value || '末值'
+}
+
+function inspectionThresholdText(panel) {
+  const result = inspectionResultFor(panel)
+  const operator = result?.operator || panel.operator || 'gte'
+  const warning = result?.warningValue ?? panel.warningValue
+  const critical = result?.criticalValue ?? panel.criticalValue
+  const sign = { gt: '>', gte: '≥', lt: '<', lte: '≤' }[operator] || '≥'
+  if ((panel.inspectionKind || 'rule') === 'context') return '仅记录'
+  return `待核查 ${sign} ${warning}${panel.unit || ''} · 异常 ${sign} ${critical}${panel.unit || ''}`
 }
 
 function escapeHtml(value) {
@@ -580,25 +890,30 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;')
 }
 
+function formatReportTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false })
+}
+
 function exportInspectionReportPdf() {
-  if (!activeDashboard.value) {
-    ElMessage.warning('请先选择巡检大屏')
+  const report = inspectionReport.value
+  if (!report) {
+    ElMessage.warning('请先执行巡检，生成报告后再导出')
     return
   }
-  const now = new Date().toLocaleString()
-  const currentDatasourceName = datasourceOptions.value.find((item) => item.id === selectedDatasourceId.value)?.name || '-'
-  const rows = panels.value.map((panel, index) => {
-    const error = panelResults[panel.id]?.error || ''
+  const rows = inspectionReportResults.value.map((item, index) => {
+    const stateType = { healthy: 'success', warning: 'warning', danger: 'danger' }[item.status] || 'info'
+    const stateText = { healthy: '正常', warning: '待核查', danger: '异常' }[item.status] || item.status
     return `
       <tr>
         <td>${index + 1}</td>
-        <td>${escapeHtml(panel.title)}</td>
-        <td><span class="status ${panelStateType(panel)}">${escapeHtml(panelState(panel))}</span></td>
-        <td>${escapeHtml(panelDisplayValue(panel))}</td>
-        <td>${panelResultCount(panel)}</td>
-        <td>${escapeHtml(currentDatasourceName)}</td>
-        <td>${escapeHtml(panel.chartType)}</td>
-        <td><code>${escapeHtml(panel.promql)}</code>${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}</td>
+        <td>${escapeHtml(item.title)}<br><small>${escapeHtml(item.category || '')}</small></td>
+        <td><span class="status ${stateType}">${escapeHtml(stateText)}</span></td>
+        <td>${escapeHtml(item.valueText || '--')}</td>
+        <td>${escapeHtml(reducerLabel(item.reducer))}</td>
+        <td>${item.seriesCount}</td>
+        <td><code>${escapeHtml(item.promql)}</code>${item.error ? `<div class="error">${escapeHtml(item.error)}</div>` : ''}</td>
       </tr>
     `
   }).join('')
@@ -612,7 +927,7 @@ function exportInspectionReportPdf() {
     <html>
       <head>
         <meta charset="utf-8" />
-        <title>${escapeHtml(activeDashboard.value.name)} - 巡检报告</title>
+        <title>${escapeHtml(report.dashboardName)} - 巡检报告 #${report.id}</title>
         <style>
           * { box-sizing: border-box; }
           body { margin: 0; padding: 28px; color: #10213f; font-family: Arial, "Microsoft YaHei", sans-serif; background: #fff; }
@@ -637,26 +952,26 @@ function exportInspectionReportPdf() {
       </head>
       <body>
         <button class="no-print" onclick="window.print()" style="float:right;padding:8px 14px;">打印 / 保存 PDF</button>
-        <h1>${escapeHtml(activeDashboard.value.name)} 巡检报告</h1>
+        <h1>${escapeHtml(report.dashboardName)} 巡检报告 #${report.id}</h1>
         <div class="meta">
-          <span>生成时间：${escapeHtml(now)}</span>
-          <span>查询数据源：${escapeHtml(currentDatasourceName)}</span>
-          <span>大屏状态：${escapeHtml(dashboardHealth.value.text)}</span>
-          <span>刷新周期：${autoRefreshSeconds.value ? `${autoRefreshSeconds.value}s` : '关闭'}</span>
+          <span>巡检范围：${escapeHtml(formatReportTime(report.startAt))} 至 ${escapeHtml(formatReportTime(report.endAt))}</span>
+          <span>完成时间：${escapeHtml(formatReportTime(report.completedAt))}</span>
+          <span>数据源：${escapeHtml(report.datasourceName || '-')}</span>
+          <span>耗时：${report.durationMs || 0} ms</span>
         </div>
         <div class="summary">
-          <div class="card"><span>面板数量</span><strong>${panels.value.length}</strong></div>
-          <div class="card"><span>启用面板</span><strong>${activePanels.value.length}</strong></div>
-          <div class="card"><span>异常面板</span><strong>${activePanels.value.filter((panel) => panelResults[panel.id]?.error).length}</strong></div>
-          <div class="card"><span>巡检类型</span><strong>列表巡检</strong></div>
+          <div class="card"><span>巡检项</span><strong>${report.totalCount}</strong></div>
+          <div class="card"><span>正常</span><strong>${report.healthyCount}</strong></div>
+          <div class="card"><span>待核查</span><strong>${report.warningCount}</strong></div>
+          <div class="card"><span>异常</span><strong>${report.dangerCount}</strong></div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>#</th><th>面板</th><th>状态</th><th>当前值</th><th>序列</th><th>数据源</th><th>类型</th><th>PromQL / 错误</th>
+              <th>#</th><th>巡检项</th><th>状态</th><th>统计值</th><th>统计方式</th><th>序列</th><th>PromQL / 错误</th>
             </tr>
           </thead>
-          <tbody>${rows || '<tr><td colspan="8">暂无巡检面板</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="7">暂无巡检结果</td></tr>'}</tbody>
         </table>
       </body>
     </html>
@@ -685,6 +1000,8 @@ async function loadDashboard(id = activeDashboardId.value) {
   if (!id) {
     activeDashboard.value = null
     panels.value = []
+    inspectionReport.value = null
+    inspectionReportResults.value = []
     return
   }
   loading.value = true
@@ -693,11 +1010,17 @@ async function loadDashboard(id = activeDashboardId.value) {
     activeDashboard.value = data.dashboard
     panels.value = data.panels || []
     activeDashboardId.value = id
-    // Render the dashboard shell immediately. Panels fill in progressively so a
-    // large K8s dashboard does not block the first paint on dozens of queries.
+    inspectionFilter.value = 'all'
+    layoutNeedsMigration.value = data.dashboard?.layout === 'grid-custom' && initializePanelGrid().length > 0
     Object.keys(panelResults).forEach((key) => delete panelResults[key])
     Object.keys(panelPending).forEach((key) => delete panelPending[key])
-    void refreshAllPanels({ progressive: true, force: false })
+    if (isListLayout.value) {
+      await loadLatestInspectionReport(id)
+    } else {
+      // Monitoring dashboards remain live; inspection schemes only read their
+      // last persisted report and never query metrics on page entry.
+      void refreshAllPanels({ progressive: true, force: false })
+    }
   } finally {
     loading.value = false
   }
@@ -709,10 +1032,259 @@ function openCreateDashboard() {
   dashboardDialogVisible.value = true
 }
 
+async function loadLatestInspectionReport(dashboardId = activeDashboardId.value) {
+  inspectionReport.value = null
+  inspectionReportResults.value = []
+  lastInspectionAt.value = null
+  if (!dashboardId) return
+  const data = await queryLatestMonitorInspectionRun(dashboardId)
+  inspectionReport.value = data?.run || null
+  inspectionReportResults.value = data?.results || []
+  lastInspectionAt.value = data?.run?.completedAt ? new Date(data.run.completedAt) : null
+}
+
+function panelGridStyle(panel) {
+  if (!isCustomGridLayout.value || isFullscreen.value) return {}
+  return {
+    gridColumn: `${Number(panel.gridX || 0) + 1} / span ${normalizeGridWidth(panel.gridW || panel.span)}`,
+    gridRow: `${Number(panel.gridY || 0) + 1} / span ${normalizeGridHeight(panel.gridH, panel)}`
+  }
+}
+
+function normalizeGridWidth(value) {
+  return Math.max(GRID_MIN_WIDTH, Math.min(GRID_COLUMNS, Math.round(Number(value || 12))))
+}
+
+function normalizeGridHeight(value, panel) {
+  const fallback = panel?.chartType === 'table' ? 14 : panel?.chartType === 'stat' ? 7 : 9
+  return Math.max(GRID_MIN_HEIGHT, Math.min(40, Math.round(Number(value || fallback))))
+}
+
+function panelGridRect(panel) {
+  return {
+    x: Math.max(0, Math.min(GRID_COLUMNS - normalizeGridWidth(panel.gridW || panel.span), Number(panel.gridX || 0))),
+    y: Math.max(0, Number(panel.gridY || 0)),
+    w: normalizeGridWidth(panel.gridW || panel.span),
+    h: normalizeGridHeight(panel.gridH, panel)
+  }
+}
+
+function gridRectsOverlap(left, right) {
+  return left.x < right.x + right.w && left.x + left.w > right.x && left.y < right.y + right.h && left.y + left.h > right.y
+}
+
+function initializePanelGrid(items = visualPanels.value) {
+  const placed = []
+  const changed = []
+  ;[...items].sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0)).forEach((panel) => {
+    const hadGridPosition = Number(panel.gridW || 0) > 0 && Number(panel.gridH || 0) > 0
+    const rect = panelGridRect(panel)
+    if (!hadGridPosition || placed.some((item) => gridRectsOverlap(rect, item))) {
+      rect.x = 0
+      rect.y = 0
+      let found = false
+      for (let y = 0; y < 1000 && !found; y += 1) {
+        for (let x = 0; x <= GRID_COLUMNS - rect.w; x += 1) {
+          const candidate = { ...rect, x, y }
+          if (!placed.some((item) => gridRectsOverlap(candidate, item))) {
+            Object.assign(rect, candidate)
+            found = true
+            break
+          }
+        }
+      }
+    }
+    if (panel.gridX !== rect.x || panel.gridY !== rect.y || panel.gridW !== rect.w || panel.gridH !== rect.h) changed.push(panel)
+    Object.assign(panel, { gridX: rect.x, gridY: rect.y, gridW: rect.w, gridH: rect.h, span: rect.w })
+    placed.push(rect)
+  })
+  return changed
+}
+
+function captureCurrentPanelGrid() {
+  const grid = document.querySelector('.panel-grid')
+  if (!grid) return initializePanelGrid()
+  const gridRect = grid.getBoundingClientRect()
+  if (!gridRect.width) return initializePanelGrid()
+
+  const panelsById = new Map(visualPanels.value.map((panel) => [String(panel.id), panel]))
+  const captured = []
+  grid.querySelectorAll(':scope > .chart-panel').forEach((element, index) => {
+    const panel = panelsById.get(String(element.dataset.panelId || ''))
+    if (!panel) return
+    const rect = element.getBoundingClientRect()
+    const width = normalizeGridWidth(Math.round((rect.width / gridRect.width) * GRID_COLUMNS))
+    const x = Math.max(0, Math.min(GRID_COLUMNS - width, Math.round(((rect.left - gridRect.left) / gridRect.width) * GRID_COLUMNS)))
+    const rowStep = GRID_ROW_HEIGHT + GRID_GAP
+    const y = Math.max(0, Math.round((rect.top - gridRect.top) / rowStep))
+    const height = normalizeGridHeight(Math.round((rect.height + GRID_GAP) / rowStep), panel)
+    Object.assign(panel, {
+      gridX: x,
+      gridY: y,
+      gridW: width,
+      gridH: height,
+      span: width,
+      sort: index + 1
+    })
+    captured.push(panel)
+  })
+
+  if (captured.length !== visualPanels.value.length) return initializePanelGrid()
+  return captured
+}
+
+async function savePanelLayout(panel) {
+  await saveMonitorDashboardPanel({
+    id: panel.id, dashboardId: panel.dashboardId, datasourceId: panel.datasourceId,
+    title: panel.title, promql: panel.promql, unit: panel.unit, chartType: panel.chartType,
+    span: panel.gridW || panel.span, gridX: panel.gridX, gridY: panel.gridY, gridW: panel.gridW, gridH: panel.gridH,
+    inspectionKind: panel.inspectionKind, reducer: panel.reducer, operator: panel.operator,
+    warningValue: panel.warningValue, criticalValue: panel.criticalValue, noDataState: panel.noDataState, category: panel.category,
+    sort: panel.sort, status: panel.status, description: panel.description
+  })
+}
+
+async function enableLayoutEditing() {
+  if (!activeDashboard.value) return
+  if (layoutEditing.value) {
+    layoutEditing.value = false
+    return
+  }
+  if (!isCustomGridLayout.value) {
+    const captured = captureCurrentPanelGrid()
+    await saveMonitorDashboard({ ...activeDashboard.value, layout: 'grid-custom' })
+    activeDashboard.value.layout = 'grid-custom'
+    await Promise.all(captured.map(savePanelLayout))
+    layoutNeedsMigration.value = false
+  } else {
+    const changed = initializePanelGrid()
+    if (changed.length || layoutNeedsMigration.value) {
+      await Promise.all(visualPanels.value.map(savePanelLayout))
+      layoutNeedsMigration.value = false
+    }
+  }
+  layoutEditing.value = true
+}
+
+function startPanelInteraction(event, panel, type) {
+  if (!layoutEditing.value || event.button !== 0) return
+  const grid = event.currentTarget.closest('.panel-grid')
+  if (!grid) return
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  const rect = panelGridRect(panel)
+  const gridRect = grid.getBoundingClientRect()
+  layoutInteraction.value = {
+    pointerId: event.pointerId,
+    panel,
+    type,
+    startX: event.clientX,
+    startY: event.clientY,
+    origin: rect,
+    columnStep: (gridRect.width - GRID_GAP * (GRID_COLUMNS - 1)) / GRID_COLUMNS + GRID_GAP,
+    rowStep: GRID_ROW_HEIGHT + GRID_GAP
+  }
+}
+
+function updatePanelInteraction(event) {
+  const interaction = layoutInteraction.value
+  if (!interaction || interaction.pointerId !== event.pointerId) return
+  const dx = Math.round((event.clientX - interaction.startX) / interaction.columnStep)
+  const dy = Math.round((event.clientY - interaction.startY) / interaction.rowStep)
+  const { panel, origin } = interaction
+  if (interaction.type === 'move') {
+    panel.gridX = Math.max(0, Math.min(GRID_COLUMNS - origin.w, origin.x + dx))
+    panel.gridY = Math.max(0, origin.y + dy)
+  } else {
+    panel.gridW = Math.max(GRID_MIN_WIDTH, Math.min(GRID_COLUMNS - origin.x, origin.w + dx))
+    panel.gridH = Math.max(GRID_MIN_HEIGHT, Math.min(40, origin.h + dy))
+    panel.span = panel.gridW
+  }
+}
+
+function pushGridCollisions(activePanel) {
+  const queue = [activePanel]
+  const seen = new Set()
+  while (queue.length) {
+    const current = queue.shift()
+    const currentRect = panelGridRect(current)
+    visualPanels.value.forEach((panel) => {
+      if (panel.id === current.id || panel.id === activePanel.id && current.id !== activePanel.id) return
+      const key = `${current.id}:${panel.id}:${panel.gridY}`
+      if (!seen.has(key) && gridRectsOverlap(currentRect, panelGridRect(panel))) {
+        seen.add(key)
+        panel.gridY = currentRect.y + currentRect.h
+        queue.push(panel)
+      }
+    })
+  }
+}
+
+async function persistGridLayout() {
+  const ordered = [...visualPanels.value].sort((left, right) => Number(left.gridY || 0) - Number(right.gridY || 0) || Number(left.gridX || 0) - Number(right.gridX || 0))
+  ordered.forEach((panel, index) => { panel.sort = index + 1 })
+  layoutSaving.value = true
+  try {
+    await Promise.all(ordered.map(savePanelLayout))
+    ElMessage.success('布局已保存')
+  } catch {
+    ElMessage.error('保存布局失败')
+  } finally {
+    layoutSaving.value = false
+  }
+}
+
+async function finishPanelInteraction(event) {
+  const interaction = layoutInteraction.value
+  if (!interaction || interaction.pointerId !== event.pointerId) return
+  pushGridCollisions(interaction.panel)
+  layoutInteraction.value = null
+  await persistGridLayout()
+}
+
+async function movePanelWithKeyboard(event, panel) {
+  const changes = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+  const delta = changes[event.key]
+  if (!delta) return
+  event.preventDefault()
+  const step = event.shiftKey ? 4 : 1
+  const rect = panelGridRect(panel)
+  panel.gridX = Math.max(0, Math.min(GRID_COLUMNS - rect.w, rect.x + delta[0] * step))
+  panel.gridY = Math.max(0, rect.y + delta[1] * step)
+  pushGridCollisions(panel)
+  await persistGridLayout()
+}
+
+async function resizePanelWithKeyboard(event, panel) {
+  const changes = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+  const delta = changes[event.key]
+  if (!delta) return
+  event.preventDefault()
+  const step = event.shiftKey ? 4 : 1
+  const rect = panelGridRect(panel)
+  panel.gridW = Math.max(GRID_MIN_WIDTH, Math.min(GRID_COLUMNS - rect.x, rect.w + delta[0] * step))
+  panel.gridH = Math.max(GRID_MIN_HEIGHT, Math.min(40, rect.h + delta[1] * step))
+  panel.span = panel.gridW
+  pushGridCollisions(panel)
+  await persistGridLayout()
+}
+
+async function restoreDefaultLayout() {
+  if (!activeDashboard.value) return
+  await saveMonitorDashboard({ ...activeDashboard.value, layout: 'grid' })
+  activeDashboard.value.layout = 'grid'
+  layoutEditing.value = false
+  ElMessage.success('已恢复默认布局')
+}
+
+function selectDashboardTemplate(templateKey) {
+  activeTemplate.value = templateKey
+}
+
 function openEditDashboard() {
   if (!activeDashboard.value) return
   editingDashboard.value = true
-  Object.assign(dashboardForm, { ...activeDashboard.value, layout: pageLayout.value })
+  Object.assign(dashboardForm, activeDashboard.value)
   activeTemplate.value = 'blank'
   dashboardDialogVisible.value = true
 }
@@ -726,11 +1298,18 @@ async function createTemplatePanels(dashboardId) {
     title: panel.title,
     promql: panel.promql,
     unit: panel.unit,
-    chartType: panel.chartType,
-    span: panel.span,
+    chartType: panel.chartType || 'stat',
+    span: panel.span || 12,
+    inspectionKind: panel.inspectionKind || 'rule',
+    reducer: panel.reducer || 'last',
+    operator: panel.operator || 'gte',
+    warningValue: panel.warningValue ?? 0,
+    criticalValue: panel.criticalValue ?? 0,
+    noDataState: panel.noDataState || 'warning',
+    category: panel.category || '',
     sort: index + 1,
     status: 1,
-    description: currentTemplate.value.name
+    description: panel.description || currentTemplate.value.name
   })))
 }
 
@@ -769,10 +1348,10 @@ async function syncK8sPodPanels() {
 
 async function submitDashboard() {
   if (!dashboardForm.name.trim()) {
-    ElMessage.warning(`请输入${pageTitle.value}名称`)
+    ElMessage.warning(`请输入${isListLayout.value ? '巡检方案' : pageTitle.value}名称`)
     return
   }
-  dashboardForm.layout = pageLayout.value
+  if (!editingDashboard.value) dashboardForm.layout = pageLayout.value
   if (!editingDashboard.value && currentTemplate.value.panels.length && !defaultDatasourceId.value) {
     ElMessage.warning('请先创建 Prometheus 数据源，再使用模板创建大屏')
     return
@@ -792,7 +1371,9 @@ async function submitDashboard() {
 
 async function handleDeleteDashboard() {
   if (!activeDashboard.value) return
-  await ElMessageBox.confirm(`确认删除${pageTitle.value}「${activeDashboard.value.name}」吗？面板也会一起删除。`, '提示', { type: 'warning' })
+  const entityName = isListLayout.value ? '巡检方案' : pageTitle.value
+  const childName = isListLayout.value ? '巡检项' : '面板'
+  await ElMessageBox.confirm(`确认删除${entityName}「${activeDashboard.value.name}」吗？${childName}也会一起删除。`, '提示', { type: 'warning' })
   await deleteMonitorDashboard(activeDashboard.value.id)
   ElMessage.success('删除成功')
   activeDashboardId.value = undefined
@@ -804,7 +1385,7 @@ async function handleDeleteDashboard() {
 
 function openCreatePanel() {
   if (!activeDashboardId.value) {
-    ElMessage.warning('请先创建或选择监控大屏')
+    ElMessage.warning(isListLayout.value ? '请先新建或选择巡检方案' : '请先创建或选择监控大屏')
     return
   }
   editingPanel.value = false
@@ -820,7 +1401,7 @@ function openEditPanel(row) {
 
 async function submitPanel() {
   if (!panelForm.title.trim() || !panelForm.datasourceId || !panelForm.promql.trim()) {
-    ElMessage.warning('请填写面板标题、数据源和 PromQL')
+    ElMessage.warning(`请填写${isListLayout.value ? '巡检项' : '面板'}标题、数据源和 PromQL`)
     return
   }
   await saveMonitorDashboardPanel(panelForm)
@@ -830,7 +1411,7 @@ async function submitPanel() {
 }
 
 async function handleDeletePanel(row) {
-  await ElMessageBox.confirm(`确认删除面板「${row.title}」吗？`, '提示', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除${isListLayout.value ? '巡检项' : '面板'}「${row.title}」吗？`, '提示', { type: 'warning' })
   await deleteMonitorDashboardPanel(row.id)
   ElMessage.success('删除成功')
   await loadDashboard(activeDashboardId.value)
@@ -847,7 +1428,7 @@ async function refreshPanel(row) {
 
 async function refreshProblemPanels() {
   const items = activePanels.value.filter((panel) => ['danger', 'warning'].includes(panelStateKey(panel)))
-  if (!items.length) return ElMessage.success('当前没有需要复核的异常面板')
+  if (!items.length) return ElMessage.success(isListLayout.value ? '当前没有需要复核的异常巡检项' : '当前没有需要复核的异常面板')
   const version = ++panelRefreshVersion
   await runPanelQueue(items, version, true)
   if (version === panelRefreshVersion) lastRefreshAt.value = new Date()
@@ -863,20 +1444,22 @@ async function copyPromql(promql) {
 }
 
 function panelQueryPayload(panel) {
-	const endAt = Math.floor(Date.now() / 1000)
-	const startAt = endAt - timeRangeSeconds.value
+	const { startAt, endAt } = currentTimeBounds()
+	const rangeSeconds = Math.max(1, endAt - startAt)
 	return {
 		id: panel.id,
 		datasourceId: selectedDatasourceId.value,
 		namespace: isPodDetailPanel(panel) ? podResourceNamespace.value : '',
 		startAt,
 		endAt,
-		stepSeconds: Math.max(15, Math.ceil(timeRangeSeconds.value / 120))
+		stepSeconds: Math.max(15, Math.ceil(rangeSeconds / 120))
 	}
 }
 
 function panelCacheKey(panel) {
-  return `${selectedDatasourceId.value}:${timeRangeSeconds.value}:${panel.id}:${isPodDetailPanel(panel) ? podResourceNamespace.value : ''}`
+  const { startAt, endAt } = currentTimeBounds()
+  const rangeKey = timeRangeOption.value === 'custom' ? `${startAt}-${endAt}` : timeRangeSeconds.value
+  return `${selectedDatasourceId.value}:${rangeKey}:${panel.id}:${isPodDetailPanel(panel) ? podResourceNamespace.value : ''}`
 }
 
 async function loadPanel(panel, { force = true, version = panelRefreshVersion } = {}) {
@@ -939,8 +1522,58 @@ async function refreshAllPanels({ progressive = false, force = true } = {}) {
   if (version === panelRefreshVersion) lastRefreshAt.value = new Date()
 }
 
+async function executeInspection() {
+  if (!selectedDatasourceId.value) {
+    ElMessage.warning('请先选择巡检数据源')
+    return
+  }
+  if (isListLayout.value && panelForm.inspectionKind !== 'context') {
+    const warning = Number(panelForm.warningValue)
+    const critical = Number(panelForm.criticalValue)
+    if (panelForm.operator === 'gte' && critical < warning) {
+      ElMessage.warning('数值越大越异常时，异常阈值不能小于待核查阈值')
+      return
+    }
+    if (panelForm.operator === 'lte' && critical > warning) {
+      ElMessage.warning('数值越小越异常时，异常阈值不能大于待核查阈值')
+      return
+    }
+  }
+  if (!activePanels.value.length) {
+    ElMessage.warning('当前巡检方案没有可执行的巡检项')
+    return
+  }
+  if (timeRangeOption.value === 'custom' && customTimeRange.value?.length !== 2) {
+    ElMessage.warning('请选择完整的自定义时间范围')
+    return
+  }
+  inspectionRunning.value = true
+  try {
+    const { startAt, endAt } = currentTimeBounds()
+    const data = await runMonitorInspection({
+      dashboardId: activeDashboardId.value,
+      datasourceId: selectedDatasourceId.value,
+      startAt,
+      endAt,
+      stepSeconds: Math.max(15, Math.ceil((endAt - startAt) / 240))
+    })
+    inspectionReport.value = data?.run || null
+    inspectionReportResults.value = data?.results || []
+    lastInspectionAt.value = data?.run?.completedAt ? new Date(data.run.completedAt) : new Date()
+    inspectionFilter.value = 'all'
+    const abnormalCount = Number(data?.run?.dangerCount || 0) + Number(data?.run?.warningCount || 0)
+    if (abnormalCount) {
+      ElMessage.warning(`报告 #${data.run.id} 已生成（${inspectionRangeLabel()}），发现 ${abnormalCount} 个异常或待核查项`)
+    } else {
+      ElMessage.success(`报告 #${data.run.id} 已生成（${inspectionRangeLabel()}），未发现异常项`)
+    }
+  } finally {
+    inspectionRunning.value = false
+  }
+}
+
 async function handleDatasourceChange() {
-  if (activePanels.value.length) {
+  if (!isListLayout.value && activePanels.value.length) {
     await refreshAllPanels()
   }
 }
@@ -948,6 +1581,7 @@ async function handleDatasourceChange() {
 function restartAutoRefresh() {
   if (refreshTimer) window.clearInterval(refreshTimer)
   refreshTimer = null
+  if (isListLayout.value) return
   if (!autoRefreshSeconds.value) return
   refreshTimer = window.setInterval(() => {
     if (activePanels.value.length) refreshAllPanels()
@@ -990,8 +1624,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="dashboard-page">
-    <section class="dashboard-workspace">
-      <div class="workspace-title dashboard-page-title">
+    <section class="dashboard-workspace" :class="{ 'is-inspection-workspace': isListLayout }">
+      <div v-if="!isListLayout" class="workspace-title dashboard-page-title">
         <span class="brand-mark"><el-icon><Monitor /></el-icon></span>
         <div>
           <strong>监控大屏</strong>
@@ -1002,10 +1636,10 @@ onBeforeUnmount(() => {
       <div class="workspace-status">
         <span><i class="health-dot"></i>数据已同步</span>
         <small>{{ lastRefreshText }}</small>
-        <el-button :icon="Refresh" :loading="loading" @click="refreshAllPanels">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="isListLayout ? loadLatestInspectionReport() : refreshAllPanels()">{{ isListLayout ? '刷新报告' : '刷新' }}</el-button>
         <el-dropdown v-if="activeDashboard" trigger="click" @command="handleDashboardManageCommand">
-          <el-button :icon="Setting" aria-label="大屏设置" />
-          <template #dropdown><el-dropdown-menu><el-dropdown-item command="edit">编辑{{ pageTitle }}</el-dropdown-item><el-dropdown-item command="delete" divided>删除{{ pageTitle }}</el-dropdown-item></el-dropdown-menu></template>
+          <el-button :icon="Setting" :aria-label="isListLayout ? '巡检方案设置' : '大屏设置'" />
+          <template #dropdown><el-dropdown-menu><el-dropdown-item command="edit">编辑{{ isListLayout ? '巡检方案' : pageTitle }}</el-dropdown-item><el-dropdown-item command="delete" divided>删除{{ isListLayout ? '巡检方案' : pageTitle }}</el-dropdown-item></el-dropdown-menu></template>
         </el-dropdown>
       </div>
 
@@ -1021,13 +1655,13 @@ onBeforeUnmount(() => {
           >
             <span class="dashboard-item-icon"><el-icon><DataLine /></el-icon></span>
             <strong>{{ item.name }}</strong>
-            <span class="dashboard-item-meta">{{ item.panelCount || 0 }} 个面板</span>
+            <span class="dashboard-item-meta">{{ item.panelCount || 0 }} 个{{ isListLayout ? '巡检项' : '面板' }}</span>
             <span class="dashboard-item-arrow">›</span>
           </button>
-          <div v-if="!visibleDashboards.length" class="empty-switcher">暂无{{ pageTitle }}</div>
+          <div v-if="!visibleDashboards.length" class="empty-switcher">暂无{{ isListLayout ? '巡检方案' : pageTitle }}</div>
           </div>
         </el-scrollbar>
-        <el-button class="create-screen-btn" type="primary" plain :icon="Plus" @click="openCreateDashboard">创建{{ pageTitle }}</el-button>
+        <el-button class="create-screen-btn" type="primary" plain :icon="Plus" @click="openCreateDashboard">{{ isListLayout ? '新建巡检方案' : `创建${pageTitle}` }}</el-button>
       </div>
     </section>
 
@@ -1041,23 +1675,41 @@ onBeforeUnmount(() => {
           </div>
           <div class="dashboard-primary-actions">
             <el-button v-if="!isListLayout" :icon="FullScreen" @click="toggleFullscreen" :disabled="!activeDashboard">{{ isFullscreen ? '退出全屏' : '大屏展示' }}</el-button>
-            <el-button v-else @click="exportInspectionReportPdf" :disabled="!activeDashboard">导出巡检报告 PDF</el-button>
+            <el-button v-if="!isListLayout && !isFullscreen" :type="layoutEditing ? 'primary' : 'default'" @click="enableLayoutEditing" :loading="layoutSaving" :disabled="!activeDashboard">{{ layoutEditing ? '完成布局' : '编辑布局' }}</el-button>
+            <el-button v-if="!isListLayout && !isFullscreen && isCustomGridLayout" @click="restoreDefaultLayout">恢复默认布局</el-button>
+            <el-button v-if="isListLayout" @click="exportInspectionReportPdf" :disabled="!inspectionReport || inspectionRunning">导出巡检报告 PDF</el-button>
             <el-button v-if="!isFullscreen && missingK8sPodPanels.length" type="warning" plain :loading="syncingK8sPodPanels" @click="syncK8sPodPanels">补全 Pod 监控（{{ missingK8sPodPanels.length }}）</el-button>
-            <el-button v-if="!isFullscreen" type="primary" :icon="Plus" @click="openCreatePanel" :disabled="!activeDashboard">新增面板</el-button>
+            <el-button v-if="!isFullscreen" type="primary" :icon="Plus" @click="openCreatePanel" :disabled="!activeDashboard">{{ isListLayout ? '新增巡检项' : '新增面板' }}</el-button>
           </div>
         </div>
 
         <div class="dashboard-filter-bar">
           <div class="dashboard-filter-main">
-            <label><span>数据源</span><el-select v-model="selectedDatasourceId" placeholder="选择数据源" @change="handleDatasourceChange"><el-option v-for="item in datasourceOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
-            <label><span>时间范围</span><el-select v-model="timeRangeSeconds" @change="refreshAllPanels"><el-option label="最近 15 分钟" :value="900" /><el-option label="最近 1 小时" :value="3600" /><el-option label="最近 6 小时" :value="21600" /><el-option label="最近 24 小时" :value="86400" /></el-select></label>
-            <label><span>自动刷新</span><el-select v-model="autoRefreshSeconds" @change="restartAutoRefresh"><el-option label="关闭刷新" :value="0" /><el-option label="10 秒刷新" :value="10" /><el-option label="30 秒刷新" :value="30" /><el-option label="60 秒刷新" :value="60" /></el-select></label>
+            <label><span>数据源</span><el-select v-model="selectedDatasourceId" :teleported="!isFullscreen" placeholder="选择数据源" @change="handleDatasourceChange"><el-option v-for="item in datasourceOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
+            <label><span>时间范围</span><el-select v-model="timeRangeOption" :teleported="!isFullscreen" @change="handleTimeRangeChange">
+              <template v-if="isListLayout">
+                <el-option label="最近 1 小时" :value="3600" />
+                <el-option label="最近 6 小时" :value="21600" />
+                <el-option label="最近 24 小时" :value="86400" />
+                <el-option label="最近三天" :value="259200" />
+                <el-option label="最近七天" :value="604800" />
+                <el-option label="自定义时间范围" value="custom" />
+              </template>
+              <template v-else>
+                <el-option label="最近 15 分钟" :value="900" />
+                <el-option label="最近 1 小时" :value="3600" />
+                <el-option label="最近 6 小时" :value="21600" />
+                <el-option label="最近 24 小时" :value="86400" />
+              </template>
+            </el-select></label>
+            <label v-if="isListLayout && timeRangeOption === 'custom'" class="custom-time-range"><span>自定义时间</span><el-date-picker v-model="customTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" format="YYYY-MM-DD HH:mm" :disabled-date="disableFutureDate" :teleported="true" :clearable="false" @change="handleCustomTimeRangeChange" /></label>
+            <label v-if="!isListLayout"><span>自动刷新</span><el-select v-model="autoRefreshSeconds" :teleported="!isFullscreen" @change="restartAutoRefresh"><el-option label="关闭刷新" :value="0" /><el-option label="10 秒刷新" :value="10" /><el-option label="30 秒刷新" :value="30" /><el-option label="60 秒刷新" :value="60" /></el-select></label>
           </div>
-          <div class="dashboard-range-presets"><el-button v-for="item in [{ label: '15分钟', value: 900 }, { label: '1小时', value: 3600 }, { label: '6小时', value: 21600 }, { label: '24小时', value: 86400 }]" :key="item.value" :type="timeRangeSeconds === item.value ? 'primary' : 'default'" @click="selectTimeRange(item.value)">{{ item.label }}</el-button><el-button link @click="resetDashboardFilters">重置筛选</el-button></div>
+          <div v-if="!isListLayout" class="dashboard-range-presets"><el-button v-for="item in [{ label: '15分钟', value: 900 }, { label: '1小时', value: 3600 }, { label: '6小时', value: 21600 }, { label: '24小时', value: 86400 }]" :key="item.value" :type="timeRangeSeconds === item.value ? 'primary' : 'default'" @click="selectTimeRange(item.value)">{{ item.label }}</el-button><el-button link @click="resetDashboardFilters">重置筛选</el-button></div>
         </div>
       </section>
 
-      <section v-if="headlinePanels.length" class="dashboard-kpi-grid">
+      <section v-if="!isListLayout && headlinePanels.length" class="dashboard-kpi-grid">
         <article v-for="panel in headlinePanels" :key="panel.id" :class="['dashboard-kpi-card', `tone-${panelTone(panel)}`]" v-loading="panelPending[panel.id]">
           <div class="dashboard-kpi-head"><span><el-icon><component :is="panelIcon(panel)" /></el-icon>{{ panel.title }}</span><el-dropdown v-if="!isFullscreen" trigger="click"><el-button link :icon="MoreFilled" aria-label="面板操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item @click="refreshPanel(panel)">刷新面板</el-dropdown-item><el-dropdown-item @click="openEditPanel(panel)">编辑面板</el-dropdown-item><el-dropdown-item divided @click="handleDeletePanel(panel)">删除面板</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div>
           <strong>{{ panelDisplayValue(panel) }}</strong>
@@ -1070,7 +1722,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <section v-else class="dashboard-summary">
+      <section v-else-if="!isListLayout" class="dashboard-summary">
         <div class="summary-card">
           <span>面板数量</span>
           <strong>{{ panels.length }}</strong>
@@ -1089,32 +1741,41 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <el-empty v-if="!activeDashboard" description="还没有监控大屏，请先创建一个" />
-      <el-empty v-else-if="!panels.length" description="当前大屏还没有面板，可以新增面板或使用模板创建" />
+      <el-empty v-if="!activeDashboard" :description="isListLayout ? '还没有巡检方案，请先新建一个' : '还没有监控大屏，请先创建一个'" />
+      <el-empty v-else-if="!panels.length" :description="isListLayout ? '当前方案还没有巡检项，请先新增巡检项' : '当前大屏还没有面板，可以新增面板或使用模板创建'" />
 
       <section v-else-if="isListLayout" class="inspection-list">
+        <div v-if="inspectionReport" class="inspection-report-strip">
+          <div><span>巡检报告</span><strong>#{{ inspectionReport.id }}</strong></div>
+          <div><span>时间范围</span><strong>{{ formatReportTime(inspectionReport.startAt) }} 至 {{ formatReportTime(inspectionReport.endAt) }}</strong></div>
+          <div><span>完成时间</span><strong>{{ formatReportTime(inspectionReport.completedAt) }}</strong></div>
+          <div><span>耗时</span><strong>{{ inspectionReport.durationMs || 0 }} ms</strong></div>
+        </div>
+        <div v-else class="inspection-empty-report">
+          <el-icon><Warning /></el-icon>
+          <div><strong>尚未生成巡检报告</strong><span>选择数据源和时间范围后点击“执行巡检”，系统才会查询并保存本次结果。</span></div>
+        </div>
         <div class="inspection-command-bar">
           <div class="inspection-filter">
-            <button :class="{ active: inspectionFilter === 'all' }" @click="inspectionFilter = 'all'">全部 {{ panels.length }}</button>
+            <button :class="{ active: inspectionFilter === 'all' }" @click="inspectionFilter = 'all'">全部 {{ inspectionRows.length }}</button>
             <button :class="{ active: inspectionFilter === 'danger' }" @click="inspectionFilter = 'danger'">异常 {{ inspectionSummary.danger }}</button>
             <button :class="{ active: inspectionFilter === 'warning' }" @click="inspectionFilter = 'warning'">待核查 {{ inspectionSummary.warning }}</button>
             <button :class="{ active: inspectionFilter === 'healthy' }" @click="inspectionFilter = 'healthy'">正常 {{ inspectionSummary.healthy }}</button>
+            <button v-if="inspectionSummary.uninspected" :class="{ active: inspectionFilter === 'uninspected' }" @click="inspectionFilter = 'uninspected'">未巡检 {{ inspectionSummary.uninspected }}</button>
           </div>
           <div class="inspection-command-actions">
-            <span>异常优先排序 · 当前展示 {{ inspectionPanels.length }} 项</span>
-            <el-button @click="refreshProblemPanels" :disabled="!activePanels.length">复核异常</el-button>
-            <el-button type="primary" @click="refreshAllPanels" :disabled="!activePanels.length">执行巡检</el-button>
+            <span>{{ inspectionReport ? `报告结果 · 当前展示 ${inspectionPanels.length} 项` : `规则清单 · ${inspectionPanels.length} 项等待巡检` }}</span>
+            <el-button type="primary" :loading="inspectionRunning" @click="executeInspection" :disabled="!activePanels.length">{{ inspectionRunning ? '巡检执行中' : '执行巡检' }}</el-button>
           </div>
         </div>
         <div class="inspection-head">
           <div>
-            <h3>巡检面板</h3>
-            <p>按面板逐项查看查询状态、当前值、返回序列和 PromQL，适合日常排障巡检。</p>
+            <h3>巡检项目</h3>
+            <p>结果由所选时间窗口内的样本聚合后判定；修改时间范围不会自动执行巡检。</p>
           </div>
-          <el-button @click="refreshAllPanels" :disabled="!activePanels.length">执行巡检</el-button>
         </div>
-        <el-table :data="inspectionPanels" class="inspection-table" row-key="id" empty-text="当前筛选条件下暂无面板">
-          <el-table-column label="面板" min-width="180">
+        <el-table v-loading="inspectionRunning" element-loading-text="正在按所选时间范围执行巡检…" :data="inspectionPanels" class="inspection-table" row-key="id" empty-text="当前筛选条件下暂无巡检项">
+          <el-table-column label="巡检项" min-width="180">
             <template #default="{ row }">
               <div class="inspection-name">
                 <strong>{{ row.title }}</strong>
@@ -1124,22 +1785,22 @@ onBeforeUnmount(() => {
           </el-table-column>
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
-              <el-tag :type="panelStateType(row)" effect="light">{{ panelState(row) }}</el-tag>
+              <el-tag :type="inspectionStateType(row)" effect="light">{{ inspectionState(row) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="当前值" width="150">
+          <el-table-column label="统计值" width="150">
             <template #default="{ row }">
-              <strong class="inspection-value">{{ panelDisplayValue(row) }}</strong>
+              <strong class="inspection-value">{{ inspectionDisplayValue(row) }}</strong>
             </template>
           </el-table-column>
           <el-table-column label="返回序列" width="110">
-            <template #default="{ row }">{{ panelResultCount(row) }}</template>
+            <template #default="{ row }">{{ inspectionSeriesCount(row) }}</template>
           </el-table-column>
-          <el-table-column label="数据源 / 类型" width="180">
+          <el-table-column label="窗口统计 / 阈值" min-width="250">
             <template #default="{ row }">
               <div class="inspection-meta">
-                <span>{{ datasourceOptions.find((item) => item.id === selectedDatasourceId)?.name || row.datasourceName || '-' }}</span>
-                <b>{{ row.chartType }}</b>
+                <span>{{ row.category || '自定义' }} · {{ reducerLabel(inspectionResultFor(row)?.reducer || row.reducer) }}</span>
+                <b>{{ inspectionThresholdText(row) }}</b>
               </div>
             </template>
           </el-table-column>
@@ -1148,63 +1809,99 @@ onBeforeUnmount(() => {
               <code class="inspection-promql">{{ row.promql }}</code>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="190" fixed="right">
+          <el-table-column label="操作" width="130" fixed="right">
             <template #default="{ row }">
-              <el-button link type="primary" @click="refreshPanel(row)">刷新</el-button>
-              <el-button link type="primary" @click="openEditPanel(row)">编辑</el-button>
-              <el-button link type="danger" @click="handleDeletePanel(row)">删除</el-button>
+              <template v-if="row.panelExists !== false">
+                <el-button link type="primary" @click="openEditPanel(row)">编辑</el-button>
+                <el-button link type="danger" @click="handleDeletePanel(row)">删除</el-button>
+              </template>
+              <span v-else class="inspection-snapshot-label">报告快照</span>
             </template>
           </el-table-column>
         </el-table>
       </section>
 
       <section v-else class="dashboard-grid-shell">
-        <div class="dashboard-grid-toolbar">
-          <div class="dashboard-grid-heading">
+        <div v-if="layoutEditing" class="dashboard-layout-tip" role="status">
+          <el-icon><Rank /></el-icon>
+          <span>拖动面板标题栏调整位置，拖动右下角调整宽度和高度；位置按 24 列网格自动对齐。</span>
+          <span class="dashboard-layout-saving">{{ layoutSaving ? '正在保存…' : '松开后自动保存' }}</span>
+        </div>
+        <!-- <div class="dashboard-grid-toolbar"> -->
+          <!-- <div class="dashboard-grid-heading">
             <strong>{{ isK8sDashboard ? 'K8s 资源与 Pod 监控' : '监控图表' }}</strong>
             <div class="dashboard-grid-status"><span class="status-chip healthy"><i></i>正常 {{ inspectionSummary.healthy }}</span><span class="status-chip warning"><i></i>待确认 {{ inspectionSummary.warning }}</span><span class="status-chip danger"><i></i>异常 {{ inspectionSummary.danger }}</span><span class="status-chip muted"><i></i>已停用 {{ inspectionSummary.disabled }}</span></div>
-          </div>
-          <div class="dashboard-grid-actions">
+          </div> -->
+          <!-- <div class="dashboard-grid-actions">
             <span>最近刷新 {{ lastRefreshText }}</span>
             <el-button size="small" @click="refreshProblemPanels" :disabled="!activePanels.length">复核异常</el-button>
-          </div>
-        </div>
-        <div class="panel-grid" :class="{ 'k8s-panel-grid': isK8sDashboard }">
+          </div> -->
+        <!-- </div> -->
+        <div class="panel-grid" :class="{ 'k8s-panel-grid': isK8sDashboard, 'is-custom-layout': isCustomGridLayout && !isFullscreen, 'is-layout-editing': layoutEditing }">
         <div
           v-for="panel in visualPanels"
           :key="panel.id"
           class="metric-panel chart-panel"
+          :data-panel-id="panel.id"
            :class="[`panel-${panelVisualType(panel)}`, { disabled: panel.status !== 1, 'k8s-pod-panel': isK8sDashboard && panel.title.startsWith('Pod '), 'k8s-wide-panel': isK8sDashboard && panel.title === 'Pod 资源明细' }]"
-           v-loading="panelPending[panel.id]"
+            :style="panelGridStyle(panel)"
+            v-loading="panelPending[panel.id]"
            :element-loading-background="isFullscreen ? 'rgba(8, 15, 28, 0.82)' : 'rgba(255, 255, 255, 0.72)'"
         >
           <div class="panel-glow"></div>
           <div class="panel-head">
             <div class="panel-identity">
               <div class="panel-title-row">
+                <button
+                  v-if="layoutEditing"
+                  type="button"
+                  class="panel-move-handle"
+                  aria-label="拖动面板；也可使用方向键移动，按住 Shift 可一次移动四格"
+                  @pointerdown.stop="startPanelInteraction($event, panel, 'move')"
+                  @pointermove="updatePanelInteraction"
+                  @pointerup="finishPanelInteraction"
+                  @pointercancel="finishPanelInteraction"
+                  @keydown="movePanelWithKeyboard($event, panel)"
+                ><el-icon><Rank /></el-icon></button>
                 <i class="panel-signal"></i>
                 <strong>{{ panelDisplayTitle(panel) }}</strong>
               </div>
               <span>{{ panelChartLabel(panelVisualType(panel)) }} · {{ panelVisibleSeriesCount(panel) }} 条序列 · {{ currentDatasourceName }}</span>
             </div>
             <div class="panel-actions">
-              <span v-if="isK8sDashboard && !['table', 'stat'].includes(panelVisualType(panel)) && panelRows(panel).length" class="k8s-value-badge">{{ panelDisplayValue(panel) }}</span>
-              <span class="panel-state" :class="`is-${panelStateType(panel)}`"><i></i>{{ panelState(panel) }}</span>
-              <el-button link type="primary" @click="refreshPanel(panel)">刷新</el-button>
-              <el-button link type="primary" @click="openEditPanel(panel)">编辑</el-button>
-              <el-button link type="danger" @click="handleDeletePanel(panel)">删除</el-button>
+              <template v-if="layoutEditing">
+                <span class="panel-drag-hint">{{ panel.gridW }} × {{ panel.gridH }}</span>
+              </template>
+              <template v-else>
+                <span v-if="isK8sDashboard && !['table', 'stat'].includes(panelVisualType(panel)) && panelRows(panel).length" class="k8s-value-badge">{{ panelDisplayValue(panel) }}</span>
+                <span class="panel-state" :class="`is-${panelStateType(panel)}`"><i></i>{{ panelState(panel) }}</span>
+                <el-button link type="primary" @click="refreshPanel(panel)">刷新</el-button>
+                <el-button link type="primary" @click="openEditPanel(panel)">编辑</el-button>
+                <el-button link type="danger" @click="handleDeletePanel(panel)">删除</el-button>
+              </template>
             </div>
           </div>
+          <button
+            v-if="layoutEditing"
+            type="button"
+            class="panel-resize-handle"
+            aria-label="调整面板大小；也可使用方向键调整，按住 Shift 可一次调整四格"
+            @pointerdown.stop="startPanelInteraction($event, panel, 'resize')"
+            @pointermove="updatePanelInteraction"
+            @pointerup="finishPanelInteraction"
+            @pointercancel="finishPanelInteraction"
+            @keydown="resizePanelWithKeyboard($event, panel)"
+          ><el-icon><BottomRight /></el-icon></button>
 
           <div v-if="panelResults[panel.id]?.error" class="panel-error">{{ panelResults[panel.id].error }}</div>
 
           <template v-else-if="panelVisualType(panel) === 'table'">
             <template v-if="isPodDetailPanel(panel)">
               <div class="pod-resource-toolbar">
-                <div class="pod-resource-filter"><strong>命名空间</strong><el-select v-model="podResourceNamespace" clearable placeholder="全部命名空间" @change="handlePodNamespaceChange(panel)">
+                <div class="pod-resource-filter"><strong>命名空间</strong><el-select v-model="podResourceNamespace" :teleported="!isFullscreen" clearable placeholder="全部命名空间" @change="handlePodNamespaceChange(panel)">
                     <el-option label="全部命名空间" value="" />
                     <el-option v-for="namespace in podResourceNamespaces(panel)" :key="namespace" :label="namespace" :value="namespace" />
-                  </el-select><span>默认展示全部命名空间，按内存使用量降序取前 10 个 Pod</span></div>
+                  </el-select><span>{{ podResourceNamespace ? '已选择命名空间，展示该命名空间内全部 Pod，并按内存使用量降序排列' : '默认展示全部命名空间，按内存使用量降序取前 10 个 Pod' }}</span></div>
               </div>
               <el-table class="pod-resource-table" :data="podDetailRows(panel)" size="small" :height="isFullscreen ? 180 : 450" :fit="true" default-sort="{ prop: 'memoryBytes', order: 'descending' }">
                 <el-table-column prop="namespace" label="命名空间" width="130" align="center" show-overflow-tooltip />
@@ -1353,10 +2050,11 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="panelVisualType(panel) === 'bar'">
-            <div v-if="barRows(panel).length" class="bar-chart">
-              <div v-for="item in barRows(panel)" :key="item.name" class="bar-row">
+            <div v-if="barRows(panel).length" :class="['bar-chart', { 'k8s-top-ranking-list': isK8sTopRankingPanel(panel), 'k8s-distribution-list': isK8sDistributionPanel(panel) }]">
+              <div v-for="(item, index) in barRows(panel)" :key="item.name" :class="['bar-row', { 'top-ranking-row': isK8sTopRankingPanel(panel) }]">
+                <em v-if="isK8sTopRankingPanel(panel)">{{ index + 1 }}</em>
                 <span :title="item.name">{{ item.name }}</span>
-                <div><i :style="{ width: `${item.percent}%`, background: isK8sDashboard ? item.color : undefined }"></i></div>
+                <div v-if="!isK8sTopRankingPanel(panel)"><i :style="{ width: `${item.percent}%`, background: isK8sDashboard ? item.color : undefined }"></i></div>
                 <b>{{ item.displayValue }}</b>
               </div>
             </div>
@@ -1383,7 +2081,7 @@ onBeforeUnmount(() => {
           <template v-else-if="panelVisualType(panel) === 'line'">
             <div class="trend-summary">
               <div class="trend-current">
-                <span>当前值</span>
+                <span>{{ trendCurrentLabel(panel) }}</span>
                 <strong>{{ panelDisplayValue(panel) }}</strong>
               </div>
               <div class="trend-stats">
@@ -1415,6 +2113,10 @@ onBeforeUnmount(() => {
                   :style="{ stroke: series.color }"
                 />
               </svg>
+              <div v-if="panel.unit === '%'" class="trend-y-axis" aria-hidden="true">
+                <span>100%</span>
+                <span>0%</span>
+              </div>
               <div
                 v-if="trendTooltips[panel.id]"
                 class="trend-crosshair"
@@ -1468,19 +2170,23 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <el-dialog v-model="dashboardDialogVisible" :title="editingDashboard ? `编辑${pageTitle}` : `创建${pageTitle}`" width="760px">
+    <el-dialog v-model="dashboardDialogVisible" :title="editingDashboard ? (isListLayout ? '编辑巡检方案' : `编辑${pageTitle}`) : (isListLayout ? '新建巡检方案' : `创建${pageTitle}`)" width="760px">
       <el-form label-width="100px">
         <el-form-item label="名称" required><el-input v-model="dashboardForm.name" :placeholder="`例如：生产环境${pageTitle}`" /></el-form-item>
-        <el-form-item v-if="!editingDashboard" label="大屏模板">
-          <div class="template-grid">
-            <button v-for="item in dashboardTemplates" :key="item.key" type="button" class="template-card" :class="{ active: activeTemplate === item.key }" @click="activeTemplate = item.key">
+        <el-form-item v-if="!editingDashboard" :label="isListLayout ? '方案模板' : '大屏模板'">
+          <div class="template-picker">
+            <div class="template-grid" role="radiogroup" :aria-label="isListLayout ? '巡检方案模板' : '大屏模板'">
+            <button v-for="item in availableTemplates" :key="item.key" type="button" class="template-card" :class="{ active: activeTemplate === item.key }" role="radio" :aria-checked="activeTemplate === item.key" @click="selectDashboardTemplate(item.key)">
+              <span v-if="activeTemplate === item.key" class="template-selected"><el-icon><CircleCheck /></el-icon>已选择</span>
               <strong>{{ item.name }}</strong>
               <span>{{ item.description }}</span>
             </button>
+            </div>
+            <div class="template-selection-hint" aria-live="polite">当前选择：<strong>{{ currentTemplate.name }}</strong><span>{{ currentTemplate.panels.length ? `，创建后将生成 ${currentTemplate.panels.length} 个默认${isListLayout ? '巡检项' : '面板'}` : `，创建后可手动新增 PromQL ${isListLayout ? '巡检项' : '面板'}` }}</span></div>
           </div>
         </el-form-item>
         <el-form-item label="类型">
-          <el-tag type="primary" effect="light">{{ isListLayout ? '巡检大屏 / 列表巡检' : '监控大屏 / 网格展示' }}</el-tag>
+          <el-tag type="primary" effect="light">{{ isListLayout ? '巡检方案 / 列表巡检' : '监控大屏 / 网格展示' }}</el-tag>
         </el-form-item>
         <el-form-item label="状态">
           <el-radio-group v-model="dashboardForm.status">
@@ -1496,7 +2202,7 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="panelDialogVisible" :title="editingPanel ? '编辑面板' : '新增面板'" width="820px">
+    <el-dialog v-model="panelDialogVisible" :title="editingPanel ? (isListLayout ? '编辑巡检项' : '编辑面板') : (isListLayout ? '新增巡检项' : '新增面板')" width="820px">
       <el-form label-width="110px">
         <el-form-item label="标题" required><el-input v-model="panelForm.title" /></el-form-item>
         <el-form-item label="数据源" required>
@@ -1505,8 +2211,23 @@ onBeforeUnmount(() => {
           </el-select>
         </el-form-item>
         <el-form-item label="PromQL" required><el-input v-model="panelForm.promql" type="textarea" :rows="4" placeholder="例如：up 或 sum(rate(http_requests_total[5m]))" /></el-form-item>
+        <template v-if="isListLayout">
+          <el-form-item label="巡检用途">
+            <el-radio-group v-model="panelForm.inspectionKind"><el-radio value="rule">阈值判定</el-radio><el-radio value="context">仅记录快照</el-radio></el-radio-group>
+          </el-form-item>
+          <el-row :gutter="12">
+            <el-col :span="8"><el-form-item label="分类"><el-input v-model="panelForm.category" placeholder="例如：可用性" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="窗口统计"><el-select v-model="panelForm.reducer" style="width: 100%"><el-option label="末值" value="last" /><el-option label="最大值" value="max" /><el-option label="最小值" value="min" /><el-option label="平均值" value="avg" /><el-option label="P95" value="p95" /><el-option label="合计" value="sum" /><el-option label="计数器增量" value="increase" /><el-option label="样本数" value="count" /></el-select></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="异常方向"><el-select v-model="panelForm.operator" style="width: 100%"><el-option label="数值越大越异常（≥）" value="gte" /><el-option label="数值越小越异常（≤）" value="lte" /></el-select></el-form-item></el-col>
+          </el-row>
+          <el-row :gutter="12">
+            <el-col :span="8"><el-form-item label="待核查阈值"><el-input-number v-model="panelForm.warningValue" :controls="false" style="width: 100%" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="异常阈值"><el-input-number v-model="panelForm.criticalValue" :controls="false" style="width: 100%" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="无数据判定"><el-select v-model="panelForm.noDataState" style="width: 100%"><el-option label="待核查" value="warning" /><el-option label="异常" value="danger" /><el-option label="正常" value="healthy" /></el-select></el-form-item></el-col>
+          </el-row>
+        </template>
         <el-row :gutter="12">
-          <el-col :span="8">
+          <el-col v-if="!isListLayout" :span="8">
             <el-form-item label="图表类型">
               <el-select v-model="panelForm.chartType">
                 <el-option label="指标卡" value="stat" />
@@ -1517,8 +2238,8 @@ onBeforeUnmount(() => {
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="8"><el-form-item label="单位"><el-input v-model="panelForm.unit" placeholder="%, ms, 个" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="宽度"><el-input-number v-model="panelForm.span" :min="6" :max="24" :step="6" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="isListLayout ? 12 : 8"><el-form-item label="单位"><el-input v-model="panelForm.unit" placeholder="%, ms, 个" /></el-form-item></el-col>
+          <el-col v-if="!isListLayout" :span="8"><el-form-item label="宽度"><el-input-number v-model="panelForm.span" :min="6" :max="24" :step="6" style="width: 100%" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
           <el-col :span="8"><el-form-item label="排序"><el-input-number v-model="panelForm.sort" style="width: 100%" /></el-form-item></el-col>
@@ -1861,6 +2582,117 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(240px, 1fr));
   gap: 14px;
+}
+.inspection-snapshot-label { color: #8a99b4; font-size: 12px; }
+.inspection-report-strip {
+  display: grid;
+  grid-template-columns: 120px minmax(360px, 1.5fr) minmax(230px, 1fr) 120px;
+  gap: 1px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid #cfe0fa;
+  border-radius: 12px;
+  background: #dce8f8;
+}
+.inspection-report-strip > div {
+  min-width: 0;
+  padding: 11px 14px;
+  background: #f7faff;
+}
+.inspection-report-strip span,
+.inspection-report-strip strong {
+  display: block;
+}
+.inspection-report-strip span {
+  color: #7a8ba7;
+  font-size: 11px;
+}
+.inspection-report-strip strong {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #17315c;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inspection-empty-report {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 13px 15px;
+  border: 1px dashed #a9c7f5;
+  border-radius: 12px;
+  background: #f4f8ff;
+  color: #2a66c8;
+}
+.inspection-empty-report .el-icon { font-size: 20px; }
+.inspection-empty-report strong,
+.inspection-empty-report span { display: block; }
+.inspection-empty-report span { margin-top: 3px; color: #7183a1; font-size: 12px; }
+.panel-grid.is-layout-editing > .chart-panel {
+  outline: 1px dashed rgba(59, 130, 246, .42);
+  outline-offset: 3px;
+  user-select: none;
+}
+.panel-grid.is-layout-editing > .chart-panel:hover {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, .2), 0 10px 24px rgba(37, 99, 235, .12);
+}
+.dashboard-layout-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  background: #eff6ff;
+  color: #315b89;
+  font-size: 12px;
+}
+.dashboard-layout-tip .el-icon { color: #2563eb; font-size: 16px; }
+.dashboard-layout-saving { margin-left: auto; color: #64748b; white-space: nowrap; }
+.panel-drag-hint {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.panel-move-handle,
+.panel-resize-handle {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: #2563eb;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+.panel-move-handle {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: #eff6ff;
+}
+.panel-move-handle:active,
+.panel-resize-handle:active { cursor: grabbing; }
+.panel-move-handle:focus-visible,
+.panel-resize-handle:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.panel-resize-handle {
+  position: absolute;
+  z-index: 5;
+  right: 3px;
+  bottom: 3px;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: rgba(239, 246, 255, .94);
+  cursor: nwse-resize;
 }
 .dashboard-grid-shell {
   min-width: 0;
@@ -2305,7 +3137,11 @@ onBeforeUnmount(() => {
   gap: 12px;
   width: 100%;
 }
+.template-picker {
+  width: 100%;
+}
 .template-card {
+  position: relative;
   min-height: 118px;
   padding: 14px;
   border: 1px solid #dce7f7;
@@ -2314,6 +3150,15 @@ onBeforeUnmount(() => {
   color: #263b5f;
   text-align: left;
   cursor: pointer;
+  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.template-card:hover {
+  border-color: #8cb7ff;
+  background: #f4f8ff;
+}
+.template-card:focus-visible {
+  outline: 3px solid rgba(59, 130, 246, .25);
+  outline-offset: 2px;
 }
 .template-card strong,
 .template-card span {
@@ -2325,9 +3170,41 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 .template-card.active {
-  border-color: #3b82f6;
-  background: #eff6ff;
-  box-shadow: inset 0 0 0 1px #3b82f6;
+  border: 2px solid #3b82f6;
+  background: linear-gradient(145deg, #eff6ff, #f8fbff);
+  box-shadow: 0 8px 20px rgba(59, 130, 246, .16), inset 0 0 0 1px rgba(255, 255, 255, .75);
+  transform: translateY(-1px);
+}
+.template-selected {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 3px;
+  margin: 0 !important;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #3b82f6;
+  color: #fff !important;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.template-selected .el-icon {
+  font-size: 12px;
+}
+.template-selection-hint {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid #d6e6ff;
+  border-radius: 8px;
+  background: #f6faff;
+  color: #64748b;
+  font-size: 13px;
+}
+.template-selection-hint strong {
+  color: #2563eb;
 }
 
 /* Grafana/Nightingale inspired observability workspace. */
@@ -2632,6 +3509,19 @@ onBeforeUnmount(() => {
   stroke-width: 1.8;
   vector-effect: non-scaling-stroke;
 }
+.trend-y-axis {
+  position: absolute;
+  top: 18px;
+  bottom: 27px;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #8a9ab5;
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+}
 .trend-crosshair {
   position: absolute;
   z-index: 2;
@@ -2922,6 +3812,16 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 18px;
 }
+.observability-canvas:fullscreen .dashboard-control-card {
+  overflow: visible;
+}
+.observability-canvas:fullscreen .dashboard-filter-bar {
+  position: relative;
+  z-index: 10;
+}
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__popper) {
+  z-index: 30;
+}
 .observability-canvas:fullscreen .dashboard-context {
   gap: 10px;
   margin-top: 5px;
@@ -3098,6 +3998,18 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 3px 10px rgba(26, 54, 93, 0.05);
+}
+.dashboard-workspace.is-inspection-workspace {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 10px;
+}
+.is-inspection-workspace .dashboard-switcher {
+  grid-column: 1;
+  grid-row: 1;
+}
+.is-inspection-workspace .workspace-status {
+  grid-column: 2;
+  grid-row: 1;
 }
 .dashboard-page-title {
   display: flex;
@@ -3294,6 +4206,9 @@ onBeforeUnmount(() => {
 }
 .dashboard-filter-main .el-select {
   width: 128px;
+}
+.dashboard-filter-main .custom-time-range :deep(.el-date-editor) {
+  width: 360px;
 }
 .dashboard-range-presets .el-button {
   min-width: 62px;
@@ -3536,7 +4451,21 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 .is-k8s-dashboard .trend-summary {
-  display: none;
+  display: flex;
+  min-height: 58px;
+}
+@media (min-width: 761px) {
+  .panel-grid.is-custom-layout {
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    grid-auto-rows: 32px;
+    grid-auto-flow: row;
+    gap: 9px;
+  }
+  .panel-grid.is-custom-layout > .chart-panel {
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+  }
 }
 .is-k8s-dashboard .trend-chart {
   padding: 20px 18px 0;
@@ -3651,6 +4580,255 @@ onBeforeUnmount(() => {
 .host-resource-toolbar strong { color: #1f3e6c; font-size: 13px; }
 .host-resource-toolbar span { color: #8190aa; font-size: 12px; }
 .host-resource-table .el-scrollbar__bar.is-horizontal { display: none; }
+/* K8s fullscreen overrides come after the light K8s skin so the dark
+   presentation keeps readable contrast for every panel and table surface. */
+.observability-canvas:fullscreen .dashboard-control-card,
+.observability-canvas:fullscreen .dashboard-kpi-card {
+  border-color: #283442;
+  background: #111923;
+  color: #d7e0ea;
+}
+.observability-canvas:fullscreen .dashboard-filter-bar {
+  border-top-color: #283442;
+  background: #151e29;
+}
+.observability-canvas:fullscreen .dashboard-filter-main label {
+  color: #9badc2;
+}
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__wrapper) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  box-shadow: none;
+}
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__selected-item),
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__placeholder),
+.observability-canvas:fullscreen .dashboard-filter-main :deep(.el-select__caret) {
+  color: #d7e0ea;
+}
+.observability-canvas:fullscreen .dashboard-range-presets :deep(.el-button:not(.el-button--primary)) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  color: #b9c8d8;
+}
+.observability-canvas:fullscreen .dashboard-range-presets :deep(.el-button.is-link) {
+  border-color: transparent;
+  background: transparent;
+  color: #9badc2;
+}
+.observability-canvas:fullscreen .dashboard-kpi-head > span {
+  color: #a9bad0;
+}
+.observability-canvas:fullscreen .dashboard-kpi-head .el-icon {
+  color: #72a8ff;
+}
+.observability-canvas:fullscreen .dashboard-kpi-card > strong {
+  color: #f1f6fc;
+}
+.observability-canvas:fullscreen .dashboard-kpi-meta,
+.observability-canvas:fullscreen .dashboard-kpi-meta small {
+  color: #879ab1;
+}
+.observability-canvas:fullscreen .host-resource-toolbar {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas:fullscreen .host-resource-toolbar strong,
+.observability-canvas:fullscreen .host-resource-toolbar span {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-card,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-grid-toolbar,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-control-card {
+  border-color: #283442;
+  background: #111923;
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid {
+  align-items: stretch;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid > .chart-panel {
+  min-height: 0;
+  align-self: stretch;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid > .chart-panel.panel-line {
+  min-height: 312px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-chart .sparkline {
+  height: 160px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-summary {
+  min-height: 44px;
+  padding: 5px 9px 0;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-current strong {
+  font-size: 15px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-stats {
+  gap: 5px;
+  font-size: 8px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list {
+  max-height: 178px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list .top-ranking-row {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 7px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list .top-ranking-row em {
+  color: #6f90bd;
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-top-ranking-list .top-ranking-row b {
+  min-width: 54px;
+  color: #dce8f7;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar {
+  display: flex;
+  flex-direction: column;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-distribution-list {
+  flex: 1;
+  max-height: none;
+  justify-content: flex-start;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state {
+  flex: 1;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-bar {
+  position: relative;
+  z-index: 10;
+  border-top-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-control-card {
+  overflow: visible;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__popper),
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__popper) {
+  z-index: 30;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main label {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__wrapper) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  box-shadow: none;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__selected-item),
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__placeholder),
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-filter-main :deep(.el-select__caret) {
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-range-presets :deep(.el-button:not(.el-button--primary)) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  color: #b9c8d8;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-range-presets :deep(.el-button:not(.el-button--primary):hover) {
+  border-color: #5b7cff;
+  color: #8bb5ff;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-range-presets :deep(.el-button.is-link) {
+  border-color: transparent;
+  background: transparent;
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel .panel-head {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel .panel-title-row strong,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-grid-heading > strong {
+  color: #e6eef8;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-head > span {
+  color: #a9bad0;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-head .el-icon {
+  color: #72a8ff;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-card > strong {
+  color: #f1f6fc;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-meta,
+.observability-canvas.is-k8s-dashboard:fullscreen .dashboard-kpi-meta small {
+  color: #879ab1;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel .panel-head span,
+.observability-canvas.is-k8s-dashboard:fullscreen .panel-state,
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-empty-state span,
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar span,
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar strong {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-current span,
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-stats {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-current strong,
+.observability-canvas.is-k8s-dashboard:fullscreen .trend-stats b {
+  color: #e6eef8;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-empty-state {
+  color: #9badc2;
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 48px, #263241 49px, transparent 50px);
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state {
+  min-height: 118px;
+  padding: 14px;
+  background-image: none;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state .el-icon {
+  margin-bottom: 5px;
+  font-size: 22px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-panel.panel-bar .chart-empty-state span {
+  margin-top: 3px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .chart-empty-state strong {
+  color: #d7e3f0;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-input__wrapper),
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__wrapper) {
+  border-color: #3b4c60;
+  background: #0c131c;
+  box-shadow: none;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__selected-item),
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-toolbar :deep(.el-select__placeholder) {
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-table .el-table,
+.observability-canvas.is-k8s-dashboard:fullscreen .pod-resource-table .el-table__inner-wrapper::before {
+  --el-table-bg-color: #111923;
+  --el-table-tr-bg-color: #111923;
+  --el-table-header-bg-color: #151e29;
+  --el-table-border-color: #283442;
+  --el-table-text-color: #c7d2df;
+  --el-table-header-text-color: #a8b8cb;
+  background: #111923;
+}
+/* Keep the K8s presentation grid at six cards per row in fullscreen;
+   the generic six-column dashboard layout must not override it. */
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  grid-auto-flow: row;
+  gap: 10px;
+}
+.observability-canvas.is-k8s-dashboard:fullscreen .k8s-panel-grid > .chart-panel:not(.k8s-wide-panel):not(.panel-table) {
+  grid-column: span 1 !important;
+}
 @media (max-width: 1180px) {
   .dashboard-filter-bar { align-items: flex-start; flex-direction: column; }
   .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
@@ -3668,6 +4846,8 @@ onBeforeUnmount(() => {
 @media (max-width: 760px) {
   .dashboard-workspace { grid-template-columns: 1fr; }
   .workspace-status,.dashboard-switcher { grid-column: 1; }
+  .is-inspection-workspace .dashboard-switcher,
+  .is-inspection-workspace .workspace-status { grid-row: auto; }
   .workspace-status { justify-content: flex-start; flex-wrap: wrap; }
   .dashboard-switcher { align-items: stretch; flex-direction: column; }
   .dashboard-switcher .create-screen-btn { width: auto; }
@@ -3682,6 +4862,7 @@ onBeforeUnmount(() => {
   .is-k8s-dashboard .dashboard-kpi-card:last-child:nth-child(odd) { grid-column: span 1; }
   .panel-grid > .chart-panel,
   .k8s-panel-grid > .chart-panel { grid-column: span 1; }
+  .panel-grid.is-custom-layout > .chart-panel { grid-column: 1 !important; grid-row: auto !important; min-height: 260px; }
   .pod-resource-toolbar { align-items: flex-start; flex-direction: column; }
   .pod-resource-toolbar .el-select { width: 100%; }
   .dashboard-grid-toolbar,.dashboard-grid-heading { align-items: flex-start; flex-direction: column; }

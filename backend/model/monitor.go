@@ -291,6 +291,17 @@ type MonitorDashboardPanel struct {
 	Unit           string    `json:"unit" gorm:"size:32"`
 	ChartType      string    `json:"chartType" gorm:"size:32;default:stat"`
 	Span           int       `json:"span" gorm:"default:8"`
+	GridX          int       `json:"gridX" gorm:"default:0"`
+	GridY          int       `json:"gridY" gorm:"default:0"`
+	GridW          int       `json:"gridW" gorm:"default:0"`
+	GridH          int       `json:"gridH" gorm:"default:0"`
+	InspectionKind string    `json:"inspectionKind" gorm:"size:24;default:rule"`
+	Reducer        string    `json:"reducer" gorm:"size:24;default:last"`
+	Operator       string    `json:"operator" gorm:"size:16;default:gte"`
+	WarningValue   float64   `json:"warningValue" gorm:"default:0"`
+	CriticalValue  float64   `json:"criticalValue" gorm:"default:0"`
+	NoDataState    string    `json:"noDataState" gorm:"size:24;default:warning"`
+	Category       string    `json:"category" gorm:"size:64"`
 	Sort           int       `json:"sort" gorm:"default:0;index"`
 	Status         int       `json:"status" gorm:"default:1;index"`
 	Description    string    `json:"description" gorm:"size:255"`
@@ -301,3 +312,55 @@ type MonitorDashboardPanel struct {
 func (MonitorDashboardPanel) TableName() string {
 	return "monitor_dashboard_panel"
 }
+
+// MonitorInspectionRun is an immutable inspection report header. Results are
+// captured when the user explicitly executes an inspection; opening a scheme
+// never changes an existing report.
+type MonitorInspectionRun struct {
+	ID             uint       `json:"id" gorm:"primaryKey"`
+	DashboardID    uint       `json:"dashboardId" gorm:"index;not null"`
+	DashboardName  string     `json:"dashboardName" gorm:"size:128"`
+	DatasourceID   uint       `json:"datasourceId" gorm:"index;not null"`
+	DatasourceName string     `json:"datasourceName" gorm:"size:128"`
+	StartAt        time.Time  `json:"startAt" gorm:"index"`
+	EndAt          time.Time  `json:"endAt"`
+	Status         string     `json:"status" gorm:"size:24;index"`
+	TotalCount     int        `json:"totalCount"`
+	HealthyCount   int        `json:"healthyCount"`
+	WarningCount   int        `json:"warningCount"`
+	DangerCount    int        `json:"dangerCount"`
+	NoDataCount    int        `json:"noDataCount"`
+	DurationMs     int64      `json:"durationMs"`
+	Error          string     `json:"error" gorm:"type:text"`
+	CompletedAt    *time.Time `json:"completedAt"`
+	CreatedAt      time.Time  `json:"createTime"`
+	UpdatedAt      time.Time  `json:"updateTime"`
+}
+
+func (MonitorInspectionRun) TableName() string { return "monitor_inspection_run" }
+
+type MonitorInspectionResult struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	RunID          uint      `json:"runId" gorm:"index;not null"`
+	PanelID        uint      `json:"panelId" gorm:"index;not null"`
+	Title          string    `json:"title" gorm:"size:128"`
+	Category       string    `json:"category" gorm:"size:64"`
+	InspectionKind string    `json:"inspectionKind" gorm:"size:24"`
+	Status         string    `json:"status" gorm:"size:24;index"`
+	Value          float64   `json:"value"`
+	ValueText      string    `json:"valueText" gorm:"size:64"`
+	Unit           string    `json:"unit" gorm:"size:32"`
+	Reducer        string    `json:"reducer" gorm:"size:24"`
+	Operator       string    `json:"operator" gorm:"size:16"`
+	WarningValue   float64   `json:"warningValue"`
+	CriticalValue  float64   `json:"criticalValue"`
+	NoDataState    string    `json:"noDataState" gorm:"size:24"`
+	SeriesCount    int       `json:"seriesCount"`
+	SampleCount    int       `json:"sampleCount"`
+	Evidence       string    `json:"evidence" gorm:"type:longtext"`
+	PromQL         string    `json:"promql" gorm:"type:longtext"`
+	Error          string    `json:"error" gorm:"type:text"`
+	CreatedAt      time.Time `json:"createTime"`
+}
+
+func (MonitorInspectionResult) TableName() string { return "monitor_inspection_result" }

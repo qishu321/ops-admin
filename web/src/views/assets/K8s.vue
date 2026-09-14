@@ -2922,7 +2922,7 @@ const monitorChartDefinitions = {
     { key: 'load', title: '5 分钟系统负载', query: 'node_load5', unit: '' },
     { key: 'connections', title: 'TCP 已建立连接数', query: 'node_netstat_Tcp_CurrEstab', unit: '个' },
     { key: 'disk-usage', title: '磁盘使用率（%）', query: 'topk(10, 100 - (sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / sum by(instance) (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) * 100))', unit: '%', summaryOnly: true },
-    { key: 'disk-free', title: '剩余磁盘（GiB）', query: 'sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / 1024 / 1024 / 1024', unit: 'GiB', summaryOnly: true },
+    { key: 'disk-free', title: '剩余磁盘（GiB）', query: 'node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"} / 1024 / 1024 / 1024', unit: 'GiB', summaryOnly: true },
     { key: 'iops', title: '磁盘 IOPS（次/秒）', query: 'sum by(instance) (rate(node_disk_reads_completed_total{device!~"loop.*|ram.*"}[5m]) + rate(node_disk_writes_completed_total{device!~"loop.*|ram.*"}[5m]))', unit: '次/秒', summaryOnly: true },
     { key: 'pods', title: 'Pod 数量', query: 'sum by(node) (kube_pod_info)', unit: '个', summaryOnly: true },
     { key: 'retransmit', title: 'TCP 重传率（%）', query: '100 * sum by(instance) (rate(node_netstat_Tcp_RetransSegs[5m])) / clamp_min(sum by(instance) (rate(node_netstat_Tcp_OutSegs[5m])), 1)', unit: '%', summaryOnly: true },

@@ -9,6 +9,7 @@ const data = ref({ metrics: {} })
 const activeRange = ref('1h')
 const customRange = ref([])
 let timer
+let loadVersion = 0
 
 const ranges = [['1h', '1小时'], ['3h', '3小时'], ['6h', '6小时'], ['12h', '12小时'], ['1d', '1天'], ['3d', '3天'], ['7d', '7天'], ['14d', '14天']]
 const cards = [
@@ -54,19 +55,25 @@ function labels(key) {
 }
 function valueFor(key) { return cards.find(item => item[0] === key)?.[3](latest(key)) || format(latest(key)) }
 async function load() {
-  if (!props.enabled) return
+  const version = ++loadVersion
+  if (!props.enabled || !props.databaseId) {
+    data.value = { metrics: {} }
+    return
+  }
   loading.value = true
   try {
     const params = { id: props.databaseId, range: activeRange.value }
     if (activeRange.value === 'custom' && customRange.value?.length === 2) { params.start = Number(customRange.value[0]); params.end = Number(customRange.value[1]) }
-    data.value = await queryAssetDatabaseMetrics(params)
-    if (data.value.collectError) ElMessage.warning(`指标采集失败：${data.value.collectError}`)
-  } finally { loading.value = false }
+    const response = await queryAssetDatabaseMetrics(params)
+    if (version !== loadVersion) return
+    data.value = response
+    if (response.collectError) ElMessage.warning(`指标采集失败：${response.collectError}`)
+  } finally { if (version === loadVersion) loading.value = false }
 }
 function chooseRange(key) { activeRange.value = key; load() }
 function applyCustom() { if (customRange.value?.length === 2) { activeRange.value = 'custom'; load() } }
-watch(() => props.enabled, load)
-onMounted(() => { load(); timer = window.setInterval(load, 30000) })
+watch(() => [props.databaseId, props.enabled], load, { immediate: true })
+onMounted(() => { timer = window.setInterval(load, 30000) })
 onBeforeUnmount(() => window.clearInterval(timer))
 </script>
 

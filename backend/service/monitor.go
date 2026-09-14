@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -217,21 +218,36 @@ type MonitorDashboardPayload struct {
 }
 
 type MonitorDashboardPanelPayload struct {
-	ID           uint   `json:"id"`
-	DashboardID  uint   `json:"dashboardId"`
-	Title        string `json:"title"`
-	DatasourceID uint   `json:"datasourceId"`
-	PromQL       string `json:"promql"`
-	Unit         string `json:"unit"`
-	ChartType    string `json:"chartType"`
-	Span         int    `json:"span"`
-	GridX        int    `json:"gridX"`
-	GridY        int    `json:"gridY"`
-	GridW        int    `json:"gridW"`
-	GridH        int    `json:"gridH"`
-	Sort         int    `json:"sort"`
-	Status       int    `json:"status"`
-	Description  string `json:"description"`
+	ID             uint    `json:"id"`
+	DashboardID    uint    `json:"dashboardId"`
+	Title          string  `json:"title"`
+	DatasourceID   uint    `json:"datasourceId"`
+	PromQL         string  `json:"promql"`
+	Unit           string  `json:"unit"`
+	ChartType      string  `json:"chartType"`
+	Span           int     `json:"span"`
+	GridX          int     `json:"gridX"`
+	GridY          int     `json:"gridY"`
+	GridW          int     `json:"gridW"`
+	GridH          int     `json:"gridH"`
+	InspectionKind string  `json:"inspectionKind"`
+	Reducer        string  `json:"reducer"`
+	Operator       string  `json:"operator"`
+	WarningValue   float64 `json:"warningValue"`
+	CriticalValue  float64 `json:"criticalValue"`
+	NoDataState    string  `json:"noDataState"`
+	Category       string  `json:"category"`
+	Sort           int     `json:"sort"`
+	Status         int     `json:"status"`
+	Description    string  `json:"description"`
+}
+
+type MonitorInspectionRunPayload struct {
+	DashboardID  uint  `json:"dashboardId"`
+	DatasourceID uint  `json:"datasourceId"`
+	StartAt      int64 `json:"startAt"`
+	EndAt        int64 `json:"endAt"`
+	StepSeconds  int   `json:"stepSeconds"`
 }
 
 type MonitorDashboardPanelQueryPayload struct {
@@ -5001,7 +5017,32 @@ func (s *Service) GetMonitorDashboard(id uint) (map[string]any, error) {
 	if err := s.removeDuplicateDefaultPodResourcePanels(&panels); err != nil {
 		return nil, err
 	}
+	if dashboard.Layout == "list" {
+		if err := s.upgradeDefaultInspectionRules(&panels); err != nil {
+			return nil, err
+		}
+	}
 	return map[string]any{"dashboard": dashboard, "panels": panels}, nil
+}
+
+func (s *Service) upgradeDefaultInspectionRules(panels *[]model.MonitorDashboardPanel) error {
+	for index := range *panels {
+		panel := &(*panels)[index]
+		if panel.WarningValue != 0 || panel.CriticalValue != 0 || strings.TrimSpace(panel.Category) != "" {
+			continue
+		}
+		rule := inspectionRuleFor(*panel)
+		if !rule.configured && rule.kind != "context" {
+			rule.kind, rule.category = "context", "自定义快照"
+		}
+		updates := map[string]any{"inspection_kind": rule.kind, "reducer": rule.reducer, "operator": rule.operator, "warning_value": rule.warning, "critical_value": rule.critical, "no_data_state": rule.noDataState, "category": rule.category}
+		if err := s.db.Model(&model.MonitorDashboardPanel{}).Where("id = ?", panel.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		panel.InspectionKind, panel.Reducer, panel.Operator = rule.kind, rule.reducer, rule.operator
+		panel.WarningValue, panel.CriticalValue, panel.NoDataState, panel.Category = rule.warning, rule.critical, rule.noDataState, rule.category
+	}
+	return nil
 }
 
 // upgradeDefaultDiskUsagePanels applies the current host disk panel semantics
@@ -5139,6 +5180,18 @@ func (s *Service) SaveMonitorDashboard(payload MonitorDashboardPayload) (*model.
 
 func (s *Service) DeleteMonitorDashboard(id uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var runIDs []uint
+		if err := tx.Model(&model.MonitorInspectionRun{}).Where("dashboard_id = ?", id).Pluck("id", &runIDs).Error; err != nil {
+			return err
+		}
+		if len(runIDs) > 0 {
+			if err := tx.Where("run_id IN ?", runIDs).Delete(&model.MonitorInspectionResult{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("dashboard_id = ?", id).Delete(&model.MonitorInspectionRun{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("dashboard_id = ?", id).Delete(&model.MonitorDashboardPanel{}).Error; err != nil {
 			return err
 		}
@@ -5176,6 +5229,13 @@ func (s *Service) SaveMonitorDashboardPanel(payload MonitorDashboardPanelPayload
 		"grid_y":          max(payload.GridY, 0),
 		"grid_w":          clampInt(payload.GridW, 0, 24),
 		"grid_h":          clampInt(payload.GridH, 0, 40),
+		"inspection_kind": normalizeInspectionKind(payload.InspectionKind),
+		"reducer":         normalizeInspectionReducer(payload.Reducer),
+		"operator":        normalizeInspectionOperator(payload.Operator),
+		"warning_value":   payload.WarningValue,
+		"critical_value":  payload.CriticalValue,
+		"no_data_state":   normalizeInspectionNoDataState(payload.NoDataState),
+		"category":        Trimmed(payload.Category),
 		"sort":            payload.Sort,
 		"status":          normalizeMonitorStatus(payload.Status),
 		"description":     Trimmed(payload.Description),
@@ -5242,6 +5302,387 @@ func (s *Service) QueryMonitorDashboardPanel(payload MonitorDashboardPanelQueryP
 	return map[string]any{
 		"panel": panel, "datasource": ds, "resultType": result.Data.ResultType, "result": result.Data.Result,
 	}, nil
+}
+
+type inspectionRule struct {
+	kind, reducer, operator, noDataState, category string
+	warning, critical                              float64
+	configured                                     bool
+}
+
+func normalizeInspectionKind(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "context") {
+		return "context"
+	}
+	return "rule"
+}
+
+func normalizeInspectionReducer(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "max", "min", "avg", "p95", "sum", "increase", "count", "last":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "last"
+	}
+}
+
+func normalizeInspectionOperator(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "gt", "gte", "lt", "lte":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "gte"
+	}
+}
+
+func normalizeInspectionNoDataState(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "healthy", "danger", "warning":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "warning"
+	}
+}
+
+// inspectionRuleFor keeps old schemes useful after the migration while new
+// schemes persist their complete rule definition on every panel.
+func inspectionRuleFor(panel model.MonitorDashboardPanel) inspectionRule {
+	rule := inspectionRule{
+		kind: normalizeInspectionKind(panel.InspectionKind), reducer: normalizeInspectionReducer(panel.Reducer),
+		operator: normalizeInspectionOperator(panel.Operator), noDataState: normalizeInspectionNoDataState(panel.NoDataState),
+		category: strings.TrimSpace(panel.Category), warning: panel.WarningValue, critical: panel.CriticalValue,
+		configured: strings.TrimSpace(panel.Category) != "" || panel.WarningValue != 0 || panel.CriticalValue != 0,
+	}
+	setHigh := func(category, reducer string, warning, critical float64) {
+		rule.category, rule.reducer, rule.operator = category, reducer, "gte"
+		rule.warning, rule.critical, rule.configured = warning, critical, true
+	}
+	setLow := func(category, reducer string, warning, critical float64) {
+		rule.category, rule.reducer, rule.operator = category, reducer, "lte"
+		rule.warning, rule.critical, rule.configured = warning, critical, true
+	}
+	switch panel.Title {
+	case "离线主机", "主机离线检测":
+		setHigh("可用性", "max", 0.5, 0.5)
+	case "平均 CPU 使用率", "CPU 使用率 Top", "CPU 使用趋势", "CPU 高负载":
+		setHigh("计算资源", "p95", 80, 90)
+	case "平均内存使用率", "内存使用率 Top", "内存使用趋势", "内存高使用率":
+		setHigh("内存资源", "p95", 85, 95)
+	case "磁盘使用率", "根分区磁盘使用率":
+		setHigh("存储资源", "max", 80, 90)
+	case "异常 Pod", "Pending Pod", "失败或未知 Pod", "Deployment 不可用副本", "PVC Pending", "CrashLoopBackOff 容器", "OOMKilled 容器":
+		setHigh("工作负载", "max", 0.5, 3)
+	case "Pod 重启增量", "Pod 累计重启次数 Top", "Pod 最近 1 小时新增重启 Top", "网络接收错误增量", "网络发送错误增量":
+		setHigh("稳定性", "increase", 1, 5)
+	case "CPU Request 使用率":
+		setHigh("容量规划", "p95", 70, 85)
+	case "内存 Request 使用率":
+		setHigh("容量规划", "p95", 75, 90)
+	case "工作负载副本可用率":
+		setLow("工作负载", "min", 95, 80)
+	case "异常原因 Top":
+		setHigh("稳定性", "max", 0.5, 3)
+	case "系统负载 Top":
+		setHigh("系统资源", "p95", 5, 10)
+	case "文件句柄使用率":
+		setHigh("系统资源", "max", 70, 85)
+	case "阻塞进程":
+		setHigh("系统资源", "max", 1, 5)
+	case "CPU 节流率":
+		setHigh("计算资源", "p95", 10, 25)
+	case "容器内存使用率":
+		setHigh("内存资源", "p95", 80, 95)
+	case "主机信息", "Pod 资源明细", "Pod 数量", "Running Pod", "Ready 节点", "命名空间", "Deployment", "Service", "Ingress", "PVC", "主机总数", "在线主机", "运行进程数", "命名空间 Pod 分布", "节点 Pod 分布":
+		rule.kind, rule.category, rule.configured = "context", "资源概况", false
+	}
+	if rule.category == "" {
+		rule.category = "自定义"
+	}
+	return rule
+}
+
+type inspectionStats struct {
+	Values   []float64
+	First    float64
+	Last     float64
+	Min      float64
+	Max      float64
+	Avg      float64
+	P95      float64
+	Sum      float64
+	Increase float64
+}
+
+func promSampleValues(sample PromMetricSample) []float64 {
+	values := make([]float64, 0, len(sample.Values)+1)
+	appendValue := func(raw any) {
+		value, err := strconv.ParseFloat(fmt.Sprint(raw), 64)
+		if err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) {
+			values = append(values, value)
+		}
+	}
+	if len(sample.Values) > 0 {
+		for _, point := range sample.Values {
+			if len(point) >= 2 {
+				appendValue(point[1])
+			}
+		}
+	} else if len(sample.Value) >= 2 {
+		appendValue(sample.Value[1])
+	}
+	return values
+}
+
+func reduceInspectionResult(result *PromQueryResult, reducer, operator string) (float64, inspectionStats, int, int, bool) {
+	stats := inspectionStats{Min: math.Inf(1), Max: math.Inf(-1)}
+	seriesCount := 0
+	seriesValues := make([]float64, 0, len(result.Data.Result))
+	for _, sample := range result.Data.Result {
+		values := promSampleValues(sample)
+		if len(values) == 0 {
+			continue
+		}
+		seriesCount++
+		increase := math.Max(values[len(values)-1]-values[0], 0)
+		stats.Increase += increase
+		stats.Values = append(stats.Values, values...)
+		reduced := values[len(values)-1]
+		sortedSeries := append([]float64(nil), values...)
+		sort.Float64s(sortedSeries)
+		seriesSum := 0.0
+		for _, value := range values {
+			seriesSum += value
+		}
+		switch normalizeInspectionReducer(reducer) {
+		case "max":
+			reduced = sortedSeries[len(sortedSeries)-1]
+		case "min":
+			reduced = sortedSeries[0]
+		case "avg":
+			reduced = seriesSum / float64(len(values))
+		case "p95":
+			reduced = sortedSeries[int(math.Ceil(float64(len(sortedSeries))*0.95))-1]
+		case "increase":
+			reduced = increase
+		}
+		seriesValues = append(seriesValues, reduced)
+	}
+	if len(stats.Values) == 0 {
+		return 0, stats, seriesCount, 0, false
+	}
+	stats.First, stats.Last = stats.Values[0], stats.Values[len(stats.Values)-1]
+	for _, value := range stats.Values {
+		stats.Sum += value
+		stats.Min = math.Min(stats.Min, value)
+		stats.Max = math.Max(stats.Max, value)
+	}
+	stats.Avg = stats.Sum / float64(len(stats.Values))
+	sortedValues := append([]float64(nil), stats.Values...)
+	sort.Float64s(sortedValues)
+	stats.P95 = sortedValues[int(math.Ceil(float64(len(sortedValues))*0.95))-1]
+	value := seriesValues[0]
+	for _, candidate := range seriesValues[1:] {
+		if normalizeInspectionOperator(operator) == "lt" || normalizeInspectionOperator(operator) == "lte" {
+			value = math.Min(value, candidate)
+		} else {
+			value = math.Max(value, candidate)
+		}
+	}
+	switch normalizeInspectionReducer(reducer) {
+	case "sum":
+		value = stats.Sum
+	case "count":
+		value = float64(len(stats.Values))
+	}
+	return value, stats, seriesCount, len(stats.Values), true
+}
+
+func inspectionValueMatches(value, threshold float64, operator string) bool {
+	switch normalizeInspectionOperator(operator) {
+	case "gt":
+		return value > threshold
+	case "lt":
+		return value < threshold
+	case "lte":
+		return value <= threshold
+	default:
+		return value >= threshold
+	}
+}
+
+func inspectionStatus(value float64, rule inspectionRule) string {
+	if rule.kind == "context" || !rule.configured {
+		return "healthy"
+	}
+	if inspectionValueMatches(value, rule.critical, rule.operator) {
+		return "danger"
+	}
+	if inspectionValueMatches(value, rule.warning, rule.operator) {
+		return "warning"
+	}
+	return "healthy"
+}
+
+func formatInspectionValue(value float64, unit string) string {
+	precision := 2
+	if math.Abs(value) >= 100 {
+		precision = 0
+	}
+	text := strconv.FormatFloat(value, 'f', precision, 64)
+	if strings.Contains(text, ".") {
+		text = strings.TrimRight(strings.TrimRight(text, "0"), ".")
+	}
+	return text + strings.TrimSpace(unit)
+}
+
+func inspectionEvidence(stats inspectionStats) string {
+	payload := map[string]any{"first": stats.First, "last": stats.Last, "min": stats.Min, "max": stats.Max, "avg": stats.Avg, "p95": stats.P95, "sum": stats.Sum, "increase": stats.Increase}
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
+func (s *Service) RunMonitorInspection(payload MonitorInspectionRunPayload) (map[string]any, error) {
+	if payload.DashboardID == 0 {
+		return nil, errors.New("巡检方案不能为空")
+	}
+	if payload.StartAt <= 0 || payload.EndAt <= payload.StartAt {
+		return nil, errors.New("请选择有效的巡检时间范围")
+	}
+	if payload.EndAt-payload.StartAt > 31*24*3600 {
+		return nil, errors.New("单次巡检时间范围不能超过 31 天")
+	}
+	var dashboard model.MonitorDashboard
+	if err := s.db.First(&dashboard, payload.DashboardID).Error; err != nil {
+		return nil, err
+	}
+	if dashboard.Layout != "list" {
+		return nil, errors.New("仅巡检方案可以执行巡检")
+	}
+	var panels []model.MonitorDashboardPanel
+	if err := s.db.Where("dashboard_id = ? AND status = ?", dashboard.ID, 1).Order("sort ASC, id ASC").Find(&panels).Error; err != nil {
+		return nil, err
+	}
+	if len(panels) == 0 {
+		return nil, errors.New("当前方案没有启用的巡检项")
+	}
+	datasourceID := payload.DatasourceID
+	if datasourceID == 0 {
+		datasourceID = panels[0].DatasourceID
+	}
+	ds, err := s.GetMonitorDatasource(datasourceID)
+	if err != nil {
+		return nil, err
+	}
+	if isMonitorLogDatasource(ds.Type) {
+		return nil, errors.New("巡检仅支持 Prometheus 或 VictoriaMetrics 指标数据源")
+	}
+	startedAt := time.Now()
+	run := model.MonitorInspectionRun{DashboardID: dashboard.ID, DashboardName: dashboard.Name, DatasourceID: ds.ID, DatasourceName: ds.Name, StartAt: time.Unix(payload.StartAt, 0), EndAt: time.Unix(payload.EndAt, 0), Status: "running", TotalCount: len(panels)}
+	if err := s.db.Create(&run).Error; err != nil {
+		return nil, err
+	}
+	step := payload.StepSeconds
+	if step <= 0 {
+		step = max(int((payload.EndAt-payload.StartAt)/240), 15)
+	}
+	type evaluatedInspection struct {
+		index  int
+		item   model.MonitorInspectionResult
+		noData bool
+	}
+	evaluate := func(index int, panel model.MonitorDashboardPanel) evaluatedInspection {
+		rule := inspectionRuleFor(panel)
+		item := model.MonitorInspectionResult{RunID: run.ID, PanelID: panel.ID, Title: panel.Title, Category: rule.category, InspectionKind: rule.kind, Unit: panel.Unit, Reducer: rule.reducer, Operator: rule.operator, WarningValue: rule.warning, CriticalValue: rule.critical, NoDataState: rule.noDataState, PromQL: panel.PromQL}
+		queryResult, queryErr := s.prometheusRangeQuery(*ds, panel.PromQL, run.StartAt, run.EndAt, step)
+		noData := false
+		if queryErr != nil {
+			item.Status, item.Error, item.ValueText = "danger", queryErr.Error(), "查询失败"
+		} else {
+			value, stats, seriesCount, sampleCount, ok := reduceInspectionResult(queryResult, rule.reducer, rule.operator)
+			item.SeriesCount, item.SampleCount = seriesCount, sampleCount
+			if !ok {
+				item.Status, item.ValueText = rule.noDataState, "无数据"
+				noData = true
+			} else {
+				item.Value, item.ValueText, item.Status = value, formatInspectionValue(value, panel.Unit), inspectionStatus(value, rule)
+				item.Evidence = inspectionEvidence(stats)
+			}
+		}
+		return evaluatedInspection{index: index, item: item, noData: noData}
+	}
+	jobs := make(chan int)
+	completed := make(chan evaluatedInspection, len(panels))
+	var workers sync.WaitGroup
+	for workerIndex := 0; workerIndex < min(4, len(panels)); workerIndex++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				completed <- evaluate(index, panels[index])
+			}
+		}()
+	}
+	go func() {
+		for index := range panels {
+			jobs <- index
+		}
+		close(jobs)
+		workers.Wait()
+		close(completed)
+	}()
+	evaluated := make([]evaluatedInspection, len(panels))
+	for value := range completed {
+		evaluated[value.index] = value
+	}
+	results := make([]model.MonitorInspectionResult, 0, len(panels))
+	for _, value := range evaluated {
+		item := value.item
+		if value.noData {
+			run.NoDataCount++
+		}
+		switch item.Status {
+		case "danger":
+			run.DangerCount++
+		case "warning":
+			run.WarningCount++
+		default:
+			run.HealthyCount++
+		}
+		if err := s.db.Create(&item).Error; err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	completedAt := time.Now()
+	run.Status, run.CompletedAt, run.DurationMs = "completed", &completedAt, completedAt.Sub(startedAt).Milliseconds()
+	if err := s.db.Model(&run).Updates(map[string]any{"status": run.Status, "healthy_count": run.HealthyCount, "warning_count": run.WarningCount, "danger_count": run.DangerCount, "no_data_count": run.NoDataCount, "duration_ms": run.DurationMs, "completed_at": run.CompletedAt}).Error; err != nil {
+		return nil, err
+	}
+	return map[string]any{"run": run, "results": results}, nil
+}
+
+func (s *Service) GetMonitorInspectionRun(id uint) (map[string]any, error) {
+	var run model.MonitorInspectionRun
+	if err := s.db.First(&run, id).Error; err != nil {
+		return nil, err
+	}
+	var results []model.MonitorInspectionResult
+	if err := s.db.Where("run_id = ?", run.ID).Order("id ASC").Find(&results).Error; err != nil {
+		return nil, err
+	}
+	return map[string]any{"run": run, "results": results}, nil
+}
+
+func (s *Service) GetLatestMonitorInspectionRun(dashboardID uint) (map[string]any, error) {
+	var run model.MonitorInspectionRun
+	err := s.db.Where("dashboard_id = ? AND status = ?", dashboardID, "completed").Order("id DESC").First(&run).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return map[string]any{"run": nil, "results": []model.MonitorInspectionResult{}}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.GetMonitorInspectionRun(run.ID)
 }
 
 func monitorMetricValue(sample PromMetricSample) float64 {

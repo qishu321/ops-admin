@@ -46,7 +46,6 @@ const form = reactive({
   scriptType: 'shell',
   interpreter: 'bash',
   content: '',
-  defaultParams: '',
   variables: [],
   timeoutSeconds: 300,
   status: 1,
@@ -80,7 +79,6 @@ function resetForm() {
     scriptType: 'shell',
     interpreter: 'bash',
     content: '',
-    defaultParams: '',
     variables: [],
     timeoutSeconds: 300,
     status: 1,
@@ -103,6 +101,13 @@ function addVariable() {
 }
 
 function removeVariable(index) { form.variables.splice(index, 1) }
+
+function variableDisplay(variable) {
+  const name = `VARIABLE_${variable.name || ''}`
+  if (variable.secret) return `${name}=******`
+  if (String(variable.defaultValue || '').trim()) return `${name}=${variable.defaultValue}`
+  return `${name}${variable.required ? '（必填）' : ''}`
+}
 
 function normalizeVariableName(variable) {
   variable.name = String(variable.name || '').toUpperCase().replace(/[^A-Z0-9_]/g, '')
@@ -198,7 +203,6 @@ async function openEdit(row) {
     scriptType,
     interpreter: compatibleInterpreter(scriptType, data.interpreter),
     content: data.content || '',
-    defaultParams: data.defaultParams || '',
     variables: (data.variables || []).map((item) => ({ name: item.name || '', defaultValue: item.secret ? '' : (item.defaultValue || ''), description: item.description || '', required: Boolean(item.required), secret: Boolean(item.secret) })),
     timeoutSeconds: data.timeoutSeconds || 300,
     status: data.status || 1,
@@ -270,7 +274,7 @@ onMounted(loadData)
     <div class="page-header">
       <div>
         <h2 class="page-title">脚本库</h2>
-        <p class="page-desc">集中维护常用运维脚本，支持启用禁用、默认参数和解释器配置。</p>
+        <p class="page-desc">集中维护常用运维脚本，支持启用禁用、构建参数和解释器配置。</p>
       </div>
       <el-button type="primary" @click="openCreate">新增脚本</el-button>
     </div>
@@ -291,7 +295,14 @@ onMounted(loadData)
       <el-table-column prop="name" label="脚本名称" min-width="180" />
       <el-table-column prop="scriptType" label="类型" width="120" />
       <el-table-column prop="interpreter" label="解释器" width="120" />
-      <el-table-column prop="defaultParams" label="默认参数" min-width="180" show-overflow-tooltip />
+      <el-table-column label="构建参数" min-width="240">
+        <template #default="{ row }">
+          <div v-if="row.variables?.length" class="script-variable-tags">
+            <el-tag v-for="variable in row.variables" :key="variable.name" effect="plain" size="small">{{ variableDisplay(variable) }}</el-tag>
+          </div>
+          <span v-else class="empty-value">-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="timeoutSeconds" label="超时(秒)" width="120" />
       <el-table-column label="版本" width="90"><template #default="{ row }">v{{ row.currentVersion || 1 }}</template></el-table-column>
       <el-table-column label="状态" width="100" align="center">
@@ -447,6 +458,7 @@ onMounted(loadData)
         <el-table-column prop="operator" label="操作人" width="130"><template #default="{ row }">{{ row.operator || 'system' }}</template></el-table-column>
         <el-table-column prop="createTime" label="创建时间" width="190" />
         <el-table-column prop="content" label="脚本内容" min-width="300" show-overflow-tooltip />
+        <el-table-column label="构建参数" min-width="240"><template #default="{ row }"><div v-if="row.variables?.length" class="script-variable-tags"><el-tag v-for="variable in row.variables" :key="variable.name" effect="plain" size="small">{{ variableDisplay(variable) }}</el-tag></div><span v-else class="empty-value">-</span></template></el-table-column>
         <el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="primary" @click="handleRollback(row)">回滚</el-button></template></el-table-column>
       </el-table>
     </el-drawer>
@@ -478,6 +490,9 @@ onMounted(loadData)
   margin: 0;
   color: #7282a0;
 }
+.script-variable-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.script-variable-tags :deep(.el-tag) { max-width: 100%; font-family: 'JetBrains Mono', Consolas, monospace; }
+.empty-value { color: #9aa8bd; }
 
 .toolbar {
   display: flex;

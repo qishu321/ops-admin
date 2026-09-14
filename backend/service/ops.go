@@ -27,7 +27,6 @@ type OpsScriptPayload struct {
 	ScriptType     string                    `json:"scriptType"`
 	Interpreter    string                    `json:"interpreter"`
 	Content        string                    `json:"content"`
-	DefaultParams  string                    `json:"defaultParams"`
 	Variables      []model.OpsScriptVariable `json:"variables"`
 	TimeoutSeconds int                       `json:"timeoutSeconds"`
 	Status         int                       `json:"status"`
@@ -324,7 +323,6 @@ func (s *Service) CreateOpsScript(payload OpsScriptPayload) error {
 		ScriptType:     normalizeOpsScriptType(payload.ScriptType),
 		Interpreter:    normalizeOpsInterpreter(payload.Interpreter, payload.ScriptType),
 		Content:        strings.TrimSpace(payload.Content),
-		DefaultParams:  strings.TrimSpace(payload.DefaultParams),
 		Variables:      model.OpsScriptVariables(variables),
 		TimeoutSeconds: normalizeOpsScriptTimeout(payload.TimeoutSeconds),
 		Status:         payload.Status,
@@ -345,7 +343,7 @@ func (s *Service) CreateOpsScript(payload OpsScriptPayload) error {
 			return err
 		}
 		return tx.Create(&model.OpsScriptVersion{
-			ScriptID: item.ID, Version: 1, Content: item.Content, DefaultParams: item.DefaultParams, Variables: item.Variables,
+			ScriptID: item.ID, Version: 1, Content: item.Content, Variables: item.Variables,
 			Interpreter: item.Interpreter, TimeoutSeconds: item.TimeoutSeconds,
 			ChangeSummary: "创建脚本", Operator: payload.Operator,
 		}).Error
@@ -366,7 +364,6 @@ func (s *Service) UpdateOpsScript(payload OpsScriptPayload) error {
 		"script_type":     normalizeOpsScriptType(payload.ScriptType),
 		"interpreter":     normalizeOpsInterpreter(payload.Interpreter, payload.ScriptType),
 		"content":         strings.TrimSpace(payload.Content),
-		"default_params":  strings.TrimSpace(payload.DefaultParams),
 		"variables":       model.OpsScriptVariables(variables),
 		"timeout_seconds": normalizeOpsScriptTimeout(payload.TimeoutSeconds),
 		"status":          payload.Status,
@@ -388,7 +385,7 @@ func (s *Service) UpdateOpsScript(payload OpsScriptPayload) error {
 	updates["current_version"] = nextVersion
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if existing.CurrentVersion <= 0 {
-			if err := tx.Create(&model.OpsScriptVersion{ScriptID: existing.ID, Version: 1, Content: existing.Content, DefaultParams: existing.DefaultParams, Variables: existing.Variables, Interpreter: existing.Interpreter, TimeoutSeconds: existing.TimeoutSeconds, ChangeSummary: "历史版本归档", Operator: "system"}).Error; err != nil {
+			if err := tx.Create(&model.OpsScriptVersion{ScriptID: existing.ID, Version: 1, Content: existing.Content, Variables: existing.Variables, Interpreter: existing.Interpreter, TimeoutSeconds: existing.TimeoutSeconds, ChangeSummary: "历史版本归档", Operator: "system"}).Error; err != nil {
 				return err
 			}
 		}
@@ -397,7 +394,7 @@ func (s *Service) UpdateOpsScript(payload OpsScriptPayload) error {
 		}
 		return tx.Create(&model.OpsScriptVersion{
 			ScriptID: payload.ID, Version: nextVersion, Content: updates["content"].(string),
-			DefaultParams: updates["default_params"].(string), Variables: model.OpsScriptVariables(variables), Interpreter: updates["interpreter"].(string),
+			Variables: model.OpsScriptVariables(variables), Interpreter: updates["interpreter"].(string),
 			TimeoutSeconds: updates["timeout_seconds"].(int), ChangeSummary: Trimmed(payload.ChangeSummary), Operator: payload.Operator,
 		}).Error
 	})
@@ -416,7 +413,7 @@ func (s *Service) ListOpsScriptVersions(scriptID uint) ([]model.OpsScriptVersion
 			version = 1
 			_ = s.db.Model(&model.OpsScript{}).Where("id = ?", scriptID).Update("current_version", version).Error
 		}
-		row := model.OpsScriptVersion{ScriptID: scriptID, Version: version, Content: script.Content, DefaultParams: script.DefaultParams, Variables: script.Variables, Interpreter: script.Interpreter, TimeoutSeconds: script.TimeoutSeconds, ChangeSummary: "现有版本归档", Operator: "system"}
+		row := model.OpsScriptVersion{ScriptID: scriptID, Version: version, Content: script.Content, Variables: script.Variables, Interpreter: script.Interpreter, TimeoutSeconds: script.TimeoutSeconds, ChangeSummary: "现有版本归档", Operator: "system"}
 		if createErr := s.db.Create(&row).Error; createErr != nil {
 			return nil, createErr
 		}
@@ -436,11 +433,11 @@ func (s *Service) RollbackOpsScript(scriptID uint, version int, operator string)
 	}
 	nextVersion := existing.CurrentVersion + 1
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		updates := map[string]any{"content": target.Content, "default_params": target.DefaultParams, "variables": target.Variables, "interpreter": target.Interpreter, "timeout_seconds": target.TimeoutSeconds, "current_version": nextVersion}
+		updates := map[string]any{"content": target.Content, "variables": target.Variables, "interpreter": target.Interpreter, "timeout_seconds": target.TimeoutSeconds, "current_version": nextVersion}
 		if err := tx.Model(&model.OpsScript{}).Where("id = ?", scriptID).Updates(updates).Error; err != nil {
 			return err
 		}
-		return tx.Create(&model.OpsScriptVersion{ScriptID: scriptID, Version: nextVersion, Content: target.Content, DefaultParams: target.DefaultParams, Variables: target.Variables, Interpreter: target.Interpreter, TimeoutSeconds: target.TimeoutSeconds, ChangeSummary: fmt.Sprintf("回滚至 v%d", version), Operator: operator}).Error
+		return tx.Create(&model.OpsScriptVersion{ScriptID: scriptID, Version: nextVersion, Content: target.Content, Variables: target.Variables, Interpreter: target.Interpreter, TimeoutSeconds: target.TimeoutSeconds, ChangeSummary: fmt.Sprintf("回滚至 v%d", version), Operator: operator}).Error
 	})
 }
 
@@ -548,9 +545,6 @@ func (s *Service) ExecuteOpsScript(payload OpsExecScriptPayload) (map[string]any
 	}
 	return s.runOpsTaskAsync(task, hosts, func(host model.AssetHost) model.OpsExecTargetResult {
 		params := strings.TrimSpace(payload.Parameters)
-		if params == "" {
-			params = strings.TrimSpace(script.DefaultParams)
-		}
 		return s.execScriptOnHost(host, *script, params, variables, task.TimeoutSeconds)
 	})
 }

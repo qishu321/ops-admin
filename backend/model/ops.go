@@ -13,7 +13,6 @@ type OpsScript struct {
 	ScriptType     string             `json:"scriptType" gorm:"size:32;not null;index"`
 	Interpreter    string             `json:"interpreter" gorm:"size:32;not null"`
 	Content        string             `json:"content" gorm:"type:longtext"`
-	DefaultParams  string             `json:"defaultParams" gorm:"type:text"`
 	Variables      OpsScriptVariables `json:"variables" gorm:"type:text"`
 	TimeoutSeconds int                `json:"timeoutSeconds" gorm:"default:300"`
 	Status         int                `json:"status" gorm:"default:1;not null;index"`
@@ -28,7 +27,6 @@ type OpsScriptVersion struct {
 	ScriptID       uint               `json:"scriptId" gorm:"index;not null;uniqueIndex:idx_ops_script_version"`
 	Version        int                `json:"version" gorm:"not null;index;uniqueIndex:idx_ops_script_version"`
 	Content        string             `json:"content" gorm:"type:longtext"`
-	DefaultParams  string             `json:"defaultParams" gorm:"type:text"`
 	Variables      OpsScriptVariables `json:"variables" gorm:"type:text"`
 	Interpreter    string             `json:"interpreter" gorm:"size:32"`
 	TimeoutSeconds int                `json:"timeoutSeconds"`

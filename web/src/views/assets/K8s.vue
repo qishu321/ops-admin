@@ -21,6 +21,7 @@ import {
   queryK8sPodContainers,
   queryK8sPodEvents,
   queryK8sPodLogs,
+  updateK8sPodImages,
   queryK8sWorkloadDetail,
   queryK8sServiceDetail,
   updateK8sService,
@@ -145,6 +146,9 @@ const podDrawerVisible = ref(false)
 const podDrawerLoading = ref(false)
 const podDetail = ref(null)
 const podEvents = ref([])
+const podImageDialogVisible = ref(false)
+const podImageSaving = ref(false)
+const podImageForm = reactive({ namespace: '', podName: '', containers: [] })
 const podLogDrawerVisible = ref(false)
 const podLogLoading = ref(false)
 const podLogs = ref('')
@@ -1464,6 +1468,60 @@ async function openIngressYAML(row) {
     name: detail.name,
     yaml: detail.yaml
   })
+}
+
+async function openPodImageEdit(row) {
+  if (!cluster.value?.id || !row?.namespace || !row?.name) return
+  const detail = await queryK8sPodDetail(cluster.value.id, row.namespace, row.name)
+  podImageForm.namespace = detail.namespace
+  podImageForm.podName = detail.name
+  podImageForm.containers = (detail.containers || []).map((item) => ({
+    name: item.name,
+    image: item.image,
+    originalImage: item.image
+  }))
+  podImageDialogVisible.value = true
+}
+
+async function submitPodImageEdit() {
+  if (!cluster.value?.id || !podImageForm.containers.length) return
+  const changed = podImageForm.containers
+    .filter((item) => String(item.image || '').trim() !== String(item.originalImage || '').trim())
+    .map((item) => ({ name: item.name, image: String(item.image || '').trim() }))
+  if (!changed.length) {
+    ElMessage.info('镜像未发生变化')
+    return
+  }
+  if (changed.some((item) => !item.image)) {
+    ElMessage.warning('镜像不能为空')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将仅修改 Pod ${podImageForm.podName} 的镜像。若该 Pod 被 StatefulSet 等控制器重建，会恢复工作负载模板中的镜像。是否继续？`,
+      '确认临时修改 Pod 镜像',
+      { type: 'warning', confirmButtonText: '确认修改', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  podImageSaving.value = true
+  try {
+    await updateK8sPodImages({
+      clusterId: cluster.value.id,
+      namespace: podImageForm.namespace,
+      podName: podImageForm.podName,
+      containers: changed
+    })
+    ElMessage.success('Pod 镜像已更新，正在等待 Kubernetes 拉取并重建容器')
+    podImageDialogVisible.value = false
+    await refreshCurrentClusterData()
+    if (podDrawerVisible.value && podDetail.value?.name === podImageForm.podName) {
+      podDetail.value = await queryK8sPodDetail(cluster.value.id, podImageForm.namespace, podImageForm.podName)
+    }
+  } finally {
+    podImageSaving.value = false
+  }
 }
 
 async function openIngressEdit(row) {
@@ -3313,6 +3371,9 @@ const page = reactive({
   podDrawerLoading,
   podDetail,
   podEvents,
+  podImageDialogVisible,
+  podImageSaving,
+  podImageForm,
   podLogDrawerVisible,
   podLogLoading,
   podLogs,
@@ -3467,6 +3528,8 @@ const page = reactive({
   handleDeleteWorkload,
   submitWorkloadImageVersionUpdate,
   openPodDetail,
+  openPodImageEdit,
+  submitPodImageEdit,
   openPodLogs,
   openPodYAML,
   openPodTerminal,

@@ -186,10 +186,11 @@ defineProps({
       </el-table-column>
       <el-table-column prop="restarts" :label="page.t('k8sRestarts')" width="90" />
       <el-table-column prop="age" :label="page.t('k8sAge')" width="90" />
-      <el-table-column :label="page.t('k8sActions')" width="230">
+      <el-table-column :label="page.t('k8sActions')" width="300">
         <template #default="{ row }">
           <div class="pod-row-actions">
             <el-button link type="primary" @click="page.openPodDetail(row)">{{ page.t('k8sDetail') }}</el-button>
+            <el-button link type="primary" @click="page.openPodImageEdit(row)">编辑镜像</el-button>
             <el-button link type="primary" @click="page.openPodLogs(row)">日志</el-button>
             <el-button link type="primary" @click="page.openPodYAML(row)">{{ page.t('k8sYaml') }}</el-button>
             <el-button link type="primary" @click="page.openPodTerminal(row)">{{ page.t('k8sTerminal') }}</el-button>

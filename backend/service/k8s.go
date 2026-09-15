@@ -1332,6 +1332,57 @@ func (s *Service) GetK8sPodEvents(clusterID uint, namespace string, podName stri
 	return fetchNamespacedEvents(client, runtime, namespace, fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName))
 }
 
+// UpdateK8sPodImages changes only the selected live Pod. It deliberately does
+// not alter any owning workload template, so a recreated Pod returns to the
+// workload image.
+func (s *Service) UpdateK8sPodImages(payload model.K8sPodImageUpdatePayload) (map[string]any, error) {
+	if payload.ClusterID == 0 || strings.TrimSpace(payload.Namespace) == "" || strings.TrimSpace(payload.PodName) == "" || len(payload.Containers) == 0 {
+		return nil, errors.New("invalid pod image payload")
+	}
+	_, runtime, client, err := s.k8sClientForCluster(payload.ClusterID)
+	if err != nil {
+		return nil, err
+	}
+	resourcePath := "/api/v1/namespaces/" + url.PathEscape(strings.TrimSpace(payload.Namespace)) + "/pods/" + url.PathEscape(strings.TrimSpace(payload.PodName))
+	var pod kubePod
+	if err := k8sGetJSON(client, runtime, resourcePath, &pod); err != nil {
+		return nil, errors.New(k8sClusterConnectError)
+	}
+	available := make(map[string]struct{}, len(pod.Spec.Containers))
+	for _, container := range pod.Spec.Containers {
+		available[container.Name] = struct{}{}
+	}
+	containers := make([]map[string]any, 0, len(payload.Containers))
+	seen := map[string]struct{}{}
+	for _, item := range payload.Containers {
+		name := strings.TrimSpace(item.Name)
+		image := strings.TrimSpace(item.Image)
+		if name == "" || image == "" {
+			return nil, errors.New("容器名称和镜像不能为空")
+		}
+		if _, exists := available[name]; !exists {
+			return nil, fmt.Errorf("Pod 中不存在容器 %s", name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("容器 %s 重复", name)
+		}
+		seen[name] = struct{}{}
+		containers = append(containers, map[string]any{"name": name, "image": image})
+	}
+	if err := k8sPatchJSON(client, runtime, resourcePath, map[string]any{
+		"spec": map[string]any{"containers": containers},
+	}, "application/strategic-merge-patch+json", nil); err != nil {
+		return nil, fmt.Errorf("更新 Pod 镜像失败: %w", err)
+	}
+	s.invalidateK8sClusterDetailCache(payload.ClusterID)
+	return map[string]any{
+		"namespace":  payload.Namespace,
+		"podName":    payload.PodName,
+		"containers": containers,
+		"temporary":  true,
+	}, nil
+}
+
 func (s *Service) GetK8sNamespaceDetail(clusterID uint, namespace string) (model.K8sNamespaceDetail, error) {
 	_, runtime, client, err := s.k8sClientForCluster(clusterID)
 	if err != nil {
@@ -2910,6 +2961,13 @@ func fetchNamespacedEvents(client *http.Client, runtime kubeClusterRuntime, name
 			Count     int    `json:"count"`
 			FirstTime string `json:"firstTimestamp"`
 			LastTime  string `json:"lastTimestamp"`
+			EventTime string `json:"eventTime"`
+			Metadata  struct {
+				CreationTimestamp string `json:"creationTimestamp"`
+			} `json:"metadata"`
+			Series *struct {
+				LastObservedTime string `json:"lastObservedTime"`
+			} `json:"series"`
 		} `json:"items"`
 	}
 	if err := k8sGetJSONWithQuery(client, runtime, "/api/v1/namespaces/"+namespace+"/events", map[string]string{"fieldSelector": fieldSelector}, &payload); err != nil {
@@ -2918,13 +2976,18 @@ func fetchNamespacedEvents(client *http.Client, runtime kubeClusterRuntime, name
 
 	events := make([]model.K8sEventItem, 0, len(payload.Items))
 	for _, item := range payload.Items {
+		firstTime := firstNonEmptyEventTime(item.EventTime, item.FirstTime, item.Metadata.CreationTimestamp)
+		lastTime := firstNonEmptyEventTime(item.LastTime, item.EventTime, item.FirstTime, item.Metadata.CreationTimestamp)
+		if item.Series != nil {
+			lastTime = firstNonEmptyEventTime(item.Series.LastObservedTime, lastTime)
+		}
 		events = append(events, model.K8sEventItem{
 			Type:      fallbackText(item.Type),
 			Reason:    fallbackText(item.Reason),
 			Message:   fallbackText(item.Message),
 			Count:     item.Count,
-			FirstTime: formatTimestamp(item.FirstTime),
-			LastTime:  formatTimestamp(item.LastTime),
+			FirstTime: formatTimestamp(firstTime),
+			LastTime:  formatTimestamp(lastTime),
 		})
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].LastTime > events[j].LastTime })
@@ -5418,7 +5481,16 @@ func formatTimestamp(value string) string {
 	if err != nil {
 		return "-"
 	}
-	return t.Format("2006-01-02 15:04")
+	return t.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04")
+}
+
+func firstNonEmptyEventTime(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringifyTargetPort(value interface{}) string {

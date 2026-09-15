@@ -239,6 +239,20 @@ func (ctl *Controller) GetK8sPodEvents(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+func (ctl *Controller) UpdateK8sPodImages(c *gin.Context) {
+	var payload model.K8sPodImageUpdatePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid pod image payload")
+		return
+	}
+	data, err := ctl.service.UpdateK8sPodImages(payload)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetK8sPodContainers(c *gin.Context) {
 	var query struct {
 		ClusterID uint   `form:"clusterId"`

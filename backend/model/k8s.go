@@ -60,6 +60,18 @@ type K8sWorkloadImageBatchPayload struct {
 	Items     []K8sWorkloadImageUpdateItem `json:"items"`
 }
 
+// K8sPodImageUpdatePayload updates the image of containers on one existing
+// Pod. It intentionally does not alter the owning workload template.
+type K8sPodImageUpdatePayload struct {
+	ClusterID  uint   `json:"clusterId"`
+	Namespace  string `json:"namespace"`
+	PodName    string `json:"podName"`
+	Containers []struct {
+		Name  string `json:"name"`
+		Image string `json:"image"`
+	} `json:"containers"`
+}
+
 type K8sWorkloadContainerResources struct {
 	Name            string          `json:"name"`
 	Image           string          `json:"image"`

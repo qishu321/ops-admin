@@ -68,6 +68,8 @@ export const queryK8sPodLogs = (clusterId, namespace, podName, container = '', t
 export const queryK8sPodEvents = (clusterId, namespace, podName) =>
   http.get('/api/v1/k8s/pod/events', { params: { clusterId, namespace, podName } })
 
+export const updateK8sPodImages = (data) => http.put('/api/v1/k8s/pod/images', data)
+
 export const queryK8sWorkloadDetail = (clusterId, namespace, workloadType, workloadName) =>
   http.get('/api/v1/k8s/workload/detail', { params: { clusterId, namespace, workloadType, workloadName } })
 

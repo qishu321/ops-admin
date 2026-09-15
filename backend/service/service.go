@@ -104,6 +104,7 @@ type RolePayload struct {
 	RoleName    string `json:"roleName"`
 	RoleKey     string `json:"roleKey"`
 	Status      int    `json:"status"`
+	IsReadOnly  bool   `json:"isReadOnly"`
 	Description string `json:"description"`
 }
 
@@ -801,20 +802,36 @@ func (s *Service) CreateRole(payload RolePayload) error {
 		RoleName:    payload.RoleName,
 		RoleKey:     payload.RoleKey,
 		Status:      payload.Status,
+		IsReadOnly:  payload.IsReadOnly,
 		Description: payload.Description,
 	}).Error
 }
 
 func (s *Service) UpdateRole(payload RolePayload) error {
+	var existing model.Role
+	if err := s.db.First(&existing, payload.ID).Error; err != nil {
+		return err
+	}
+	if existing.IsReadOnly {
+		return errors.New("平台预置的全局只读角色不可编辑")
+	}
 	return s.db.Model(&model.Role{}).Where("id = ?", payload.ID).Updates(map[string]any{
-		"role_name":   payload.RoleName,
-		"role_key":    payload.RoleKey,
-		"status":      payload.Status,
-		"description": payload.Description,
+		"role_name":    payload.RoleName,
+		"role_key":     payload.RoleKey,
+		"status":       payload.Status,
+		"is_read_only": payload.IsReadOnly,
+		"description":  payload.Description,
 	}).Error
 }
 
 func (s *Service) DeleteRole(id uint) error {
+	var role model.Role
+	if err := s.db.First(&role, id).Error; err != nil {
+		return err
+	}
+	if role.IsReadOnly {
+		return errors.New("平台预置的全局只读角色不可删除")
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Delete(&model.Role{}, id).Error; err != nil {
 			return err
@@ -832,11 +849,41 @@ func (s *Service) GetRole(id uint) (*model.Role, error) {
 }
 
 func (s *Service) UpdateRoleStatus(payload RoleStatusPayload) error {
+	var role model.Role
+	if err := s.db.First(&role, payload.ID).Error; err != nil {
+		return err
+	}
+	if role.IsReadOnly {
+		return errors.New("平台预置的全局只读角色不可停用")
+	}
 	return s.db.Model(&model.Role{}).Where("id = ?", payload.ID).Update("status", payload.Status).Error
 }
 
 func (s *Service) AssignRoleMenus(payload RoleMenuPayload) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var role model.Role
+		if err := tx.First(&role, payload.ID).Error; err != nil {
+			return err
+		}
+		if role.IsReadOnly {
+			var menus []model.Menu
+			if err := tx.Where("id IN ?", payload.MenuIDs).Find(&menus).Error; err != nil {
+				return err
+			}
+			allowed := make(map[uint]struct{}, len(menus))
+			for _, menu := range menus {
+				if model.IsGlobalReadOnlyMenu(menu) {
+					allowed[menu.ID] = struct{}{}
+				}
+			}
+			filtered := make([]uint, 0, len(allowed))
+			for _, menuID := range payload.MenuIDs {
+				if _, ok := allowed[menuID]; ok {
+					filtered = append(filtered, menuID)
+				}
+			}
+			payload.MenuIDs = filtered
+		}
 		if err := tx.Where("role_id = ?", payload.ID).Delete(&model.RoleMenu{}).Error; err != nil {
 			return err
 		}
@@ -849,6 +896,34 @@ func (s *Service) AssignRoleMenus(payload RoleMenuPayload) error {
 		}
 		return tx.Create(&items).Error
 	})
+}
+
+func (s *Service) GlobalReadOnlyMenuIDs() ([]uint, error) {
+	var menus []model.Menu
+	if err := s.db.Where("menu_status = ? AND menu_type IN ?", 1, []int{1, 2}).Find(&menus).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]uint, 0, len(menus))
+	for _, menu := range menus {
+		if model.IsGlobalReadOnlyMenu(menu) {
+			ids = append(ids, menu.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Service) IsGlobalReadOnlyUser(adminID uint) (bool, error) {
+	var row struct {
+		IsReadOnly bool `gorm:"column:is_read_only"`
+	}
+	err := s.db.Table("sys_admin_role ar").
+		Select("r.is_read_only").
+		Joins("JOIN sys_role r ON r.id = ar.role_id").
+		Where("ar.admin_id = ?", adminID).
+		Order("ar.id asc").
+		Limit(1).
+		Scan(&row).Error
+	return row.IsReadOnly, err
 }
 
 func (s *Service) RoleMenuIDs(roleID uint) ([]uint, error) {

@@ -442,6 +442,15 @@ func (ctl *Controller) QueryRoleMenuIDList(c *gin.Context) {
 	httpx.Success(c, result)
 }
 
+func (ctl *Controller) GlobalReadOnlyMenuIDs(c *gin.Context) {
+	ids, err := ctl.service.GlobalReadOnlyMenuIDs()
+	if err != nil {
+		httpx.Failed(c, 500, err.Error())
+		return
+	}
+	httpx.Success(c, ids)
+}
+
 func (ctl *Controller) AssignPermissions(c *gin.Context) {
 	var payload service.RoleMenuPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -992,8 +1001,13 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 		httpx.Failed(c, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	if _, err := auth.ParseToken(token); err != nil {
+	claims, err := auth.ParseToken(token)
+	if err != nil {
 		httpx.Failed(c, http.StatusUnauthorized, auth.TokenErrorMessage(err))
+		return
+	}
+	if readOnly, err := ctl.service.IsGlobalReadOnlyUser(claims.UserID); err != nil || readOnly {
+		httpx.Failed(c, http.StatusForbidden, "全局只读角色不能打开终端")
 		return
 	}
 

@@ -46,7 +46,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 	}
 
 	authGroup := api.Group("")
-	authGroup.Use(middleware.Auth(db), middleware.OperationLog(db))
+	authGroup.Use(middleware.Auth(db), middleware.GlobalReadOnly(db), middleware.OperationLog(db))
 	{
 		authGroup.GET("/profile", ctl.Profile)
 		authGroup.GET("/domain/public/accounts", middleware.RequirePermission(db, "domains:account:list"), ctl.ListPublicDNSAccounts)
@@ -152,6 +152,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.DELETE("/role/delete", ctl.DeleteRole)
 		authGroup.PUT("/role/updateStatus", ctl.UpdateRoleStatus)
 		authGroup.GET("/role/vo/idList", ctl.QueryRoleMenuIDList)
+		authGroup.GET("/role/readonlyTemplate", ctl.GlobalReadOnlyMenuIDs)
 		authGroup.PUT("/role/assignPermissions", ctl.AssignPermissions)
 
 		authGroup.GET("/menu/list", ctl.GetMenuList)

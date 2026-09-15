@@ -263,8 +263,13 @@ func (ctl *Controller) K8sPodTerminalWS(c *gin.Context) {
 		httpx.Failed(c, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	if _, err := auth.ParseToken(token); err != nil {
+	claims, err := auth.ParseToken(token)
+	if err != nil {
 		httpx.Failed(c, http.StatusUnauthorized, auth.TokenErrorMessage(err))
+		return
+	}
+	if readOnly, err := ctl.service.IsGlobalReadOnlyUser(claims.UserID); err != nil || readOnly {
+		httpx.Failed(c, http.StatusForbidden, "全局只读角色不能打开 Pod 终端")
 		return
 	}
 

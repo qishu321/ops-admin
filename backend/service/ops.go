@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -78,6 +80,10 @@ type OpsFileDispatchPayload struct {
 	SourceType     string `json:"sourceType"`
 	SourceHostID   uint   `json:"sourceHostId"`
 	SourcePath     string `json:"sourcePath"`
+	TargetDir      string `json:"targetDir"`
+	TargetFileName string `json:"targetFileName"`
+	// TargetPath is retained for existing API callers and job definitions that
+	// already provide a complete destination file path.
 	TargetPath     string `json:"targetPath"`
 	HostIDs        []uint `json:"hostIds"`
 	GroupIDs       []uint `json:"groupIds"`
@@ -88,6 +94,22 @@ type OpsFileDispatchPayload struct {
 	Operator       string `json:"-"`
 	SourceIP       string `json:"-"`
 	Source         string `json:"-"`
+}
+
+const OpsFileDispatchMaxUploadBytes int64 = 500 * 1024 * 1024
+
+// OpsFileDispatchUpload is a short-lived staged upload. It must remain on
+// disk until every asynchronous target transfer completes.
+type OpsFileDispatchUpload struct {
+	FileName string
+	TempPath string
+	Size     int64
+}
+
+func (upload *OpsFileDispatchUpload) Cleanup() {
+	if upload != nil && strings.TrimSpace(upload.TempPath) != "" {
+		_ = os.Remove(upload.TempPath)
+	}
 }
 
 type OpsExecRetryPayload struct {
@@ -549,16 +571,39 @@ func (s *Service) ExecuteOpsScript(payload OpsExecScriptPayload) (map[string]any
 	})
 }
 
-func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, uploadName string, uploadBytes []byte) (map[string]any, error) {
-	targetPath := strings.TrimSpace(payload.TargetPath)
-	if targetPath == "" {
-		return nil, errors.New("目标路径不能为空")
+func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, upload *OpsFileDispatchUpload) (map[string]any, error) {
+	sourceType := strings.ToLower(strings.TrimSpace(payload.SourceType))
+	var fileName string
+	switch sourceType {
+	case "upload":
+		if upload == nil || strings.TrimSpace(upload.TempPath) == "" || strings.TrimSpace(upload.FileName) == "" {
+			return nil, errors.New("请上传待分发文件")
+		}
+		if upload.Size > OpsFileDispatchMaxUploadBytes {
+			upload.Cleanup()
+			return nil, errors.New("本地上传文件大小不能超过 500 MB")
+		}
+		fileName = filepath.Base(strings.TrimSpace(upload.FileName))
+	case "server":
+		if payload.SourceHostID == 0 {
+			return nil, errors.New("请选择源服务器")
+		}
+		if strings.TrimSpace(payload.SourcePath) == "" {
+			return nil, errors.New("源文件路径不能为空")
+		}
+		fileName = path.Base(strings.TrimSpace(payload.SourcePath))
+	default:
+		return nil, errors.New("不支持的文件来源类型")
+	}
+	targetPath, err := resolveOpsDispatchTargetPath(payload, fileName)
+	if err != nil {
+		return nil, err
 	}
 	riskLevel := "normal"
 	if strings.HasPrefix(targetPath, "/etc/") || strings.HasPrefix(targetPath, "/boot/") || strings.HasPrefix(targetPath, "/usr/") {
 		riskLevel = "high"
 		if !payload.RiskConfirmed {
-			return nil, errors.New("目标路径属于系统目录，请确认目标范围后再次执行")
+			return nil, errors.New("目标目录属于系统目录，请确认目标范围后再次执行")
 		}
 	}
 	hosts, err := s.resolveOpsTargetHosts(payload.HostIDs, payload.GroupIDs)
@@ -569,34 +614,20 @@ func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, uploadN
 		return nil, err
 	}
 
-	sourceType := strings.ToLower(strings.TrimSpace(payload.SourceType))
-	var fileName string
-	var content []byte
+	var stagedPath string
 	var sourceHostName string
-
-	switch sourceType {
-	case "upload":
-		if len(uploadBytes) == 0 {
-			return nil, errors.New("请上传待分发文件")
-		}
-		content = uploadBytes
-		fileName = strings.TrimSpace(uploadName)
-	case "server":
-		if payload.SourceHostID == 0 {
-			return nil, errors.New("请选择源服务器")
-		}
-		if strings.TrimSpace(payload.SourcePath) == "" {
-			return nil, errors.New("源文件路径不能为空")
-		}
-		sourceHost, readBytes, err := s.readRemoteFile(payload.SourceHostID, payload.SourcePath)
-		if err != nil {
-			return nil, err
+	cleanup := func() {}
+	if sourceType == "upload" {
+		stagedPath = upload.TempPath
+		cleanup = upload.Cleanup
+	} else {
+		sourceHost, tempPath, stageErr := s.stageRemoteFile(payload.SourceHostID, payload.SourcePath)
+		if stageErr != nil {
+			return nil, stageErr
 		}
 		sourceHostName = sourceHost.HostName
-		content = readBytes
-		fileName = path.Base(strings.TrimSpace(payload.SourcePath))
-	default:
-		return nil, errors.New("不支持的文件来源类型")
+		stagedPath = tempPath
+		cleanup = func() { _ = os.Remove(tempPath) }
 	}
 
 	task := model.OpsExecTask{
@@ -619,9 +650,32 @@ func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, uploadN
 		RiskLevel:      riskLevel,
 		TargetSnapshot: opsTargetSnapshot(hosts),
 	}
-	return s.runOpsTaskAsync(task, hosts, func(host model.AssetHost) model.OpsExecTargetResult {
-		return s.dispatchFileToHost(host, fileName, targetPath, content, payload.Overwrite, task.TimeoutSeconds)
-	})
+	result, err := s.runOpsTaskAsyncWithFinalizer(task, hosts, func(host model.AssetHost) model.OpsExecTargetResult {
+		return s.dispatchFileFromPath(host, fileName, targetPath, stagedPath, payload.Overwrite, task.TimeoutSeconds)
+	}, cleanup)
+	if err != nil {
+		cleanup()
+	}
+	return result, err
+}
+
+func resolveOpsDispatchTargetPath(payload OpsFileDispatchPayload, sourceFileName string) (string, error) {
+	targetDir := strings.TrimSpace(payload.TargetDir)
+	if targetDir == "" {
+		legacyPath := strings.TrimSpace(payload.TargetPath)
+		if legacyPath == "" {
+			return "", errors.New("目标目录不能为空")
+		}
+		return legacyPath, nil
+	}
+	fileName := strings.TrimSpace(payload.TargetFileName)
+	if fileName == "" {
+		fileName = sourceFileName
+	}
+	if fileName == "" || fileName == "." || fileName == ".." || strings.ContainsAny(fileName, "/\\") {
+		return "", errors.New("目标文件名不合法")
+	}
+	return path.Join(targetDir, fileName), nil
 }
 
 func (s *Service) ListOpsExecTasks(pageNum, pageSize int, keyword, taskType, status string) (map[string]any, error) {
@@ -818,6 +872,10 @@ func (s *Service) runOpsTaskLegacy(task model.OpsExecTask, hosts []model.AssetHo
 }
 
 func (s *Service) runOpsTaskAsync(task model.OpsExecTask, hosts []model.AssetHost, runner func(host model.AssetHost) model.OpsExecTargetResult) (map[string]any, error) {
+	return s.runOpsTaskAsyncWithFinalizer(task, hosts, runner, nil)
+}
+
+func (s *Service) runOpsTaskAsyncWithFinalizer(task model.OpsExecTask, hosts []model.AssetHost, runner func(host model.AssetHost) model.OpsExecTargetResult, finalizer func()) (map[string]any, error) {
 	now := time.Now()
 	task.StartedAt = &now
 	if err := s.db.Create(&task).Error; err != nil {
@@ -837,7 +895,12 @@ func (s *Service) runOpsTaskAsync(task model.OpsExecTask, hosts []model.AssetHos
 	if len(pendingRows) > 0 {
 		_ = s.db.Create(&pendingRows).Error
 	}
-	go s.processOpsTask(task, hosts, runner)
+	go func() {
+		s.processOpsTask(task, hosts, runner)
+		if finalizer != nil {
+			finalizer()
+		}
+	}()
 	return s.GetOpsExecTaskDetail(task.ID)
 }
 
@@ -971,7 +1034,25 @@ func opsScriptVariableExports(variables map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (s *Service) dispatchFileToHost(host model.AssetHost, fileName, targetPath string, content []byte, overwrite bool, timeoutSeconds int) model.OpsExecTargetResult {
+func (s *Service) dispatchFileFromPath(host model.AssetHost, fileName, targetPath, sourcePath string, overwrite bool, timeoutSeconds int) model.OpsExecTargetResult {
+	reader, err := os.Open(sourcePath)
+	if err != nil {
+		return failedOpsFileResult(host, fmt.Errorf("打开待分发文件失败: %w", err))
+	}
+	defer reader.Close()
+	return s.dispatchFileReaderToHost(host, fileName, targetPath, reader, overwrite, timeoutSeconds)
+}
+
+func failedOpsFileResult(host model.AssetHost, err error) model.OpsExecTargetResult {
+	return model.OpsExecTargetResult{
+		HostID: host.ID, HostName: host.HostName, GroupName: host.Group.Name, SSHIP: host.SSHIP,
+		Status: "failed", ExitCode: -1, ErrorText: err.Error(),
+	}
+}
+
+// dispatchFileReaderToHost streams raw file bytes through the SSH channel's
+// standard input. Large files must never be encoded into an SSH exec command.
+func (s *Service) dispatchFileReaderToHost(host model.AssetHost, fileName, targetPath string, reader io.Reader, overwrite bool, timeoutSeconds int) model.OpsExecTargetResult {
 	started := time.Now()
 	result := model.OpsExecTargetResult{
 		HostID:    host.ID,
@@ -982,7 +1063,7 @@ func (s *Service) dispatchFileToHost(host model.AssetHost, fileName, targetPath 
 	}
 	client, err := s.newSSHClient(host)
 	if err != nil {
-		result.ErrorText = err.Error()
+		result.ErrorText = fmt.Sprintf("SSH 连接失败: %v", err)
 		result.DurationMs = time.Since(started).Milliseconds()
 		return result
 	}
@@ -995,22 +1076,88 @@ func (s *Service) dispatchFileToHost(host model.AssetHost, fileName, targetPath 
 		existsCheck = fmt.Sprintf("if [ -e %s ]; then echo 'target file already exists'; exit 17; fi\n", shellQuote(target))
 	}
 	command := fmt.Sprintf(
-		"mkdir -p %s\n%sbase64 -d <<'__OPS_FILE__' > %s\n%s\n__OPS_FILE__\n",
+		"set -e\nmkdir -p %s\n%stmp=$(mktemp %s)\ncleanup() { rm -f \"$tmp\"; }\ntrap cleanup EXIT\ncat > \"$tmp\"\nmv -f \"$tmp\" %s\ntrap - EXIT\n",
 		shellQuote(dir),
 		existsCheck,
+		shellQuote(path.Join(dir, fmt.Sprintf(".%s.ops-XXXXXX", fileName))),
 		shellQuote(target),
-		base64.StdEncoding.EncodeToString(content),
 	)
-	stdout, stderr, exitCode, runErr := runSSHCommandDetailed(client, "bash -lc "+shellQuote(command), timeoutSeconds)
-	result.Stdout = stdout
-	result.Stderr = stderr
-	result.ExitCode = exitCode
+	session, err := client.NewSession()
+	if err != nil {
+		result.ErrorText = fmt.Sprintf("SSH 会话创建失败: %v", err)
+		result.DurationMs = time.Since(started).Milliseconds()
+		return result
+	}
+	defer session.Close()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		result.ErrorText = fmt.Sprintf("文件传输通道创建失败: %v", err)
+		result.DurationMs = time.Since(started).Milliseconds()
+		return result
+	}
+	if err := session.Start("bash -lc " + shellQuote(command)); err != nil {
+		result.ErrorText = fmt.Sprintf("远端文件写入命令启动失败: %v", err)
+		result.DurationMs = time.Since(started).Milliseconds()
+		return result
+	}
+	type transferOutcome struct{ copyErr, closeErr, waitErr error }
+	done := make(chan transferOutcome, 1)
+	go func() {
+		_, copyErr := io.Copy(stdin, reader)
+		closeErr := stdin.Close()
+		waitErr := session.Wait()
+		done <- transferOutcome{copyErr: copyErr, closeErr: closeErr, waitErr: waitErr}
+	}()
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 10
+	}
+	var outcome transferOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		result.ExitCode = 124
+		result.ErrorText = fmt.Sprintf("文件传输超时，已在 %d 秒后终止", timeoutSeconds)
+		result.DurationMs = time.Since(started).Milliseconds()
+		return result
+	}
+	stdoutText, stderrText := stdout.String(), stderr.String()
+	result.Stdout = stdoutText
+	result.Stderr = stderrText
 	result.DurationMs = time.Since(started).Milliseconds()
+	// The target can reject the transfer before it consumes stdin (for example,
+	// when overwrite is disabled and the destination already exists). In that
+	// case the local writer sees EOF, but the target-side validation is the
+	// actionable error and must not be hidden by that secondary pipe error.
+	if strings.Contains(stdoutText, "target file already exists") {
+		result.ExitCode = 17
+		result.ErrorText = "目标文件已存在，未开启“覆盖已有”"
+		return result
+	}
+	runErr := outcome.waitErr
+	if runErr == nil && outcome.copyErr != nil {
+		runErr = fmt.Errorf("向目标主机写入文件失败: %w", outcome.copyErr)
+	}
+	if runErr == nil && outcome.closeErr != nil {
+		runErr = fmt.Errorf("关闭文件传输通道失败: %w", outcome.closeErr)
+	}
 	if runErr == nil {
+		result.ExitCode = 0
 		result.Status = "success"
-		result.Stdout = strings.TrimSpace(strings.Join([]string{stdout, fmt.Sprintf("distributed to %s", target), fileName}, "\n"))
+		result.Stdout = strings.TrimSpace(strings.Join([]string{stdoutText, fmt.Sprintf("distributed to %s", target), fileName}, "\n"))
 	} else {
-		result.ErrorText = runErr.Error()
+		var exitErr *ssh.ExitError
+		if errors.As(outcome.waitErr, &exitErr) {
+			result.ExitCode = exitErr.ExitStatus()
+		} else {
+			result.ExitCode = -1
+		}
+		result.ErrorText = strings.TrimSpace(strings.Join([]string{runErr.Error(), stderrText}, "\n"))
 	}
 	return result
 }
@@ -1036,6 +1183,70 @@ func (s *Service) readRemoteFile(hostID uint, sourcePath string) (*model.AssetHo
 		return nil, nil, err
 	}
 	return &host, decoded, nil
+}
+
+// stageRemoteFile streams a server-side source file to the platform's temporary
+// storage once, so a one-to-many dispatch never retains the whole payload in
+// memory or re-reads it once per target.
+func (s *Service) stageRemoteFile(hostID uint, sourcePath string) (*model.AssetHost, string, error) {
+	var host model.AssetHost
+	if err := s.db.Preload("Credential").Preload("Gateway").Preload("Gateway.Credential").First(&host, hostID).Error; err != nil {
+		return nil, "", err
+	}
+	client, err := s.newSSHClient(host)
+	if err != nil {
+		return nil, "", fmt.Errorf("源服务器 SSH 连接失败: %w", err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, "", fmt.Errorf("源服务器 SSH 会话创建失败: %w", err)
+	}
+	defer session.Close()
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return nil, "", fmt.Errorf("源文件读取通道创建失败: %w", err)
+	}
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+	if err := session.Start("cat -- " + shellQuote(strings.TrimSpace(sourcePath))); err != nil {
+		return nil, "", fmt.Errorf("源文件读取命令启动失败: %w", err)
+	}
+	file, tempPath, err := createOpsFileDispatchTempFile()
+	if err != nil {
+		return nil, "", err
+	}
+	_, copyErr := io.Copy(file, stdout)
+	closeErr := file.Close()
+	waitErr := session.Wait()
+	if copyErr != nil || closeErr != nil || waitErr != nil {
+		_ = os.Remove(tempPath)
+		message := strings.TrimSpace(strings.Join([]string{stderr.String(), errorText(copyErr), errorText(closeErr), errorText(waitErr)}, "\n"))
+		if message == "" {
+			message = "读取源服务器文件失败"
+		}
+		return nil, "", errors.New(message)
+	}
+	return &host, tempPath, nil
+}
+
+func createOpsFileDispatchTempFile() (*os.File, string, error) {
+	directory := filepath.Join("uploads", "temp", "file-dispatch")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, "", fmt.Errorf("创建文件分发临时目录失败: %w", err)
+	}
+	file, err := os.CreateTemp(directory, "dispatch-*")
+	if err != nil {
+		return nil, "", fmt.Errorf("创建文件分发临时文件失败: %w", err)
+	}
+	return file, file.Name(), nil
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func runSSHCommandDetailed(client *ssh.Client, command string, timeoutSeconds int) (string, string, int, error) {

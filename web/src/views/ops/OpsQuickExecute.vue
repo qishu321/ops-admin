@@ -15,6 +15,8 @@ const hostOptions = ref([])
 const groupOptions = ref([])
 const scriptOptions = ref([])
 const latestResult = ref(null)
+const fileUploadRef = ref(null)
+const maxLocalUploadBytes = 500 * 1024 * 1024
 
 const commandForm = reactive({
   title: '',
@@ -39,10 +41,12 @@ const fileForm = reactive({
   sourceType: 'upload',
   sourceHostId: undefined,
   sourcePath: '',
-  targetPath: '',
+  targetDir: '',
+  targetFileName: '',
   hostIds: [],
   groupIds: [],
   concurrency: 5,
+  timeoutSeconds: 600,
   overwrite: false,
   file: null
 })
@@ -68,8 +72,24 @@ async function loadOptions() {
 }
 
 function handleFileChange(file) {
-  fileForm.file = file?.raw || null
+  const raw = file?.raw || null
+  if (raw?.size > maxLocalUploadBytes) {
+    fileForm.file = null
+    fileUploadRef.value?.clearFiles()
+    ElMessage.error('本地上传文件大小不能超过 500 MB')
+    return
+  }
+  fileForm.file = raw
 }
+
+function handleFileRemove() {
+  fileForm.file = null
+}
+
+const fileDispatchSourceName = computed(() => {
+  if (fileForm.sourceType === 'upload') return fileForm.file?.name || ''
+  return fileForm.sourcePath.trim().split('/').filter(Boolean).pop() || ''
+})
 
 function validateTargets(hostIds, groupIds) {
   if (!hostIds.length && !groupIds.length) {
@@ -110,8 +130,8 @@ async function submitScript() {
 }
 
 async function submitFileDispatch() {
-  if (!fileForm.targetPath.trim()) {
-    ElMessage.warning('请输入目标路径')
+  if (!fileForm.targetDir.trim()) {
+    ElMessage.warning('请输入目标目录')
     return
   }
   if (!validateTargets(fileForm.hostIds, fileForm.groupIds)) return
@@ -129,10 +149,12 @@ async function submitFileDispatch() {
   formData.append('sourceType', fileForm.sourceType)
   formData.append('sourceHostId', String(fileForm.sourceHostId || 0))
   formData.append('sourcePath', fileForm.sourcePath)
-  formData.append('targetPath', fileForm.targetPath)
+  formData.append('targetDir', fileForm.targetDir)
+  formData.append('targetFileName', fileForm.targetFileName)
   formData.append('hostIds', JSON.stringify(fileForm.hostIds))
   formData.append('groupIds', JSON.stringify(fileForm.groupIds))
   formData.append('concurrency', String(fileForm.concurrency))
+  formData.append('timeoutSeconds', String(fileForm.timeoutSeconds))
   formData.append('overwrite', String(fileForm.overwrite))
   if (fileForm.file) {
     formData.append('file', fileForm.file)
@@ -237,8 +259,9 @@ onMounted(loadOptions)
               </el-radio-group>
             </el-form-item>
             <el-form-item v-if="fileForm.sourceType === 'upload'" label="上传文件">
-              <el-upload :auto-upload="false" :show-file-list="true" :limit="1" :on-change="handleFileChange">
+              <el-upload ref="fileUploadRef" :auto-upload="false" :show-file-list="true" :limit="1" :on-change="handleFileChange" :on-remove="handleFileRemove">
                 <el-button>选择文件</el-button>
+                <template #tip><div class="upload-hint">本地上传文件最大 500 MB。</div></template>
               </el-upload>
             </el-form-item>
             <template v-else>
@@ -251,8 +274,11 @@ onMounted(loadOptions)
                 <el-input v-model="fileForm.sourcePath" placeholder="例如：/data/release/app.tar.gz" />
               </el-form-item>
             </template>
-            <el-form-item label="目标路径" required>
-              <el-input v-model="fileForm.targetPath" placeholder="例如：/opt/apps/app.tar.gz" />
+            <el-form-item label="目标目录" required>
+              <el-input v-model="fileForm.targetDir" placeholder="例如：/opt/apps" />
+            </el-form-item>
+            <el-form-item label="目标文件名">
+              <el-input v-model="fileForm.targetFileName" :placeholder="fileDispatchSourceName ? `默认沿用源文件名：${fileDispatchSourceName}` : '可选，默认沿用源文件名'" />
             </el-form-item>
             <el-form-item label="目标主机">
               <el-select v-model="fileForm.hostIds" multiple filterable collapse-tags style="width: 100%">
@@ -325,6 +351,8 @@ onMounted(loadOptions)
   margin: 0;
   color: #7282a0;
 }
+
+.upload-hint { margin-top: 6px; color: #7282a0; font-size: 13px; }
 
 .ops-tabs :deep(.el-tabs__header) {
   margin-bottom: 18px;

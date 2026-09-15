@@ -24,3 +24,23 @@ test('资源更新后的集群刷新绕过短期概览缓存', () => {
   assert.match(read('src/api/k8s.js'), /queryK8sClusterOverview = \(clusterId, fresh = false\)/)
   assert.match(read('src/views/assets/K8s.vue'), /loadClusterData\(cluster\.value\.id, true\)/)
 })
+
+test('Pod 监控将当前筛选的 Namespace 和 Pod 直接写入 PromQL', () => {
+  const page = read('src/views/assets/K8s.vue')
+  assert.match(page, /function monitorPodMetricSelector\(\)/)
+  assert.match(page, /namespace=~"\^\(\$\{namespaces\.map\(escapePrometheusRegex\)/)
+  assert.match(page, /pod=~"\^\(\$\{podNames\.map\(escapePrometheusRegex\)/)
+  assert.match(page, /max by\(namespace, pod, container\)/)
+  assert.match(page, /max by\(namespace, pod, interface\)/)
+  assert.match(page, /const podScopeKey = monitorView\.value === 'pod'/)
+  assert.match(page, /monitorPodNamespace\.value, monitorPodNode\.value, monitorPodWorkload\.value, monitorPodName\.value/)
+})
+
+test('监控悬浮提示会根据鼠标位置向图表内侧展开', () => {
+  const page = read('src/views/assets/K8s.vue')
+  const section = read('src/views/assets/k8s/K8sSectionContent.vue')
+  assert.match(page, /function monitorTooltipStyle\(\)/)
+  assert.match(page, /const openLeft = position > \.56/)
+  assert.match(page, /translateX\(calc\(-100% - 12px\)\)/)
+  assert.equal((section.match(/:style="page\.monitorTooltipStyle\(\)"/g) || []).length, 2)
+})

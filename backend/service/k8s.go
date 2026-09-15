@@ -2041,6 +2041,13 @@ func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesP
 		}
 	}
 	containers := make([]map[string]any, 0, len(payload.Containers))
+	resourcePatchOps := make([]map[string]any, 0, len(payload.Containers))
+	containerIndexes := make(map[string]int, len(existingContainers))
+	for index, container := range existingContainers {
+		if name, ok := container["name"].(string); ok && strings.TrimSpace(name) != "" {
+			containerIndexes[name] = index
+		}
+	}
 	for _, item := range payload.Containers {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
@@ -2091,10 +2098,33 @@ func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesP
 		}
 		containerPatch["env"] = envPatch
 		containers = append(containers, containerPatch)
+
+		// Use a JSON Patch for the resources object as well as the strategic
+		// container patch below. Some API servers acknowledge the strategic
+		// patch but leave a nested resources map unchanged; replacing this exact
+		// path makes the requested CPU/memory values deterministic.
+		containerIndex, ok := containerIndexes[name]
+		if !ok {
+			return nil, fmt.Errorf("container %s index was not found in workload", name)
+		}
+		op := "add"
+		if _, exists := existing["resources"]; exists {
+			op = "replace"
+		}
+		resourcePatchOps = append(resourcePatchOps, map[string]any{
+			"op": op, "path": fmt.Sprintf("/spec/template/spec/containers/%d/resources", containerIndex), "value": resources,
+		})
 	}
 	patchBody := buildWorkloadContainerPatchBody(payload.WorkloadType, containers)
 	if err := k8sPatchJSON(client, runtime, path, patchBody, "application/strategic-merge-patch+json", nil); err != nil {
 		return nil, friendlyK8sWorkloadUpdateError(err)
+	}
+	updatedResource := map[string]any{}
+	if err := k8sPatchJSON(client, runtime, path, resourcePatchOps, "application/json-patch+json", &updatedResource); err != nil {
+		return nil, friendlyK8sWorkloadUpdateError(err)
+	}
+	if err := verifyWorkloadContainerResources(updatedResource, payload.Containers); err != nil {
+		return nil, err
 	}
 	s.invalidateK8sClusterDetailCache(payload.ClusterID)
 	return map[string]any{
@@ -4001,6 +4031,56 @@ func buildWorkloadContainerPatchBody(workloadType string, containers []map[strin
 		return map[string]any{"spec": map[string]any{"jobTemplate": map[string]any{"spec": template}}}
 	}
 	return map[string]any{"spec": template}
+}
+
+// verifyWorkloadContainerResources prevents the UI from reporting a successful
+// save when the API server accepted a patch but did not apply the CPU/memory
+// portion of the Pod template.
+func verifyWorkloadContainerResources(resource map[string]any, expected []model.K8sWorkloadContainerResources) error {
+	containers, err := extractWorkloadContainers(resource)
+	if err != nil {
+		return errors.New("工作负载更新后无法读取容器资源配置")
+	}
+	byName := make(map[string]map[string]any, len(containers))
+	for _, container := range containers {
+		if name, ok := container["name"].(string); ok {
+			byName[name] = container
+		}
+	}
+	for _, item := range expected {
+		container, ok := byName[strings.TrimSpace(item.Name)]
+		if !ok {
+			return fmt.Errorf("工作负载更新后未找到容器 %s", item.Name)
+		}
+		resources, _ := container["resources"].(map[string]any)
+		requests, _ := resources["requests"].(map[string]any)
+		limits, _ := resources["limits"].(map[string]any)
+		if err := verifyK8sResourceQuantity("CPU 请求", requests, "cpu", item.RequestCPU); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+		if err := verifyK8sResourceQuantity("CPU 限制", limits, "cpu", item.LimitCPU); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+		if err := verifyK8sResourceQuantity("内存请求", requests, "memory", item.RequestMemory); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+		if err := verifyK8sResourceQuantity("内存限制", limits, "memory", item.LimitMemory); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+	}
+	return nil
+}
+
+func verifyK8sResourceQuantity(label string, values map[string]any, key string, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return nil
+	}
+	actual, _ := values[key].(string)
+	if strings.TrimSpace(actual) != expected {
+		return fmt.Errorf("%s未生效（期望 %s，实际 %s）", label, expected, strings.TrimSpace(actual))
+	}
+	return nil
 }
 
 func formatWorkloadResourceSummary(containers []kubeContainer, requests bool) string {

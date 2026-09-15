@@ -2987,12 +2987,12 @@ const monitorChartDefinitions = {
     { key: 'uptime', title: '在线时间', query: 'time() - node_boot_time_seconds', unit: '秒', summaryOnly: true }
   ],
   pod: [
-    { title: 'Pod CPU 使用量 Top 10（核）', query: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))', unit: '核' },
-    { title: 'Pod 内存使用量 Top 10（MiB）', query: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024)', unit: 'MiB' },
-    { title: '各命名空间运行中 Pod', query: 'sum by(namespace) (kube_pod_status_phase{phase="Running"})', unit: '个' },
-    { title: 'Pod 最近 1 小时新增重启 Top 10', query: 'topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{pod!=""}[1h])))', unit: '次' },
-    { title: 'Pod 网络接收速率（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' },
-    { title: 'Pod 网络发送速率（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' }
+    { title: 'Pod CPU 使用量 Top 10（核）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, container) (rate(container_cpu_usage_seconds_total{${selector},container!="",container!="POD"}[5m]))))`, unit: '核' },
+    { title: 'Pod 内存使用量 Top 10（MiB）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, container) (container_memory_working_set_bytes{${selector},container!="",container!="POD"})) / 1024 / 1024)`, unit: 'MiB' },
+    { title: '各命名空间运行中 Pod', query: (selector) => `sum by(namespace) (max by(namespace, pod) (kube_pod_status_phase{${selector},phase="Running"}))`, unit: '个' },
+    { title: 'Pod 最近 1 小时新增重启 Top 10', query: (selector) => `topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{${selector}}[1h])))`, unit: '次' },
+    { title: 'Pod 网络接收速率（MiB/s）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, interface) (rate(container_network_receive_bytes_total{${selector},interface!="lo"}[5m]))) / 1024 / 1024)`, unit: 'MiB/s' },
+    { title: 'Pod 网络发送速率（MiB/s）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, interface) (rate(container_network_transmit_bytes_total{${selector},interface!="lo"}[5m]))) / 1024 / 1024)`, unit: 'MiB/s' }
   ],
   network: [
     { title: 'Pod 网络流入 Top 10', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s', type: 'bar' },
@@ -3008,6 +3008,28 @@ function monitorSeriesMatchesNode(series, node) {
   const label = String(series?.label || '')
   const internalIP = String(node?.internalIP || '')
   return label === node?.name || label === internalIP || (internalIP && label.startsWith(`${internalIP}:`))
+}
+
+function escapePrometheusRegex(value) {
+  return String(value).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+}
+
+function monitorPodMetricSelector() {
+  const selectedPods = monitorPodFilteredPods.value
+  if (!selectedPods.length) return 'namespace=~"^$",pod=~"^$"'
+  const namespaces = [...new Set(selectedPods.map((pod) => pod.namespace).filter(Boolean))].sort()
+  const podNames = [...new Set(selectedPods.map((pod) => pod.name).filter(Boolean))].sort()
+  return `namespace=~"^(${namespaces.map(escapePrometheusRegex).join('|')})$",pod=~"^(${podNames.map(escapePrometheusRegex).join('|')})$"`
+}
+
+function monitorDefinitions() {
+  const definitions = monitorChartDefinitions[monitorView.value] || monitorChartDefinitions.cluster
+  if (monitorView.value !== 'pod') return definitions
+  const selector = monitorPodMetricSelector()
+  return definitions.map((definition) => ({
+    ...definition,
+    query: typeof definition.query === 'function' ? definition.query(selector) : definition.query
+  }))
 }
 
 function monitorNodeMetric(node, key) {
@@ -3216,12 +3238,25 @@ function updateMonitorChartHover(chart, event) {
   monitorHover.value = { chart: chart.title, time: targetTime, position: ratio, points, unit: chart.unit }
 }
 
+function monitorTooltipStyle() {
+  const position = Math.min(.96, Math.max(.04, Number(monitorHover.value?.position) || 0))
+  const openLeft = position > .56
+  return {
+    left: `${position * 100}%`,
+    transform: openLeft ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
+    transformOrigin: openLeft ? 'right top' : 'left top'
+  }
+}
+
 async function loadMonitoringCharts(force = false) {
   if (!cluster.value?.monitorDatasourceId) {
     monitorCharts.value = []
     return
   }
-  const cacheKey = `${cluster.value.monitorDatasourceId}:${monitorView.value}:${monitorRange.value}`
+  const podScopeKey = monitorView.value === 'pod'
+    ? monitorPodFilteredPods.value.map((pod) => `${pod.namespace}/${pod.name}`).sort().join(',')
+    : ''
+  const cacheKey = `${cluster.value.monitorDatasourceId}:${monitorView.value}:${monitorRange.value}:${podScopeKey}`
   const cached = monitorCache.get(cacheKey)
   if (!force && cached && Date.now() - cached.timestamp < 60000) {
     monitorCharts.value = cached.charts
@@ -3234,7 +3269,7 @@ async function loadMonitoringCharts(force = false) {
   try {
     const endAt = Math.floor(Date.now() / 1000)
     const duration = { '1h': 3600, '6h': 21600, '24h': 86400, '3d': 259200, '7d': 604800 }[monitorRange.value] || 3600
-    const definitions = monitorChartDefinitions[monitorView.value] || monitorChartDefinitions.cluster
+    const definitions = monitorDefinitions()
     const nodeTrafficPromise = monitorView.value === 'node' ? Promise.allSettled([
       queryMonitorPrometheus({ datasourceId: cluster.value.monitorDatasourceId, query: 'sum(increase(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[30d])) / 1024 / 1024 / 1024' }),
       queryMonitorPrometheus({ datasourceId: cluster.value.monitorDatasourceId, query: 'sum(increase(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[30d])) / 1024 / 1024 / 1024' })
@@ -3597,6 +3632,7 @@ const page = reactive({
   monitorColor,
   monitorTimeText,
   updateMonitorChartHover,
+  monitorTooltipStyle,
   openMonitorNode,
   runYAMLSearch,
   searchYAMLPrev,
@@ -3627,6 +3663,13 @@ watch(
   () => [currentTab.value, monitorView.value, monitorRange.value, cluster.value?.monitorDatasourceId],
   ([tab]) => {
     if (tab === 'monitoring') void loadMonitoringCharts()
+  }
+)
+
+watch(
+  () => [monitorPodNamespace.value, monitorPodNode.value, monitorPodWorkload.value, monitorPodName.value],
+  () => {
+    if (currentTab.value === 'monitoring' && monitorView.value === 'pod') void loadMonitoringCharts()
   }
 )
 

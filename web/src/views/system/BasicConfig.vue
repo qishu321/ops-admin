@@ -20,7 +20,8 @@ const form = reactive({
   useLoginBackground: false,
   loginBackground: '',
   primaryColor: '#5b6cf9',
-  sidebarTheme: 'dark'
+  sidebarTheme: 'dark',
+  rememberLoginEnabled: true
 })
 
 const logoPreviewUrl = computed(() => {
@@ -131,6 +132,12 @@ onMounted(loadData)
           </el-form-item>
           <el-form-item :label="t('primaryColor')">
             <el-color-picker v-model="form.primaryColor" />
+          </el-form-item>
+          <el-form-item :label="t('rememberLoginEnabled')">
+            <div class="remember-login-setting">
+              <el-switch v-model="form.rememberLoginEnabled" />
+              <span>{{ t('rememberLoginSettingHint') }}</span>
+            </div>
           </el-form-item>
         </div>
 
@@ -308,6 +315,14 @@ onMounted(loadData)
 .native-upload-row.uploading {
   opacity: 0.65;
   pointer-events: none;
+}
+
+.remember-login-setting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #7b879c;
+  line-height: 1.5;
 }
 
 @media (max-width: 1100px) {

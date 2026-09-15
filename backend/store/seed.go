@@ -232,16 +232,17 @@ func seedSystemConfig(db *gorm.DB) error {
 	}
 
 	return db.Create(&model.SystemConfig{
-		SiteName:           "Ops Admin",
-		SiteSlogan:         "个人运维管理平台",
-		LogoType:           "text",
-		LogoValue:          "OA",
-		LoginTitle:         "Ops Admin",
-		LoginSubtitle:      "系统管理与运维控制台",
-		UseLoginBackground: false,
-		PrimaryColor:       "#5b6cf9",
-		SidebarTheme:       "dark",
-		CreatedAt:          time.Now(),
+		SiteName:             "Ops Admin",
+		SiteSlogan:           "个人运维管理平台",
+		LogoType:             "text",
+		LogoValue:            "OA",
+		LoginTitle:           "Ops Admin",
+		LoginSubtitle:        "系统管理与运维控制台",
+		UseLoginBackground:   false,
+		PrimaryColor:         "#5b6cf9",
+		SidebarTheme:         "dark",
+		RememberLoginEnabled: true,
+		CreatedAt:            time.Now(),
 	}).Error
 }
 

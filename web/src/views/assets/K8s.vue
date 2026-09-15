@@ -1163,12 +1163,12 @@ async function loadClusters(preferId) {
   }
 }
 
-async function loadClusterData(clusterId) {
+async function loadClusterData(clusterId, fresh = false) {
   loading.value = true
   try {
     Object.keys(workloadImageMap).forEach((key) => delete workloadImageMap[key])
     selectedWorkloads.value = []
-    const data = await queryK8sClusterOverview(clusterId)
+    const data = await queryK8sClusterOverview(clusterId, fresh)
     cluster.value = data.cluster
     overview.value = data.overview
     nodes.value = data.nodes || []
@@ -1193,7 +1193,7 @@ async function loadClusterData(clusterId) {
 
 async function refreshCurrentClusterData() {
   if (!cluster.value?.id) return
-  await loadClusterData(cluster.value.id)
+  await loadClusterData(cluster.value.id, true)
 }
 
 async function handleClusterChange(clusterId) {

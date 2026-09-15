@@ -168,9 +168,20 @@ defineProps({
           <span v-else class="pod-workload-empty">独立 Pod</span>
         </template>
       </el-table-column>
-      <el-table-column :label="page.t('k8sStatus')" width="110">
+      <el-table-column label="运行阶段" width="110">
         <template #default="{ row }">
           <el-tag :type="page.podStatusTagType(row.status)" effect="light" round>{{ row.status || '-' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="容器就绪" width="110">
+        <template #default="{ row }">
+          <el-tag
+            v-if="row.totalContainers"
+            :type="row.readyContainers === row.totalContainers ? 'success' : 'warning'"
+            effect="light"
+            round
+          >{{ row.readyContainers }}/{{ row.totalContainers }}</el-tag>
+          <span v-else>-</span>
         </template>
       </el-table-column>
       <el-table-column :label="page.t('k8sNode')" min-width="180">

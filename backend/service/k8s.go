@@ -827,6 +827,21 @@ func (s *Service) GetK8sClusterDetail(clusterID uint) (model.K8sClusterDetail, e
 	return result.(model.K8sClusterDetail), nil
 }
 
+// GetK8sClusterDetailFresh bypasses the short overview cache. Mutation flows
+// call it immediately after a PATCH so the UI cannot join an older in-flight
+// overview request and render the pre-update resource limits as if the update
+// did not take effect.
+func (s *Service) GetK8sClusterDetailFresh(clusterID uint) (model.K8sClusterDetail, error) {
+	detail, err := s.getK8sClusterDetailUncached(clusterID)
+	if err != nil {
+		return model.K8sClusterDetail{}, err
+	}
+	s.k8sOverviewMu.Lock()
+	s.k8sOverviewCache[clusterID] = k8sOverviewCacheEntry{detail: detail, expiresAt: time.Now().Add(k8sOverviewCacheTTL)}
+	s.k8sOverviewMu.Unlock()
+	return detail, nil
+}
+
 func (s *Service) cachedK8sClusterDetail(clusterID uint) (model.K8sClusterDetail, bool) {
 	s.k8sOverviewMu.Lock()
 	defer s.k8sOverviewMu.Unlock()
@@ -1757,41 +1772,75 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 	case "deployment":
 		var item kubeDeployment
 		path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildDeploymentDetail(client, runtime, item), nil
+		detail := buildDeploymentDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "statefulset":
 		var item kubeStatefulSet
 		path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/statefulsets/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildStatefulSetDetail(client, runtime, item), nil
+		detail := buildStatefulSetDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "daemonset":
 		var item kubeDaemonSet
 		path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/daemonsets/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildDaemonSetDetail(client, runtime, item), nil
+		detail := buildDaemonSetDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "job":
 		var item kubeJob
 		path := fmt.Sprintf("/apis/batch/v1/namespaces/%s/jobs/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildJobDetail(client, runtime, item), nil
+		detail := buildJobDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "cronjob":
 		var item kubeCronJob
 		path := fmt.Sprintf("/apis/batch/v1/namespaces/%s/cronjobs/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildCronJobDetail(client, runtime, item), nil
+		detail := buildCronJobDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	default:
 		return model.K8sWorkloadDetail{}, errors.New("unsupported workload type")
 	}
+}
+
+// getK8sWorkloadResource keeps an unstructured copy for YAML editing. The
+// typed summaries intentionally model only fields used by the UI; rebuilding
+// YAML from them would turn JSON names such as valueFrom into valuefrom and
+// lose fields Kubernetes requires during a PUT update.
+func getK8sWorkloadResource(client *http.Client, runtime kubeClusterRuntime, path string, target any) (map[string]any, error) {
+	resource := map[string]any{}
+	if err := k8sGetJSON(client, runtime, path, &resource); err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(resource)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return nil, err
+	}
+	return resource, nil
 }
 
 func (s *Service) ScaleK8sWorkload(payload model.K8sWorkloadActionPayload) (map[string]any, error) {
@@ -2045,7 +2094,7 @@ func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesP
 	}
 	patchBody := buildWorkloadContainerPatchBody(payload.WorkloadType, containers)
 	if err := k8sPatchJSON(client, runtime, path, patchBody, "application/strategic-merge-patch+json", nil); err != nil {
-		return nil, errors.New(k8sClusterConnectError)
+		return nil, friendlyK8sWorkloadUpdateError(err)
 	}
 	s.invalidateK8sClusterDetailCache(payload.ClusterID)
 	return map[string]any{
@@ -3089,11 +3138,15 @@ func buildContainerItems(containers []kubeContainer) []model.K8sContainerItem {
 }
 
 func marshalK8sYAML(v any) string {
-	body, err := yaml.Marshal(v)
+	body, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
-	return string(body)
+	yamlBody, err := ksyaml.JSONToYAML(body)
+	if err != nil {
+		return ""
+	}
+	return string(yamlBody)
 }
 
 func buildDeploymentDetail(client *http.Client, runtime kubeClusterRuntime, item kubeDeployment) model.K8sWorkloadDetail {
@@ -3632,8 +3685,12 @@ func buildPodItemsWithRefs(pods []kubePod, refs map[string]podWorkloadRef) []mod
 	items := make([]model.K8sPodItem, 0, len(pods))
 	for _, pod := range pods {
 		restarts := 0
+		readyContainers := 0
 		for _, status := range pod.Status.ContainerStatuses {
 			restarts += status.RestartCount
+			if status.Ready {
+				readyContainers++
+			}
 		}
 
 		workload := refs[podWorkloadKey(pod.Metadata.Namespace, pod.Metadata.Name)]
@@ -3647,8 +3704,9 @@ func buildPodItemsWithRefs(pods []kubePod, refs map[string]podWorkloadRef) []mod
 		}
 		items = append(items, model.K8sPodItem{
 			Name: pod.Metadata.Name, Namespace: pod.Metadata.Namespace, WorkloadName: workload.Name, WorkloadType: workload.Type,
-			Status: fallbackText(pod.Status.Phase), Node: fallbackText(pod.Spec.NodeName), NodeIP: fallbackText(pod.Status.HostIP),
-			Restarts: restarts, Age: humanizeAge(pod.Metadata.CreationTimestamp), IP: fallbackText(pod.Status.PodIP),
+			Status: fallbackText(pod.Status.Phase), ReadyContainers: readyContainers, TotalContainers: len(pod.Spec.Containers),
+			Node: fallbackText(pod.Spec.NodeName), NodeIP: fallbackText(pod.Status.HostIP), Restarts: restarts,
+			Age: humanizeAge(pod.Metadata.CreationTimestamp), IP: fallbackText(pod.Status.PodIP),
 		})
 	}
 
@@ -5258,27 +5316,67 @@ func friendlyK8sYAMLError(payload model.K8sResourceYAMLPayload, err error) error
 	message := err.Error()
 	lower := strings.ToLower(message)
 
-	if strings.Contains(lower, "field is immutable") || strings.Contains(lower, "immutable") {
-		switch strings.ToLower(Trimmed(payload.ResourceType)) {
+	resourceType := strings.ToLower(strings.TrimSpace(payload.ResourceType))
+
+	if strings.Contains(lower, "immutable") {
+		switch resourceType {
 		case "pod":
-			return errors.New("Pod 瀛樺湪涓嶅彲鍙樺瓧娈碉紝Kubernetes 涓嶅厑璁哥洿鎺ユ洿鏂拌繖閮ㄥ垎鍐呭銆傚缓璁慨鏀瑰彲鍙樺瓧娈碉紝鎴栧垹闄ゅ悗閲嶆柊鍒涘缓 Pod")
+			return errors.New(
+				"Pod 存在不可变字段，Kubernetes 不允许直接更新这部分内容。" +
+					"请仅修改可变字段，或者删除后重新创建 Pod",
+			)
+
 		case "pv", "pvc":
-			return errors.New("褰撳墠瀛樺偍璧勬簮鍖呭惈涓嶅彲鍙樺瓧娈碉紝Kubernetes 涓嶅厑璁哥洿鎺ヨ鐩栦繚瀛樸€傝浠呬慨鏀瑰彲鍙樺瓧娈碉紝鎴栨寜瀛樺偍鍙樻洿娴佺▼澶勭悊")
+			return errors.New(
+				"当前存储资源包含不可变字段，Kubernetes 不允许直接覆盖保存。" +
+					"请仅修改可变字段，或者按照存储资源变更流程处理",
+			)
+
 		default:
-			return errors.New("褰撳墠璧勬簮鍖呭惈涓嶅彲鍙樺瓧娈碉紝Kubernetes 涓嶅厑璁哥洿鎺ヨ鐩栦繚瀛樸€傝妫€鏌?metadata銆乻elector銆乿olume 绛夊瓧娈垫槸鍚﹁淇敼")
+			return errors.New(
+				"当前资源包含不可变字段，Kubernetes 不允许直接覆盖保存。" +
+					"请检查 metadata、selector、volume 等字段是否被修改",
+			)
 		}
 	}
 
 	if strings.Contains(lower, "already exists") {
-		return errors.New("YAML 涓殑璧勬簮鏍囪瘑涓庡綋鍓嶉泦缇ょ幇鏈夎祫婧愬啿绐侊紝璇锋鏌ュ悕绉般€佸懡鍚嶇┖闂存垨鍏宠仈瀵硅薄")
+		return errors.New(
+			"YAML 中的资源名称与当前集群中的现有资源冲突，" +
+				"请检查资源名称、命名空间或者关联对象",
+		)
 	}
+
 	if strings.Contains(lower, "not found") {
-		return errors.New("目标资源不存在，可能已被删除或命名空间已变化，请刷新后重试")
+		return errors.New(
+			"目标资源不存在，可能已被删除或者命名空间已经发生变化，请刷新后重试",
+		)
 	}
-	if strings.Contains(lower, "invalid") || strings.Contains(lower, "unprocessable entity") {
-		return errors.New("YAML 鏍￠獙鏈€氳繃锛岃妫€鏌ュ瓧娈垫牸寮忋€乤piVersion銆乲ind 浠ュ強 spec 鍐呭鏄惁姝ｇ‘")
+
+	if strings.Contains(lower, "invalid") ||
+		strings.Contains(lower, "unprocessable entity") {
+		return errors.New(
+			"YAML 校验未通过，请检查字段格式、apiVersion、kind 以及 spec 内容是否正确",
+		)
 	}
 	return err
+}
+
+func friendlyK8sWorkloadUpdateError(err error) error {
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "forbidden"):
+		return errors.New("集群拒绝更新工作负载，请确认当前 Kubernetes 凭据具有更新该工作负载的权限")
+	case strings.Contains(lower, "invalid") || strings.Contains(lower, "unprocessable entity"):
+		return fmt.Errorf("工作负载资源配置校验未通过: %w", err)
+	case strings.Contains(lower, "not found"):
+		return errors.New("工作负载不存在，可能已被删除或命名空间已变化，请刷新后重试")
+	default:
+		return fmt.Errorf("更新工作负载失败: %w", err)
+	}
 }
 
 func k8sGetText(client *http.Client, runtime kubeClusterRuntime, path string, query map[string]string) (string, error) {

@@ -84,12 +84,19 @@ func (ctl *Controller) DeleteK8sCluster(c *gin.Context) {
 func (ctl *Controller) GetK8sClusterDetail(c *gin.Context) {
 	var query struct {
 		ClusterID uint `form:"clusterId"`
+		Fresh     bool `form:"fresh"`
 	}
 	if err := c.ShouldBindQuery(&query); err != nil || query.ClusterID == 0 {
 		httpx.Failed(c, http.StatusBadRequest, "invalid cluster id")
 		return
 	}
-	data, err := ctl.service.GetK8sClusterDetail(query.ClusterID)
+	var data model.K8sClusterDetail
+	var err error
+	if query.Fresh {
+		data, err = ctl.service.GetK8sClusterDetailFresh(query.ClusterID)
+	} else {
+		data, err = ctl.service.GetK8sClusterDetail(query.ClusterID)
+	}
 	if err != nil {
 		httpx.Failed(c, http.StatusBadRequest, err.Error())
 		return

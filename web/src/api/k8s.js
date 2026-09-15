@@ -11,8 +11,8 @@ export const updateK8sCluster = (data) => http.put('/api/v1/k8s/cluster/update',
 
 export const deleteK8sCluster = (id) => http.delete('/api/v1/k8s/cluster/delete', { data: { id } })
 
-export const queryK8sClusterOverview = (clusterId) =>
-  http.get('/api/v1/k8s/cluster/detail', { params: { clusterId } })
+export const queryK8sClusterOverview = (clusterId, fresh = false) =>
+  http.get('/api/v1/k8s/cluster/detail', { params: { clusterId, fresh: fresh || undefined } })
 
 export const queryK8sNodeDetail = (clusterId, nodeName) =>
   http.get('/api/v1/k8s/node/detail', { params: { clusterId, nodeName } })

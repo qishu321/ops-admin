@@ -213,16 +213,18 @@ type K8sNamespaceItem struct {
 }
 
 type K8sPodItem struct {
-	Name         string `json:"name"`
-	Namespace    string `json:"namespace"`
-	WorkloadName string `json:"workloadName"`
-	WorkloadType string `json:"workloadType"`
-	Status       string `json:"status"`
-	Node         string `json:"node"`
-	NodeIP       string `json:"nodeIP"`
-	Restarts     int    `json:"restarts"`
-	Age          string `json:"age"`
-	IP           string `json:"ip"`
+	Name            string `json:"name"`
+	Namespace       string `json:"namespace"`
+	WorkloadName    string `json:"workloadName"`
+	WorkloadType    string `json:"workloadType"`
+	Status          string `json:"status"`
+	ReadyContainers int    `json:"readyContainers"`
+	TotalContainers int    `json:"totalContainers"`
+	Node            string `json:"node"`
+	NodeIP          string `json:"nodeIP"`
+	Restarts        int    `json:"restarts"`
+	Age             string `json:"age"`
+	IP              string `json:"ip"`
 }
 
 type K8sEnvVarItem struct {

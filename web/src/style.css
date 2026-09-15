@@ -896,6 +896,16 @@ a {
   margin-top: 10px;
 }
 
+.remember-login-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
 .el-button--primary {
   --el-button-bg-color: var(--app-primary);
   --el-button-border-color: var(--app-primary);

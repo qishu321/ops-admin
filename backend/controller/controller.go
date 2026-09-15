@@ -53,7 +53,7 @@ func (ctl *Controller) Login(c *gin.Context) {
 		httpx.Failed(c, 400, err.Error())
 		return
 	}
-	setRefreshCookie(c, refreshToken, int(auth.SessionMaxTTL.Seconds()))
+	setRefreshCookie(c, refreshToken, sessionCookieMaxAge(data))
 	httpx.Success(c, data)
 }
 
@@ -81,11 +81,7 @@ func (ctl *Controller) RefreshToken(c *gin.Context) {
 		httpx.Failed(c, http.StatusUnauthorized, "登录已过期，请重新登录")
 		return
 	}
-	maxAge := int(auth.SessionMaxTTL.Seconds())
-	if expiresAt, ok := data["sessionExpiresAt"].(int64); ok {
-		maxAge = max(0, int(time.Until(time.UnixMilli(expiresAt)).Seconds()))
-	}
-	setRefreshCookie(c, nextRefreshToken, maxAge)
+	setRefreshCookie(c, nextRefreshToken, sessionCookieMaxAge(data))
 	httpx.Success(c, data)
 }
 
@@ -101,6 +97,19 @@ func setRefreshCookie(c *gin.Context, token string, maxAge int) {
 	c.SetSameSite(http.SameSiteLaxMode)
 	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
 	c.SetCookie(refreshCookieName, token, maxAge, "/api/v1/auth", "", secure, true)
+}
+
+func sessionCookieMaxAge(data map[string]any) int {
+	rememberLogin, _ := data["rememberLogin"].(bool)
+	if !rememberLogin {
+		// A zero Max-Age creates a browser-session cookie.
+		return 0
+	}
+	expiresAt, ok := data["sessionExpiresAt"].(int64)
+	if !ok {
+		return int(auth.SessionMaxTTL.Seconds())
+	}
+	return max(0, int(time.Until(time.UnixMilli(expiresAt)).Seconds()))
 }
 
 func clearRefreshCookie(c *gin.Context) {
@@ -431,6 +440,15 @@ func (ctl *Controller) QueryRoleMenuIDList(c *gin.Context) {
 		result = append(result, gin.H{"id": id})
 	}
 	httpx.Success(c, result)
+}
+
+func (ctl *Controller) GlobalReadOnlyMenuIDs(c *gin.Context) {
+	ids, err := ctl.service.GlobalReadOnlyMenuIDs()
+	if err != nil {
+		httpx.Failed(c, 500, err.Error())
+		return
+	}
+	httpx.Success(c, ids)
 }
 
 func (ctl *Controller) AssignPermissions(c *gin.Context) {
@@ -983,8 +1001,13 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 		httpx.Failed(c, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	if _, err := auth.ParseToken(token); err != nil {
+	claims, err := auth.ParseToken(token)
+	if err != nil {
 		httpx.Failed(c, http.StatusUnauthorized, auth.TokenErrorMessage(err))
+		return
+	}
+	if readOnly, err := ctl.service.IsGlobalReadOnlyUser(claims.UserID); err != nil || readOnly {
+		httpx.Failed(c, http.StatusForbidden, "全局只读角色不能打开终端")
 		return
 	}
 

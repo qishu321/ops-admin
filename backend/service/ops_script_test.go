@@ -1,12 +1,25 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"ops-admin/backend/model"
 	"ops-admin/backend/util"
 )
+
+func TestOpsScriptJSONDoesNotExposeLegacyDefaultParams(t *testing.T) {
+	for name, value := range map[string]any{"script": model.OpsScript{}, "version": model.OpsScriptVersion{}, "payload": OpsScriptPayload{}} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "defaultParams") {
+			t.Fatalf("%s still exposes retired defaultParams: %s", name, data)
+		}
+	}
+}
 
 func TestNormalizeOpsScriptInterpreter(t *testing.T) {
 	tests := []struct {

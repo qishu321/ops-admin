@@ -33,8 +33,20 @@ type Claims struct {
 }
 
 func GenerateToken(userID uint, username, sessionID string) (string, time.Time, error) {
+	return GenerateTokenUntil(userID, username, sessionID, time.Time{})
+}
+
+// GenerateTokenUntil creates a short-lived access token without allowing it
+// to outlive the server-side session's immutable deadline.
+func GenerateTokenUntil(userID uint, username, sessionID string, deadline time.Time) (string, time.Time, error) {
 	now := time.Now()
 	expiresAt := now.Add(AccessTokenTTL)
+	if !deadline.IsZero() && deadline.Before(expiresAt) {
+		expiresAt = deadline
+	}
+	if !expiresAt.After(now) {
+		return "", time.Time{}, errors.New("login session expired")
+	}
 	claims := Claims{
 		UserID:    userID,
 		Username:  username,
@@ -77,6 +89,12 @@ func NewOpaqueToken() (string, error) {
 func HashOpaqueToken(token string) string {
 	digest := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(digest[:])
+}
+
+// SessionExpired applies the immutable absolute deadline to every session and
+// the idle timeout only to ordinary (non-remembered) sessions.
+func SessionExpired(now, lastActivityAt, expiresAt time.Time, rememberLogin bool) bool {
+	return !now.Before(expiresAt) || (!rememberLogin && now.Sub(lastActivityAt) >= SessionIdleTTL)
 }
 
 // TokenErrorMessage returns a user-facing message without exposing JWT details.

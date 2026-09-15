@@ -80,8 +80,9 @@ func New(db *gorm.DB) *Service {
 }
 
 type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	RememberLogin bool   `json:"rememberLogin"`
 }
 
 type AdminPayload struct {
@@ -103,6 +104,7 @@ type RolePayload struct {
 	RoleName    string `json:"roleName"`
 	RoleKey     string `json:"roleKey"`
 	Status      int    `json:"status"`
+	IsReadOnly  bool   `json:"isReadOnly"`
 	Description string `json:"description"`
 }
 
@@ -174,16 +176,17 @@ type RoleStatusPayload struct {
 }
 
 type SystemConfigPayload struct {
-	SiteName           string `json:"siteName"`
-	SiteSlogan         string `json:"siteSlogan"`
-	LogoType           string `json:"logoType"`
-	LogoValue          string `json:"logoValue"`
-	LoginTitle         string `json:"loginTitle"`
-	LoginSubtitle      string `json:"loginSubtitle"`
-	UseLoginBackground bool   `json:"useLoginBackground"`
-	LoginBackground    string `json:"loginBackground"`
-	PrimaryColor       string `json:"primaryColor"`
-	SidebarTheme       string `json:"sidebarTheme"`
+	SiteName             string `json:"siteName"`
+	SiteSlogan           string `json:"siteSlogan"`
+	LogoType             string `json:"logoType"`
+	LogoValue            string `json:"logoValue"`
+	LoginTitle           string `json:"loginTitle"`
+	LoginSubtitle        string `json:"loginSubtitle"`
+	UseLoginBackground   bool   `json:"useLoginBackground"`
+	LoginBackground      string `json:"loginBackground"`
+	PrimaryColor         string `json:"primaryColor"`
+	SidebarTheme         string `json:"sidebarTheme"`
+	RememberLoginEnabled bool   `json:"rememberLoginEnabled"`
 }
 
 type AssetHostPayload struct {
@@ -353,17 +356,23 @@ func (s *Service) Login(req LoginRequest, ip string, browser string, osName stri
 		return nil, "", err
 	}
 	now := time.Now()
+	config, err := s.GetSystemConfig()
+	if err != nil {
+		return nil, "", err
+	}
+	rememberLogin := req.RememberLogin && config.RememberLoginEnabled
 	session := model.AuthSession{
 		ID:               sessionID,
 		AdminID:          admin.ID,
 		RefreshTokenHash: auth.HashOpaqueToken(refreshToken),
 		LastActivityAt:   now,
 		ExpiresAt:        now.Add(auth.SessionMaxTTL),
+		RememberLogin:    rememberLogin,
 	}
 	if err := s.db.Create(&session).Error; err != nil {
 		return nil, "", err
 	}
-	token, accessExpiresAt, err := auth.GenerateToken(admin.ID, admin.Username, session.ID)
+	token, accessExpiresAt, err := auth.GenerateTokenUntil(admin.ID, admin.Username, session.ID, session.ExpiresAt)
 	if err != nil {
 		_ = s.db.Delete(&session).Error
 		return nil, "", err
@@ -371,12 +380,11 @@ func (s *Service) Login(req LoginRequest, ip string, browser string, osName stri
 	s.createLoginLog(req.Username, ip, browser, osName, 1, "登录成功")
 
 	roleID := s.getRoleID(admin.ID)
-	config, _ := s.GetSystemConfig()
-
 	return map[string]any{
 		"token":                token,
 		"accessTokenExpiresAt": accessExpiresAt.UnixMilli(),
 		"sessionExpiresAt":     session.ExpiresAt.UnixMilli(),
+		"rememberLogin":        session.RememberLogin,
 		"sysAdmin":             admin,
 		"leftMenuList":         s.CurrentMenus(roleID),
 		"permissionList":       s.CurrentPermissions(roleID),
@@ -397,7 +405,7 @@ func (s *Service) RefreshSession(refreshToken string, reportedActivityAt time.Ti
 	if reportedActivityAt.After(lastActivityAt) && !reportedActivityAt.After(now.Add(time.Minute)) {
 		lastActivityAt = reportedActivityAt
 	}
-	if session.RevokedAt != nil || !now.Before(session.ExpiresAt) || now.Sub(lastActivityAt) >= auth.SessionIdleTTL {
+	if session.RevokedAt != nil || auth.SessionExpired(now, lastActivityAt, session.ExpiresAt, session.RememberLogin) {
 		return nil, "", errors.New("登录已过期")
 	}
 
@@ -410,7 +418,7 @@ func (s *Service) RefreshSession(refreshToken string, reportedActivityAt time.Ti
 	}).Error; err != nil {
 		return nil, "", err
 	}
-	accessToken, accessExpiresAt, err := auth.GenerateToken(admin.ID, admin.Username, session.ID)
+	accessToken, accessExpiresAt, err := auth.GenerateTokenUntil(admin.ID, admin.Username, session.ID, session.ExpiresAt)
 	if err != nil {
 		return nil, "", err
 	}
@@ -418,6 +426,7 @@ func (s *Service) RefreshSession(refreshToken string, reportedActivityAt time.Ti
 		"token":                accessToken,
 		"accessTokenExpiresAt": accessExpiresAt.UnixMilli(),
 		"sessionExpiresAt":     session.ExpiresAt.UnixMilli(),
+		"rememberLogin":        session.RememberLogin,
 	}, refreshToken, nil
 }
 
@@ -457,16 +466,17 @@ func (s *Service) UpdateSystemConfig(payload SystemConfigPayload) (model.SystemC
 	}
 
 	updates := map[string]any{
-		"site_name":            Trimmed(payload.SiteName),
-		"site_slogan":          Trimmed(payload.SiteSlogan),
-		"logo_type":            Trimmed(payload.LogoType),
-		"logo_value":           Trimmed(payload.LogoValue),
-		"login_title":          Trimmed(payload.LoginTitle),
-		"login_subtitle":       Trimmed(payload.LoginSubtitle),
-		"use_login_background": payload.UseLoginBackground,
-		"login_background":     Trimmed(payload.LoginBackground),
-		"primary_color":        Trimmed(payload.PrimaryColor),
-		"sidebar_theme":        Trimmed(payload.SidebarTheme),
+		"site_name":              Trimmed(payload.SiteName),
+		"site_slogan":            Trimmed(payload.SiteSlogan),
+		"logo_type":              Trimmed(payload.LogoType),
+		"logo_value":             Trimmed(payload.LogoValue),
+		"login_title":            Trimmed(payload.LoginTitle),
+		"login_subtitle":         Trimmed(payload.LoginSubtitle),
+		"use_login_background":   payload.UseLoginBackground,
+		"login_background":       Trimmed(payload.LoginBackground),
+		"primary_color":          Trimmed(payload.PrimaryColor),
+		"sidebar_theme":          Trimmed(payload.SidebarTheme),
+		"remember_login_enabled": payload.RememberLoginEnabled,
 	}
 
 	if updates["site_name"] == "" {
@@ -515,15 +525,16 @@ func (s *Service) ensureSystemConfig() (model.SystemConfig, error) {
 	}
 
 	cfg = model.SystemConfig{
-		SiteName:           "Ops Admin",
-		SiteSlogan:         "个人运维管理平台",
-		LogoType:           "text",
-		LogoValue:          "OA",
-		LoginTitle:         "Ops Admin",
-		LoginSubtitle:      "系统管理与运维控制台",
-		UseLoginBackground: false,
-		PrimaryColor:       "#5b6cf9",
-		SidebarTheme:       "dark",
+		SiteName:             "Ops Admin",
+		SiteSlogan:           "个人运维管理平台",
+		LogoType:             "text",
+		LogoValue:            "OA",
+		LoginTitle:           "Ops Admin",
+		LoginSubtitle:        "系统管理与运维控制台",
+		UseLoginBackground:   false,
+		PrimaryColor:         "#5b6cf9",
+		SidebarTheme:         "dark",
+		RememberLoginEnabled: true,
 	}
 	return cfg, s.db.Create(&cfg).Error
 }
@@ -791,20 +802,36 @@ func (s *Service) CreateRole(payload RolePayload) error {
 		RoleName:    payload.RoleName,
 		RoleKey:     payload.RoleKey,
 		Status:      payload.Status,
+		IsReadOnly:  payload.IsReadOnly,
 		Description: payload.Description,
 	}).Error
 }
 
 func (s *Service) UpdateRole(payload RolePayload) error {
+	var existing model.Role
+	if err := s.db.First(&existing, payload.ID).Error; err != nil {
+		return err
+	}
+	if existing.IsReadOnly {
+		return errors.New("平台预置的全局只读角色不可编辑")
+	}
 	return s.db.Model(&model.Role{}).Where("id = ?", payload.ID).Updates(map[string]any{
-		"role_name":   payload.RoleName,
-		"role_key":    payload.RoleKey,
-		"status":      payload.Status,
-		"description": payload.Description,
+		"role_name":    payload.RoleName,
+		"role_key":     payload.RoleKey,
+		"status":       payload.Status,
+		"is_read_only": payload.IsReadOnly,
+		"description":  payload.Description,
 	}).Error
 }
 
 func (s *Service) DeleteRole(id uint) error {
+	var role model.Role
+	if err := s.db.First(&role, id).Error; err != nil {
+		return err
+	}
+	if role.IsReadOnly {
+		return errors.New("平台预置的全局只读角色不可删除")
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Delete(&model.Role{}, id).Error; err != nil {
 			return err
@@ -822,11 +849,41 @@ func (s *Service) GetRole(id uint) (*model.Role, error) {
 }
 
 func (s *Service) UpdateRoleStatus(payload RoleStatusPayload) error {
+	var role model.Role
+	if err := s.db.First(&role, payload.ID).Error; err != nil {
+		return err
+	}
+	if role.IsReadOnly {
+		return errors.New("平台预置的全局只读角色不可停用")
+	}
 	return s.db.Model(&model.Role{}).Where("id = ?", payload.ID).Update("status", payload.Status).Error
 }
 
 func (s *Service) AssignRoleMenus(payload RoleMenuPayload) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var role model.Role
+		if err := tx.First(&role, payload.ID).Error; err != nil {
+			return err
+		}
+		if role.IsReadOnly {
+			var menus []model.Menu
+			if err := tx.Where("id IN ?", payload.MenuIDs).Find(&menus).Error; err != nil {
+				return err
+			}
+			allowed := make(map[uint]struct{}, len(menus))
+			for _, menu := range menus {
+				if model.IsGlobalReadOnlyMenu(menu) {
+					allowed[menu.ID] = struct{}{}
+				}
+			}
+			filtered := make([]uint, 0, len(allowed))
+			for _, menuID := range payload.MenuIDs {
+				if _, ok := allowed[menuID]; ok {
+					filtered = append(filtered, menuID)
+				}
+			}
+			payload.MenuIDs = filtered
+		}
 		if err := tx.Where("role_id = ?", payload.ID).Delete(&model.RoleMenu{}).Error; err != nil {
 			return err
 		}
@@ -839,6 +896,34 @@ func (s *Service) AssignRoleMenus(payload RoleMenuPayload) error {
 		}
 		return tx.Create(&items).Error
 	})
+}
+
+func (s *Service) GlobalReadOnlyMenuIDs() ([]uint, error) {
+	var menus []model.Menu
+	if err := s.db.Where("menu_status = ? AND menu_type IN ?", 1, []int{1, 2}).Find(&menus).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]uint, 0, len(menus))
+	for _, menu := range menus {
+		if model.IsGlobalReadOnlyMenu(menu) {
+			ids = append(ids, menu.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Service) IsGlobalReadOnlyUser(adminID uint) (bool, error) {
+	var row struct {
+		IsReadOnly bool `gorm:"column:is_read_only"`
+	}
+	err := s.db.Table("sys_admin_role ar").
+		Select("r.is_read_only").
+		Joins("JOIN sys_role r ON r.id = ar.role_id").
+		Where("ar.admin_id = ?", adminID).
+		Order("ar.id asc").
+		Limit(1).
+		Scan(&row).Error
+	return row.IsReadOnly, err
 }
 
 func (s *Service) RoleMenuIDs(roleID uint) ([]uint, error) {

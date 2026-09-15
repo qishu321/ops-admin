@@ -3,8 +3,10 @@ import { ElMessage } from 'element-plus'
 import router from '../router'
 import {
   getLastActivityAt,
+  getSessionExpiresAt,
   getToken,
   getTokenExpiresAt,
+  isRememberLogin,
   logout as clearLocalSession,
   setLastActivityAt,
   setToken
@@ -20,12 +22,18 @@ const authHttp = axios.create({ baseURL: '', timeout: 15000, withCredentials: tr
 let refreshPromise = null
 let lastActivityWrite = 0
 let sessionExpiryMessageShown = false
+let sessionExpiryTimer = null
 
 function recordUserActivity() {
   const now = Date.now()
   if (now - lastActivityWrite < ACTIVITY_WRITE_INTERVAL) return
   const previousActivityAt = getLastActivityAt()
-  if (getToken() && previousActivityAt && now - previousActivityAt >= SESSION_IDLE_TIMEOUT) {
+  const sessionExpiresAt = getSessionExpiresAt()
+  if (sessionExpiresAt && now >= sessionExpiresAt) {
+    expireLocalSession()
+    return
+  }
+  if (!isRememberLogin() && getToken() && previousActivityAt && now - previousActivityAt >= SESSION_IDLE_TIMEOUT) {
     expireLocalSession('会话因连续 6 小时未操作而结束，请重新登录')
     return
   }
@@ -43,6 +51,7 @@ if (typeof window !== 'undefined') {
 }
 
 function sessionIsIdle() {
+  if (isRememberLogin()) return false
   const lastActivityAt = getLastActivityAt()
   return Boolean(lastActivityAt && Date.now() - lastActivityAt >= SESSION_IDLE_TIMEOUT)
 }
@@ -55,6 +64,19 @@ function expireLocalSession(message = '登录已过期，请重新登录') {
     ElMessage.warning(message)
     window.setTimeout(() => { sessionExpiryMessageShown = false }, 2000)
   }
+}
+
+function scheduleFixedSessionExpiry() {
+  if (sessionExpiryTimer) window.clearTimeout(sessionExpiryTimer)
+  sessionExpiryTimer = null
+  const expiresAt = getSessionExpiresAt()
+  if (!expiresAt) return
+  const remaining = expiresAt - Date.now()
+  if (remaining <= 0) {
+    expireLocalSession()
+    return
+  }
+  sessionExpiryTimer = window.setTimeout(() => expireLocalSession(), remaining)
 }
 
 async function renewAccessToken(force = false) {
@@ -73,7 +95,7 @@ async function renewAccessToken(force = false) {
       if (payload?.code !== 200 || !payload.data?.token) {
         throw new Error(payload?.message || 'token refresh failed')
       }
-      setToken(payload.data.token, payload.data.accessTokenExpiresAt)
+      setToken(payload.data.token, payload.data.accessTokenExpiresAt, payload.data.sessionExpiresAt)
       return payload.data.token
     }).finally(() => {
       refreshPromise = null
@@ -124,8 +146,14 @@ http.interceptors.response.use(
 )
 
 if (typeof window !== 'undefined') {
+  window.addEventListener('ops-admin-session-changed', scheduleFixedSessionExpiry)
+  window.setTimeout(scheduleFixedSessionExpiry, 0)
   window.setInterval(() => {
-    if (getToken()) renewAccessToken().catch(() => expireLocalSession())
+    if (getSessionExpiresAt() && Date.now() >= getSessionExpiresAt()) {
+      expireLocalSession()
+    } else if (getToken()) {
+      renewAccessToken().catch(() => expireLocalSession())
+    }
   }, 60 * 1000)
 }
 

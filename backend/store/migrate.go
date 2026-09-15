@@ -107,6 +107,17 @@ func AutoMigrate(db *gorm.DB) error {
 		return err
 	}
 
+	// Structured script variables supersede the legacy command-line defaults.
+	// Remove the retired columns after the models have been migrated so old
+	// installations converge to the same schema as fresh installations.
+	for _, target := range []any{&model.OpsScript{}, &model.OpsScriptVersion{}} {
+		if db.Migrator().HasColumn(target, "default_params") {
+			if err := db.Migrator().DropColumn(target, "default_params"); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Templates created before scope support are classified by their variables.
 	// Explicit generic templates remain "all".
 	legacyScopes := []struct {

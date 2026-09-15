@@ -3,16 +3,18 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getPublicSystemConfig, login } from '../api/system'
-import { setMenus, setPermissions, setToken, setUser } from '../utils/auth'
+import { setAuthPersistence, setMenus, setPermissions, setToken, setUser } from '../utils/auth'
 import { applySystemTheme, getSystemConfig, resolveSystemAsset, setSystemConfig } from '../utils/system-config'
 import { t } from '../utils/i18n'
 
 const router = useRouter()
 const loading = ref(false)
+const configLoaded = ref(false)
 const config = ref(getSystemConfig())
 const form = reactive({
   username: '',
-  password: ''
+  password: '',
+  rememberLogin: false
 })
 
 const logoText = computed(() => {
@@ -43,10 +45,13 @@ async function loadSystemConfig() {
   try {
     const data = await getPublicSystemConfig()
     config.value = data || {}
+    if (!config.value.rememberLoginEnabled) form.rememberLogin = false
     setSystemConfig(config.value)
     applySystemTheme(config.value)
   } catch {
     applySystemTheme(config.value)
+  } finally {
+    configLoaded.value = true
   }
 }
 
@@ -54,7 +59,8 @@ async function submit() {
   loading.value = true
   try {
     const data = await login(form)
-    setToken(data.token, data.accessTokenExpiresAt)
+    setAuthPersistence(data.rememberLogin === true)
+    setToken(data.token, data.accessTokenExpiresAt, data.sessionExpiresAt)
     setUser(data.sysAdmin)
     setMenus(data.leftMenuList || [])
     setPermissions(data.permissionList || [])
@@ -103,6 +109,10 @@ onMounted(loadSystemConfig)
             <el-input v-model="form.password" type="password" show-password :placeholder="t('password')" />
           </el-form-item>
           <el-button type="primary" class="submit-btn" :loading="loading" @click="submit">{{ t('loginSystem') }}</el-button>
+          <div v-if="configLoaded && config.rememberLoginEnabled" class="remember-login-row">
+            <el-checkbox v-model="form.rememberLogin">{{ t('rememberLoginSevenDays') }}</el-checkbox>
+            <span>{{ t('rememberLoginFixedHint') }}</span>
+          </div>
         </el-form>
       </section>
     </div>

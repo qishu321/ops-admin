@@ -23,6 +23,7 @@ func Seed(db *gorm.DB) error {
 		seedMenus,
 		seedAdmin,
 		seedSuperRolePermissions,
+		seedGlobalReadOnlyRole,
 	}
 
 	for _, step := range steps {
@@ -232,16 +233,17 @@ func seedSystemConfig(db *gorm.DB) error {
 	}
 
 	return db.Create(&model.SystemConfig{
-		SiteName:           "Ops Admin",
-		SiteSlogan:         "个人运维管理平台",
-		LogoType:           "text",
-		LogoValue:          "OA",
-		LoginTitle:         "Ops Admin",
-		LoginSubtitle:      "系统管理与运维控制台",
-		UseLoginBackground: false,
-		PrimaryColor:       "#5b6cf9",
-		SidebarTheme:       "dark",
-		CreatedAt:          time.Now(),
+		SiteName:             "Ops Admin",
+		SiteSlogan:           "个人运维管理平台",
+		LogoType:             "text",
+		LogoValue:            "OA",
+		LoginTitle:           "Ops Admin",
+		LoginSubtitle:        "系统管理与运维控制台",
+		UseLoginBackground:   false,
+		PrimaryColor:         "#5b6cf9",
+		SidebarTheme:         "dark",
+		RememberLoginEnabled: true,
+		CreatedAt:            time.Now(),
 	}).Error
 }
 
@@ -733,6 +735,54 @@ func seedSuperRolePermissions(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+// seedGlobalReadOnlyRole keeps an auditable, platform-owned role whose menu
+// links contain only safe view pages. Its server-side write guard is based on
+// Role.IsReadOnly, not merely the menu links.
+func seedGlobalReadOnlyRole(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var role model.Role
+		err := tx.Where("role_key = ?", "global-readonly").First(&role).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			role = model.Role{
+				RoleName:    "全局只读",
+				RoleKey:     "global-readonly",
+				Status:      1,
+				IsReadOnly:  true,
+				Description: "平台预置：可查看安全运行数据，不能变更、执行或读取敏感配置",
+				CreatedAt:   time.Now(),
+			}
+			if err := tx.Create(&role).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else if err := tx.Model(&role).Updates(map[string]any{
+			"role_name": "全局只读", "status": 1, "is_read_only": true,
+			"description": "平台预置：可查看安全运行数据，不能变更、执行或读取敏感配置",
+		}).Error; err != nil {
+			return err
+		}
+
+		var menus []model.Menu
+		if err := tx.Where("menu_status = ? AND menu_type IN ?", 1, []int{1, 2}).Find(&menus).Error; err != nil {
+			return err
+		}
+		items := make([]model.RoleMenu, 0, len(menus))
+		for _, menu := range menus {
+			if model.IsGlobalReadOnlyMenu(menu) {
+				items = append(items, model.RoleMenu{RoleID: role.ID, MenuID: menu.ID})
+			}
+		}
+		if err := tx.Where("role_id = ?", role.ID).Delete(&model.RoleMenu{}).Error; err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			return nil
+		}
+		return tx.Create(&items).Error
+	})
 }
 
 func ensureMenu(db *gorm.DB, menu model.Menu) (model.Menu, error) {

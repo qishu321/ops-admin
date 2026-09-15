@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { addRole, assignPermissions, deleteRole, queryMenuList, queryRoleList, queryRoleMenuIdList, roleInfo, roleUpdate, updateRoleStatus } from '../../api/system'
+import { addRole, assignPermissions, deleteRole, queryGlobalReadOnlyTemplate, queryMenuList, queryRoleList, queryRoleMenuIdList, roleInfo, roleUpdate, updateRoleStatus } from '../../api/system'
 import { buildTree } from '../../utils/tree'
 
 const loading = ref(false)
@@ -11,6 +11,7 @@ const isEdit = ref(false)
 const tableData = ref([])
 const menuTree = ref([])
 const roleIdForPermission = ref()
+const readonlyRoleForPermission = ref(false)
 const treeRef = ref()
 
 const form = reactive({
@@ -86,12 +87,18 @@ async function handleStatus(row) {
 
 async function openPermission(row) {
   roleIdForPermission.value = row.id
+  readonlyRoleForPermission.value = Boolean(row.isReadOnly)
   if (!menuTree.value.length) {
     await loadMenus()
   }
   permissionVisible.value = true
   const data = await queryRoleMenuIdList(row.id)
   treeRef.value?.setCheckedKeys((data || []).map((item) => item.id))
+}
+
+async function applyReadOnlyTemplate() {
+  const ids = await queryGlobalReadOnlyTemplate()
+  treeRef.value?.setCheckedKeys(ids || [])
 }
 
 async function savePermission() {
@@ -119,6 +126,12 @@ onMounted(loadData)
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="roleName" label="角色名称" min-width="160" />
       <el-table-column prop="roleKey" label="角色标识" min-width="160" />
+      <el-table-column label="类型" width="120">
+        <template #default="{ row }">
+          <el-tag v-if="row.isReadOnly" type="info">全局只读</el-tag>
+          <span v-else>自定义</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="description" label="描述" min-width="220" />
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
@@ -127,10 +140,10 @@ onMounted(loadData)
       </el-table-column>
       <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
-          <el-button v-permission="'system:role:edit'" link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="!row.isReadOnly" v-permission="'system:role:edit'" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-permission="'system:role:assign'" link type="success" @click="openPermission(row)">分配权限</el-button>
-          <el-button v-permission="'system:role:status'" link type="warning" @click="handleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
-          <el-button v-permission="'system:role:delete'" link type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="!row.isReadOnly" v-permission="'system:role:status'" link type="warning" @click="handleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
+          <el-button v-if="!row.isReadOnly" v-permission="'system:role:delete'" link type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -154,15 +167,20 @@ onMounted(loadData)
     </el-dialog>
 
     <el-dialog v-model="permissionVisible" title="分配菜单权限" width="520px">
+      <el-alert v-if="readonlyRoleForPermission" type="info" :closable="false" show-icon>
+        全局只读角色仅允许安全的查看菜单；操作权限和敏感入口会由服务端自动过滤。
+      </el-alert>
       <el-tree
         ref="treeRef"
         :data="menuTree"
         show-checkbox
         node-key="id"
+        check-strictly
         default-expand-all
         :props="{ label: 'menuName', children: 'children' }"
       />
       <template #footer>
+        <el-button v-if="readonlyRoleForPermission" @click="applyReadOnlyTemplate">恢复全局只读模板</el-button>
         <el-button @click="permissionVisible = false">取消</el-button>
         <el-button type="primary" @click="savePermission">保存</el-button>
       </template>

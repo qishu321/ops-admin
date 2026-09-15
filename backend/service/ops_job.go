@@ -734,6 +734,10 @@ func (s *Service) executeOpsJobScriptNode(stepName string, config map[string]any
 		return "failed", err.Error(), "", 0, err
 	}
 	params := strings.TrimSpace(stringConfig(config, "parameters"))
+	_, variables, err := resolveScheduleScriptVariables(script, nil, model.OpsScriptVariableValues(stringConfigMap(config["variables"])))
+	if err != nil {
+		return "failed", err.Error(), "", 0, err
+	}
 	task := model.OpsExecTask{
 		TaskType:       "script",
 		Title:          stepName,
@@ -752,11 +756,7 @@ func (s *Service) executeOpsJobScriptNode(stepName string, config map[string]any
 		TargetSnapshot: opsTargetSnapshot(hosts),
 	}
 	result, err := s.runOpsTaskLegacy(task, hosts, func(host model.AssetHost) model.OpsExecTargetResult {
-		finalParams := params
-		if finalParams == "" {
-			finalParams = strings.TrimSpace(script.DefaultParams)
-		}
-		return s.execScriptOnHost(host, *script, finalParams, nil, task.TimeoutSeconds)
+		return s.execScriptOnHost(host, *script, params, variables, task.TimeoutSeconds)
 	})
 	if err != nil {
 		return "failed", err.Error(), "", 0, err

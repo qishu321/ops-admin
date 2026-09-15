@@ -204,7 +204,7 @@ onMounted(loadOptions)
               </el-select>
             </el-form-item>
             <el-form-item label="执行参数">
-              <el-input v-model="scriptForm.parameters" placeholder="留空则使用脚本默认参数" />
+              <el-input v-model="scriptForm.parameters" placeholder="例如：--force（作为命令行参数传入）" />
             </el-form-item>
             <el-form-item label="目标主机">
               <el-select v-model="scriptForm.hostIds" multiple filterable collapse-tags style="width: 100%">

@@ -42,6 +42,7 @@ export const roleUpdate = (data) => http.put('/api/v1/role/update', data)
 export const deleteRole = (id) => http.delete('/api/v1/role/delete', { data: { id } })
 export const updateRoleStatus = (id, status) => http.put('/api/v1/role/updateStatus', { id, status })
 export const queryRoleMenuIdList = (id) => http.get('/api/v1/role/vo/idList', { params: { id } })
+export const queryGlobalReadOnlyTemplate = () => http.get('/api/v1/role/readonlyTemplate')
 export const assignPermissions = (id, menuIds) => http.put('/api/v1/role/assignPermissions', { id, menuIds })
 
 export const queryMenuList = () => http.get('/api/v1/menu/list')

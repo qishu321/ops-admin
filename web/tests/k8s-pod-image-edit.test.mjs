@@ -25,12 +25,13 @@ test('资源更新后的集群刷新绕过短期概览缓存', () => {
   assert.match(read('src/views/assets/K8s.vue'), /loadClusterData\(cluster\.value\.id, true\)/)
 })
 
-test('Pod 监控将当前筛选的 Namespace 和 Pod 直接写入 PromQL', () => {
+test('Pod 监控将当前筛选的 Namespace 和 Pod 直接写入 Grafana 一致的瞬时 CPU PromQL', () => {
   const page = read('src/views/assets/K8s.vue')
   assert.match(page, /function monitorPodMetricSelector\(\)/)
   assert.match(page, /namespace=~"\^\(\$\{namespaces\.map\(escapePrometheusRegex\)/)
   assert.match(page, /pod=~"\^\(\$\{podNames\.map\(escapePrometheusRegex\)/)
-  assert.match(page, /max by\(namespace, pod, container\)/)
+  assert.match(page, /sum by\(namespace, pod\) \(irate\(container_cpu_usage_seconds_total/)
+  assert.doesNotMatch(page, /max by\(namespace, pod, container\) \(rate\(container_cpu_usage_seconds_total/)
   assert.match(page, /max by\(namespace, pod, interface\)/)
   assert.match(page, /const podScopeKey = monitorView\.value === 'pod'/)
   assert.match(page, /monitorPodNamespace\.value, monitorPodNode\.value, monitorPodWorkload\.value, monitorPodName\.value/)

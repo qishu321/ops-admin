@@ -2966,7 +2966,7 @@ function translateIstioDetailLabel(label) {
 const monitorChartDefinitions = {
   cluster: [
     { title: 'CPU 使用率（%）', query: '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', unit: '%' },
-    { title: 'CPU 使用量（核）', query: 'sum(rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))', unit: '核', seriesLabel: '集群 CPU' },
+    { title: 'CPU 使用量（核）', query: 'sum(irate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m]))', unit: '核', seriesLabel: '集群 CPU' },
     { title: '内存使用率（%）', query: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100', unit: '%' },
     { title: '内存使用量（GiB）', query: 'sum(container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024 / 1024', unit: 'GiB', seriesLabel: '集群内存' },
     { title: '磁盘使用率（%）', query: '100 - (sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / sum by(instance) (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) * 100)', unit: '%' },
@@ -2987,7 +2987,7 @@ const monitorChartDefinitions = {
     { key: 'uptime', title: '在线时间', query: 'time() - node_boot_time_seconds', unit: '秒', summaryOnly: true }
   ],
   pod: [
-    { title: 'Pod CPU 使用量 Top 10（核）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, container) (rate(container_cpu_usage_seconds_total{${selector},container!="",container!="POD"}[5m]))))`, unit: '核' },
+    { title: 'Pod CPU 使用量 Top 10（核）', query: (selector) => `topk(10, sum by(namespace, pod) (irate(container_cpu_usage_seconds_total{${selector},container!="",container!="POD"}[5m])))`, unit: '核' },
     { title: 'Pod 内存使用量 Top 10（MiB）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, container) (container_memory_working_set_bytes{${selector},container!="",container!="POD"})) / 1024 / 1024)`, unit: 'MiB' },
     { title: '各命名空间运行中 Pod', query: (selector) => `sum by(namespace) (max by(namespace, pod) (kube_pod_status_phase{${selector},phase="Running"}))`, unit: '个' },
     { title: 'Pod 最近 1 小时新增重启 Top 10', query: (selector) => `topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{${selector}}[1h])))`, unit: '次' },

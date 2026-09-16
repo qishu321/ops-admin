@@ -1105,7 +1105,10 @@ func (s *Service) GetK8sPodMetrics(clusterID uint, namespace string, podName str
 	}
 	selector := fmt.Sprintf(`namespace=%q,pod=%q,container!="",container!="POD"`, namespace, podName)
 	queries := map[string]string{
-		"cpu":    fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
+		// CPU is an instantaneous cores value in the Pod detail. Use irate so
+		// its sampling semantics match the Grafana CPU-cores dashboard instead
+		// of a five-minute average that hides short CPU bursts.
+		"cpu":    fmt.Sprintf("sum(irate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
 		"memory": fmt.Sprintf("sum(container_memory_working_set_bytes{%s})", selector),
 	}
 	metrics := response["metrics"].(map[string]any)
@@ -1183,7 +1186,7 @@ func (s *Service) getK8sPodMetricComparison(clusterID uint, namespace string, po
 	}
 	selector := fmt.Sprintf(`namespace=%q,pod=~%q,container!="",container!="POD"`, namespace, "^("+strings.Join(quotedNames, "|")+")$")
 	queries := map[string]string{
-		"cpu":    fmt.Sprintf("sum by (pod) (rate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
+		"cpu":    fmt.Sprintf("sum by (pod) (irate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
 		"memory": fmt.Sprintf("sum by (pod) (container_memory_rss{%s})", selector),
 		"wss": fmt.Sprintf(
 			"100 * (sum by (pod) (container_memory_working_set_bytes{%s}) / on (pod) sum by (pod) (kube_pod_container_resource_limits{namespace=%q,pod=~%q,resource=\"memory\"}))",

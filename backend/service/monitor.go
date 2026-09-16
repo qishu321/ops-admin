@@ -5731,7 +5731,9 @@ func (s *Service) queryPodResourceDetails(ds model.MonitorDatasource, namespace 
 	if err != nil {
 		return nil, nil, err
 	}
-	cpuMetrics, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{%s}[5m]))`, memorySelector))
+	// Keep the resource table aligned with the Grafana CPU-core panel: CPU is
+	// shown as the latest per-second core consumption, not a five-minute mean.
+	cpuMetrics, err := s.podResourceMetricMap(ds, fmt.Sprintf(`sum by(namespace, pod) (irate(container_cpu_usage_seconds_total{%s}[5m]))`, memorySelector))
 	if err != nil {
 		return nil, nil, err
 	}

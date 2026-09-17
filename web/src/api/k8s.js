@@ -77,6 +77,14 @@ export const scaleK8sWorkload = (data) => http.post('/api/v1/k8s/workload/scale'
 
 export const restartK8sWorkload = (data) => http.post('/api/v1/k8s/workload/restart', data)
 
+export const queryK8sScalingPolicies = (policyType = '') => http.get('/api/v1/k8s/scaling-policy/list', { params: { policyType: policyType || undefined } })
+export const createK8sScalingPolicy = (data) => http.post('/api/v1/k8s/scaling-policy/create', data)
+export const updateK8sScalingPolicy = (data) => http.put('/api/v1/k8s/scaling-policy/update', data)
+export const updateK8sScalingPolicyStatus = (data) => http.put('/api/v1/k8s/scaling-policy/status', data)
+export const batchUpdateK8sScalingPolicyStatus = (data) => http.put('/api/v1/k8s/scaling-policy/status/batch', data)
+export const deleteK8sScalingPolicy = (id) => http.delete('/api/v1/k8s/scaling-policy/delete', { data: { id } })
+export const batchDeleteK8sScalingPolicies = (ids) => http.delete('/api/v1/k8s/scaling-policy/delete/batch', { data: { ids } })
+
 export const updateK8sWorkloadImages = (data) => http.post('/api/v1/k8s/workload/images', data)
 
 export const updateK8sWorkloadResources = (data) => http.put('/api/v1/k8s/workload/resources', data)

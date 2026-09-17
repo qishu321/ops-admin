@@ -28,6 +28,7 @@ import Gateway from '../views/assets/Gateway.vue'
 import TerminalLogin from '../views/assets/Terminal.vue'
 import K8s from '../views/assets/K8s.vue'
 import K8sClusterManage from '../views/assets/K8sClusterManage.vue'
+import K8sScalingPolicies from '../views/assets/K8sScalingPolicies.vue'
 import K8sPodTerminal from '../views/assets/K8sPodTerminal.vue'
 import AssetApplication from '../views/assets/Application.vue'
 import AssetApplicationTopology from '../views/assets/ApplicationTopology.vue'
@@ -260,10 +261,11 @@ const routes = [
       { path: '/containers/k8s/namespaces', component: K8s, meta: { title: '命名空间', app: 'containers' } },
       { path: '/containers/k8s/workloads', component: K8s, meta: { title: '工作负载', app: 'containers' } },
       { path: '/containers/k8s/pods', component: K8s, meta: { title: 'Pod 管理', app: 'containers' } },
-      { path: '/containers/k8s/network', redirect: '/containers/k8s/services' },
-      { path: '/containers/k8s/services', component: K8s, meta: { title: '服务', app: 'containers' } },
-      { path: '/containers/k8s/ingresses', component: K8s, meta: { title: 'Ingress', app: 'containers' } },
-      { path: '/containers/k8s/advanced-network', component: K8s, meta: { title: '高级网络', app: 'containers' } },
+      { path: '/containers/k8s/network', component: K8s, meta: { title: '网络', app: 'containers' } },
+      { path: '/containers/k8s/scaling-policies', component: K8sScalingPolicies, meta: { title: '工作负载伸缩策略', app: 'containers' } },
+      { path: '/containers/k8s/services', redirect: '/containers/k8s/network?tab=services' },
+      { path: '/containers/k8s/ingresses', redirect: '/containers/k8s/network?tab=ingresses' },
+      { path: '/containers/k8s/advanced-network', redirect: '/containers/k8s/network' },
       { path: '/containers/k8s/config-storage', component: K8s, meta: { title: '配置与存储', app: 'containers' } },
       { path: '/containers/k8s/monitoring', component: K8s, meta: { title: '监控详情', app: 'containers' } },
       {

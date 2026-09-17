@@ -318,8 +318,21 @@
 .ingress-resource-tabs > .el-tabs__header { margin:0 0 14px; }
 .ingress-resource-tabs .el-tabs__nav-wrap::after { background:#e3e9f2; }
 .ingress-resource-tabs .el-tabs__item { height:44px; padding:0 20px; color:#65758c; font-size:15px; font-weight:600; }
-.ingress-resource-tabs .el-tabs__item.is-active { color:#3c67ed; }
-.ingress-resource-tabs .el-tabs__active-bar { height:3px; background:#4f75ff; }
+  .ingress-resource-tabs .el-tabs__item.is-active { color:#3c67ed; }
+  .ingress-resource-tabs .el-tabs__active-bar { height:3px; background:#4f75ff; }
+  .network-resource-workspace { position:relative; padding-top:28px; }
+  .network-resource-workspace::before { content:'NETWORK PLANE'; position:absolute; top:0; left:2px; color:#18365f; font-size:12px; font-weight:700; letter-spacing:.08em; }
+  .network-resource-tabs { overflow:hidden; border:1px solid #dbe6f4; border-radius:12px; background:#fff; box-shadow:0 5px 16px rgba(29,63,112,.045); }
+  .network-resource-tabs > .el-tabs__header { margin:0; padding:0 16px; border-bottom:1px solid #e7eef8; background:linear-gradient(90deg,#f7fbff,#fff); }
+  .network-resource-tabs .el-tabs__nav-wrap::after { background:transparent; }
+  .network-resource-tabs .el-tabs__item { height:48px; padding:0 18px; color:#65758c; font-size:14px; font-weight:650; }
+  .network-resource-tabs .el-tabs__item.is-active { color:#255ed8; }
+  .network-resource-tabs .el-tabs__active-bar { height:3px; background:linear-gradient(90deg,#0ea5c9,#4f75ff); }
+  .network-resource-tabs .el-tab-pane { padding:14px; }
+  .network-resource-workspace .service-resource-table,
+  .network-resource-workspace .ingress-resource-table { overflow:hidden; border:1px solid #dbe6f4; border-radius:9px; background:#fff; }
+  .network-resource-workspace .service-resource-table { border-top:3px solid #0ea5c9; }
+  .network-resource-workspace .ingress-resource-table { border-top:3px solid #d97706; }
 .workload-create-dialog .el-dialog__header { height:55px; box-sizing:border-box; display:flex; align-items:center; margin:0; padding:0 28px; border-bottom:1px solid #e7ebf2; }
 .workload-create-dialog .el-dialog__body { height:calc(100vh - 121px); overflow:auto; padding:0; background:#f8fafc; }
 .workload-create-dialog .el-dialog__footer { margin:0; padding:0; }

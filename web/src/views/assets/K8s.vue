@@ -56,9 +56,7 @@ const sectionTabs = [
   { key: 'namespaces', labelKey: 'k8sNamespaces', path: '/containers/k8s/namespaces', icon: Grid },
   { key: 'workloads', labelKey: 'k8sWorkloads', path: '/containers/k8s/workloads', icon: SetUp },
   { key: 'pods', labelKey: 'k8sPods', path: '/containers/k8s/pods', icon: Promotion },
-  { key: 'services', labelKey: 'k8sServices', path: '/containers/k8s/services', icon: Connection },
-  { key: 'ingresses', labelKey: 'k8sIngresses', path: '/containers/k8s/ingresses', icon: Connection },
-  { key: 'advanced-network', labelKey: 'k8sAdvancedNetwork', path: '/containers/k8s/advanced-network', icon: Connection },
+  { key: 'network', labelKey: 'k8sNetwork', path: '/containers/k8s/network', icon: Connection },
   { key: 'config-storage', labelKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: Grid },
   { key: 'monitoring', labelKey: 'k8sMonitoringDetails', path: '/containers/k8s/monitoring', icon: Monitor }
 ]
@@ -75,7 +73,8 @@ const workloads = ref([])
 const services = ref([])
 const ingresses = ref([])
 const ingressClasses = ref([])
-const ingressTab = ref('ingresses')
+const networkTabs = ['services', 'ingresses', 'ingressclasses']
+const networkTab = ref(networkTabs.includes(String(route.query.tab)) ? String(route.query.tab) : 'services')
 const gatewayApiGateways = ref([])
 const httpRoutes = ref([])
 const configMaps = ref([])
@@ -501,7 +500,7 @@ const kuboardMenuGroups = computed(() => [
   {
     key: 'network',
     label: t('k8sMenuNetwork'),
-    items: sectionTabs.filter((item) => ['services', 'ingresses', 'advanced-network'].includes(item.key))
+    items: sectionTabs.filter((item) => item.key === 'network')
   },
   {
     key: 'config',
@@ -525,9 +524,7 @@ const currentSection = computed(() => {
     namespaces: 'k8sSectionNamespacesDesc',
     workloads: 'k8sSectionWorkloadsDesc',
     pods: 'k8sSectionPodsDesc',
-    services: 'k8sSectionServicesDesc',
-    ingresses: 'k8sSectionIngressDesc',
-    'advanced-network': 'k8sSectionAdvancedNetworkDesc',
+    network: 'k8sSectionNetworkDesc',
     'config-storage': 'k8sSectionConfigDesc'
   }
   return {
@@ -611,8 +608,8 @@ function hasItems(list) {
 }
 
 function shouldShowNamespaceFilter(tab) {
-  if (tab === 'ingresses' && ingressTab.value === 'ingressclasses') return false
-  return ['pods', 'workloads', 'services', 'ingresses', 'advanced-network', 'config-storage'].includes(tab)
+  if (tab === 'network' && networkTab.value === 'ingressclasses') return false
+  return ['pods', 'workloads', 'network', 'config-storage'].includes(tab)
 }
 
 function filterList(list) {
@@ -3356,7 +3353,7 @@ const page = reactive({
   services,
   ingresses,
   ingressClasses,
-  ingressTab,
+  networkTab,
   gatewayApiGateways,
   httpRoutes,
   configMaps,
@@ -3685,6 +3682,15 @@ watch(() => route.path, () => {
     workloadCreateVisible.value = false
   }
 })
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (networkTabs.includes(String(tab))) {
+      networkTab.value = String(tab)
+    }
+  }
+)
 </script>
 
 <template>

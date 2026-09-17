@@ -227,8 +227,10 @@ defineProps({
 
   <K8sWorkloadBoard v-if="page.hasCluster && page.currentTab === 'workloads'" :page="page" />
 
-  <section v-if="page.hasCluster && page.currentTab === 'services'" class="section-body service-workspace">
-    <el-table v-if="page.hasItems(page.filteredServices)" :data="page.filteredServices" class="data-table service-resource-table">
+  <section v-if="page.hasCluster && page.currentTab === 'network'" class="section-body network-resource-workspace">
+    <el-tabs v-model="page.networkTab" class="network-resource-tabs">
+      <el-tab-pane label="服务 SVC" name="services">
+        <el-table v-if="page.hasItems(page.filteredServices)" :data="page.filteredServices" class="data-table service-resource-table">
       <el-table-column :label="page.t('k8sName')" min-width="220">
         <template #default="{ row }">
           <div class="service-name-cell">
@@ -271,14 +273,11 @@ defineProps({
           <el-button link @click="page.openServiceYAML(row)">{{ page.t('k8sYaml') }}</el-button>
         </template>
       </el-table-column>
-    </el-table>
-    <el-empty v-else :description="page.t('k8sNoRealtimeServiceData')" />
-  </section>
-
-  <section v-if="page.hasCluster && page.currentTab === 'ingresses'" class="section-body ingress-workspace">
-    <el-tabs v-model="page.ingressTab" class="ingress-resource-tabs">
-      <el-tab-pane label="Ingress" name="ingresses">
-    <el-table v-if="page.hasItems(page.filteredIngresses)" :data="page.filteredIngresses" class="data-table ingress-resource-table">
+        </el-table>
+        <el-empty v-else :description="page.t('k8sNoRealtimeServiceData')" />
+      </el-tab-pane>
+      <el-tab-pane label="路由 Ingress" name="ingresses">
+        <el-table v-if="page.hasItems(page.filteredIngresses)" :data="page.filteredIngresses" class="data-table ingress-resource-table">
       <el-table-column prop="name" :label="page.t('k8sName')" min-width="160" />
       <el-table-column prop="namespace" :label="page.t('k8sNamespace')" width="120" />
       <el-table-column prop="className" :label="page.t('k8sIngressClass')" min-width="130" />
@@ -294,10 +293,10 @@ defineProps({
           <el-button link type="primary" @click="page.openIngressYAML(row)">{{ page.t('k8sYaml') }}</el-button>
         </template>
       </el-table-column>
-    </el-table>
-    <el-empty v-else :description="page.t('k8sNoRealtimeIngressData')" />
+        </el-table>
+        <el-empty v-else :description="page.t('k8sNoRealtimeIngressData')" />
       </el-tab-pane>
-      <el-tab-pane label="IngressClass" name="ingressclasses">
+      <el-tab-pane label="Ingress Class" name="ingressclasses">
         <el-table v-if="page.hasItems(page.filteredIngressClasses)" :data="page.filteredIngressClasses" class="data-table ingress-resource-table">
           <el-table-column prop="name" :label="page.t('k8sName')" min-width="220" />
           <el-table-column prop="controller" label="Controller" min-width="260" />

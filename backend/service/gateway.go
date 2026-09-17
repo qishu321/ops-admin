@@ -288,7 +288,7 @@ func (s *Service) newGatewaySSHClient(gateway model.AssetGateway) (*ssh.Client, 
 }
 
 func (s *Service) dialThroughGateway(ctx context.Context, gatewayID uint, network, address string) (net.Conn, func(), error) {
-	conn, err := s.dialGatewayTarget(gatewayID, network, address)
+	conn, err := s.dialGatewayTargetContext(ctx, gatewayID, network, address)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -331,20 +331,27 @@ func (s *Service) invalidateGatewaySSHClient(gatewayID uint, expected *ssh.Clien
 // dialGatewayTarget opens a multiplexed channel through the cached SSH client.
 // A stale SSH transport is discarded and retried once with a new connection.
 func (s *Service) dialGatewayTarget(gatewayID uint, network, address string) (net.Conn, error) {
+	return s.dialGatewayTargetContext(context.Background(), gatewayID, network, address)
+}
+
+func (s *Service) dialGatewayTargetContext(ctx context.Context, gatewayID uint, network, address string) (net.Conn, error) {
 	client, err := s.sharedGatewaySSHClient(gatewayID)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := client.Dial(network, address)
+	conn, err := client.DialContext(ctx, network, address)
 	if err == nil {
 		return conn, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	s.invalidateGatewaySSHClient(gatewayID, client)
 	client, reconnectErr := s.sharedGatewaySSHClient(gatewayID)
 	if reconnectErr != nil {
 		return nil, reconnectErr
 	}
-	return client.Dial(network, address)
+	return client.DialContext(ctx, network, address)
 }
 
 func (s *Service) startGatewayTunnel(gatewayID uint, targetAddress string) (string, func(), error) {
@@ -361,7 +368,9 @@ func (s *Service) startGatewayTunnel(gatewayID uint, targetAddress string) (stri
 				return
 			}
 			go func() {
-				remoteConn, err := s.dialGatewayTarget(gatewayID, "tcp", targetAddress)
+				dialCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				remoteConn, err := s.dialGatewayTargetContext(dialCtx, gatewayID, "tcp", targetAddress)
+				cancel()
 				if err != nil {
 					_ = localConn.Close()
 					return

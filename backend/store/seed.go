@@ -486,9 +486,8 @@ func seedApplicationMenus(db *gorm.DB) error {
 				{"命名空间", "/containers/k8s/namespaces", "assets:k8s:namespace", "Grid"},
 				{"工作负载", "/containers/k8s/workloads", "assets:k8s:workload", "SetUp"},
 				{"Pod 管理", "/containers/k8s/pods", "assets:k8s:pod", "Box"},
-				{"服务", "/containers/k8s/services", "assets:k8s:service", "Share"},
-				{"Ingress", "/containers/k8s/ingresses", "assets:k8s:ingress", "Connection"},
-				{"高级网络", "/containers/k8s/advanced-network", "assets:k8s:advancednetwork", "Connection"},
+				{"网络", "/containers/k8s/network", "assets:k8s:advancednetwork", "Connection"},
+				{"工作负载伸缩", "/containers/k8s/scaling-policies", "assets:k8s:scalingpolicy", "TrendCharts"},
 				{"配置与存储", "/containers/k8s/config-storage", "assets:k8s:configstorage", "Files"},
 			},
 		},
@@ -592,6 +591,11 @@ func seedApplicationMenus(db *gorm.DB) error {
 			menuByValue[child.value] = menu
 		}
 	}
+	if networkMenu, found := menuByValue["assets:k8s:advancednetwork"]; found {
+		if err := migrateK8sNetworkMenu(db, networkMenu.ID); err != nil {
+			return err
+		}
+	}
 
 	buttons := []buttonSeed{
 		// Asset management
@@ -658,6 +662,45 @@ func seedApplicationMenus(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+// migrateK8sNetworkMenu merges the former Service and Ingress navigation
+// permissions into the consolidated Network entry. Keeping the existing
+// advanced-network value preserves role assignments for older deployments.
+func migrateK8sNetworkMenu(db *gorm.DB, networkMenuID uint) error {
+	var retiredMenus []model.Menu
+	if err := db.Where("value IN ?", []string{"assets:k8s:service", "assets:k8s:ingress"}).Find(&retiredMenus).Error; err != nil {
+		return err
+	}
+	if len(retiredMenus) == 0 {
+		return nil
+	}
+
+	retiredIDs := make([]uint, 0, len(retiredMenus))
+	for _, menu := range retiredMenus {
+		retiredIDs = append(retiredIDs, menu.ID)
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var grants []model.RoleMenu
+		if err := tx.Where("menu_id IN ?", retiredIDs).Find(&grants).Error; err != nil {
+			return err
+		}
+		for _, grant := range grants {
+			var count int64
+			if err := tx.Model(&model.RoleMenu{}).Where("role_id = ? AND menu_id = ?", grant.RoleID, networkMenuID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				if err := tx.Create(&model.RoleMenu{RoleID: grant.RoleID, MenuID: networkMenuID}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if err := tx.Where("menu_id IN ?", retiredIDs).Delete(&model.RoleMenu{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", retiredIDs).Delete(&model.Menu{}).Error
+	})
 }
 
 func seedAdmin(db *gorm.DB) error {

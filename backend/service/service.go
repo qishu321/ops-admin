@@ -28,6 +28,8 @@ type Service struct {
 	db                   *gorm.DB
 	opsScheduler         *OpsScheduler
 	opsSchedulerOnce     sync.Once
+	k8sScalingScheduler  *K8sScalingScheduler
+	k8sScalingOnce       sync.Once
 	monitorScheduler     *MonitorScheduler
 	monitorSchedulerOnce sync.Once
 	dbBackupScheduler    *DatabaseBackupScheduler
@@ -72,6 +74,7 @@ func New(db *gorm.DB) *Service {
 	svc.dnsManager = dnsserver.NewManager(db)
 	svc.ensureDefaultEnvironments()
 	svc.initOpsScheduler()
+	svc.initK8sScalingScheduler()
 	svc.initMonitorScheduler()
 	svc.initDatabaseBackupScheduler()
 	svc.initFinOpsScheduler()

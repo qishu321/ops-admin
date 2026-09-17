@@ -487,6 +487,7 @@ func seedApplicationMenus(db *gorm.DB) error {
 				{"工作负载", "/containers/k8s/workloads", "assets:k8s:workload", "SetUp"},
 				{"Pod 管理", "/containers/k8s/pods", "assets:k8s:pod", "Box"},
 				{"网络", "/containers/k8s/network", "assets:k8s:advancednetwork", "Connection"},
+				{"工作负载伸缩", "/containers/k8s/scaling-policies", "assets:k8s:scalingpolicy", "TrendCharts"},
 				{"配置与存储", "/containers/k8s/config-storage", "assets:k8s:configstorage", "Files"},
 			},
 		},

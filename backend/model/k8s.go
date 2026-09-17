@@ -48,6 +48,37 @@ type K8sWorkloadActionPayload struct {
 	Replicas     int    `json:"replicas"`
 }
 
+type K8sScalingTarget struct {
+	WorkloadType string `json:"workloadType"`
+	WorkloadName string `json:"workloadName"`
+}
+
+type K8sScalingPolicy struct {
+	ID                uint       `json:"id" gorm:"primaryKey"`
+	Name              string     `json:"name" gorm:"size:128;not null;index"`
+	PolicyType        string     `json:"policyType" gorm:"size:32;not null;index"`
+	ClusterID         uint       `json:"clusterId" gorm:"index;not null"`
+	Namespace         string     `json:"namespace" gorm:"size:128;not null;index"`
+	TargetsJSON       string     `json:"targetsJson" gorm:"type:text;not null"`
+	Status            int        `json:"status" gorm:"default:2;index"`
+	MinReplicas       int        `json:"minReplicas"`
+	MaxReplicas       int        `json:"maxReplicas"`
+	CPUEnabled        bool       `json:"cpuEnabled"`
+	CPUUtilization    int        `json:"cpuUtilization"`
+	MemoryEnabled     bool       `json:"memoryEnabled"`
+	MemoryUtilization int        `json:"memoryUtilization"`
+	CronExpr          string     `json:"cronExpr" gorm:"size:128"`
+	ScheduledReplicas int        `json:"scheduledReplicas"`
+	LastStatus        string     `json:"lastStatus" gorm:"size:32"`
+	LastSummary       string     `json:"lastSummary" gorm:"type:text"`
+	LastRunAt         *time.Time `json:"lastRunAt"`
+	NextRunAt         *time.Time `json:"nextRunAt"`
+	CreatedAt         time.Time  `json:"createTime"`
+	UpdatedAt         time.Time  `json:"updateTime"`
+}
+
+func (K8sScalingPolicy) TableName() string { return "k8s_scaling_policy" }
+
 type K8sWorkloadImageUpdateItem struct {
 	Namespace    string `json:"namespace"`
 	WorkloadType string `json:"workloadType"`

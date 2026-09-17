@@ -144,6 +144,7 @@ export const appDefinitions = [
           { title: '工作负载', titleKey: 'k8sWorkloads', path: '/containers/k8s/workloads', icon: 'SetUp', children: [] },
           { title: 'Pod 管理', titleKey: 'k8sPods', path: '/containers/k8s/pods', icon: 'Box', children: [] },
           { title: '网络', titleKey: 'k8sNetwork', path: '/containers/k8s/network', icon: 'Connection', children: [] },
+          { title: '工作负载伸缩', titleKey: 'k8sWorkloadScaling', path: '/containers/k8s/scaling-policies', icon: 'TrendCharts', children: [] },
           { title: '配置与存储', titleKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: 'Files', children: [] },
           { title: '监控详情', titleKey: 'k8sMonitoringDetails', path: '/containers/k8s/monitoring', icon: 'Monitor', children: [] }
         ]

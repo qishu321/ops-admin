@@ -7,6 +7,7 @@ import (
 	"ops-admin/backend/auth"
 	"ops-admin/backend/httpx"
 	"ops-admin/backend/model"
+	"ops-admin/backend/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -430,6 +431,97 @@ func (ctl *Controller) ScaleK8sWorkload(c *gin.Context) {
 		return
 	}
 	httpx.Success(c, data)
+}
+
+func (ctl *Controller) ListK8sScalingPolicies(c *gin.Context) {
+	data, err := ctl.service.ListK8sScalingPolicies(c.Query("policyType"))
+	if err != nil {
+		httpx.Failed(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
+func (ctl *Controller) CreateK8sScalingPolicy(c *gin.Context) {
+	var payload service.K8sScalingPolicyPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid scaling policy payload")
+		return
+	}
+	data, err := ctl.service.CreateK8sScalingPolicy(payload)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
+func (ctl *Controller) UpdateK8sScalingPolicy(c *gin.Context) {
+	var payload service.K8sScalingPolicyPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid scaling policy payload")
+		return
+	}
+	data, err := ctl.service.UpdateK8sScalingPolicy(payload)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
+func (ctl *Controller) UpdateK8sScalingPolicyStatus(c *gin.Context) {
+	var payload service.K8sScalingPolicyStatusPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid scaling policy status payload")
+		return
+	}
+	if err := ctl.service.UpdateK8sScalingPolicyStatus(payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, true)
+}
+
+func (ctl *Controller) BatchUpdateK8sScalingPolicyStatus(c *gin.Context) {
+	var payload service.K8sScalingPolicyBatchPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid scaling policy batch payload")
+		return
+	}
+	updated, err := ctl.service.BatchUpdateK8sScalingPolicyStatus(payload)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, map[string]any{"updated": updated})
+}
+
+func (ctl *Controller) DeleteK8sScalingPolicy(c *gin.Context) {
+	var payload service.IDPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid scaling policy delete payload")
+		return
+	}
+	if err := ctl.service.DeleteK8sScalingPolicy(payload.ID); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, true)
+}
+
+func (ctl *Controller) BatchDeleteK8sScalingPolicies(c *gin.Context) {
+	var payload service.K8sScalingPolicyBatchPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "invalid scaling policy batch payload")
+		return
+	}
+	deleted, err := ctl.service.BatchDeleteK8sScalingPolicies(payload.IDs)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, map[string]any{"deleted": deleted})
 }
 
 func (ctl *Controller) RestartK8sWorkload(c *gin.Context) {

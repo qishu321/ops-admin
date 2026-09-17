@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { queryAssetHostGroupList, queryAssetHostList } from '../../api/asset'
 import { executeOpsFileDispatch, queryOpsExecHistoryDetail } from '../../api/ops'
@@ -14,18 +14,21 @@ const resultVisible = ref(false)
 const resultLoading = ref(false)
 const resultTask = ref(null)
 const resultRows = ref([])
+const fileUploadRef = ref(null)
 let pollTimer = null
+const maxLocalUploadBytes = 500 * 1024 * 1024
 
 const form = reactive({
   title: '',
   sourceType: 'upload',
   sourceHostId: undefined,
   sourcePath: '',
-  targetPath: '',
+  targetDir: '',
+  targetFileName: '',
   hostIds: [],
   groupId: undefined,
   concurrency: 5,
-  timeoutSeconds: 10,
+  timeoutSeconds: 600,
   overwrite: false,
   file: null
 })
@@ -40,12 +43,38 @@ async function loadOptions() {
 }
 
 function handleFileChange(file) {
-  form.file = file?.raw || null
+  const raw = file?.raw || null
+  if (raw?.size > maxLocalUploadBytes) {
+    form.file = null
+    fileUploadRef.value?.clearFiles()
+    ElMessage.error('本地上传文件大小不能超过 500 MB')
+    return
+  }
+  form.file = raw
 }
 
+function handleFileExceed() {
+  ElMessage.warning('一次只能选择一个文件')
+}
+
+function handleFileRemove() {
+  form.file = null
+}
+
+const sourceFileName = computed(() => {
+  if (form.sourceType === 'upload') return form.file?.name || ''
+  return form.sourcePath.trim().split('/').filter(Boolean).pop() || ''
+})
+
+const finalTargetPreview = computed(() => {
+  if (!form.targetDir.trim()) return ''
+  const fileName = form.targetFileName.trim() || sourceFileName.value
+  return fileName ? `${form.targetDir.replace(/\/+$/, '')}/${fileName}` : form.targetDir
+})
+
 async function submit() {
-  if (!form.targetPath.trim()) {
-    ElMessage.warning('请输入目标路径')
+  if (!form.targetDir.trim()) {
+    ElMessage.warning('请输入目标目录')
     return
   }
   if (!form.hostIds.length && !form.groupId) {
@@ -60,7 +89,7 @@ async function submit() {
     ElMessage.warning('请选择源服务器并填写源文件路径')
     return
   }
-  const highRisk = /^\/(etc|boot|usr)\//.test(form.targetPath.trim())
+  const highRisk = /^\/(etc|boot|usr)\//.test(form.targetDir.trim())
   const selectedHosts = hostOptions.value.filter((host) => {
     if (form.groupId) {
       return Number(host.groupId) === Number(form.groupId) || (host.hostGroups || []).some((group) => Number(group.id) === Number(form.groupId))
@@ -71,7 +100,7 @@ async function submit() {
   const confirmationRequired = highRisk || includesProduction || form.overwrite
   if (confirmationRequired) {
     await confirmRiskOperation({
-      operation: `文件分发至 ${form.targetPath}`,
+      operation: `文件分发至 ${finalTargetPreview.value || form.targetDir}`,
       targetSummary: selectedHosts.length ? selectedHosts.map((host) => host.hostName || host.sshIp || host.id).slice(0, 4).join('、') : '所选主机组',
       targetCount: selectedHosts.length,
       production: includesProduction,
@@ -84,7 +113,8 @@ async function submit() {
   payload.append('sourceType', form.sourceType)
   payload.append('sourceHostId', String(form.sourceHostId || 0))
   payload.append('sourcePath', form.sourcePath)
-  payload.append('targetPath', form.targetPath)
+  payload.append('targetDir', form.targetDir)
+  payload.append('targetFileName', form.targetFileName)
   payload.append('hostIds', JSON.stringify(form.hostIds))
   payload.append('groupIds', JSON.stringify(form.groupId ? [form.groupId] : []))
   payload.append('concurrency', String(form.concurrency))
@@ -170,8 +200,11 @@ onBeforeUnmount(stopPolling)
         </el-radio-group>
       </el-form-item>
       <el-form-item v-if="form.sourceType === 'upload'" label="上传文件">
-        <el-upload :auto-upload="false" :limit="1" :on-change="handleFileChange">
+        <el-upload ref="fileUploadRef" :auto-upload="false" :limit="1" :on-change="handleFileChange" :on-exceed="handleFileExceed" :on-remove="handleFileRemove">
           <el-button>选择文件</el-button>
+          <template #tip>
+            <div class="upload-hint">本地上传文件最大 500 MB。</div>
+          </template>
         </el-upload>
       </el-form-item>
       <template v-else>
@@ -184,8 +217,12 @@ onBeforeUnmount(stopPolling)
           <el-input v-model="form.sourcePath" placeholder="例如：/data/release/app.tar.gz" />
         </el-form-item>
       </template>
-      <el-form-item label="目标路径" required>
-        <el-input v-model="form.targetPath" placeholder="例如：/opt/apps/app.tar.gz" />
+      <el-form-item label="目标目录" required>
+        <el-input v-model="form.targetDir" placeholder="例如：/opt/apps" />
+      </el-form-item>
+      <el-form-item label="目标文件名">
+        <el-input v-model="form.targetFileName" :placeholder="sourceFileName ? `默认沿用源文件名：${sourceFileName}` : '可选，默认沿用源文件名'" />
+        <div v-if="finalTargetPreview" class="target-preview">最终保存为：{{ finalTargetPreview }}</div>
       </el-form-item>
       <OpsTargetSelector
         :host-options="hostOptions"
@@ -223,5 +260,7 @@ onBeforeUnmount(stopPolling)
 .ops-page { display: flex; flex-direction: column; gap: 18px; }
 .page-title { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: #14213d; }
 .page-desc { margin: 0; color: #7282a0; }
-.inline-hint { margin-left: 12px; color: #7282a0; font-size: 13px; }
+.inline-hint, .upload-hint { margin-left: 12px; color: #7282a0; font-size: 13px; }
+.upload-hint { margin-left: 0; margin-top: 6px; }
+.target-preview { margin-top: 6px; color: #7282a0; font-size: 13px; }
 </style>

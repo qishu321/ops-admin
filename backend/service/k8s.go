@@ -827,6 +827,21 @@ func (s *Service) GetK8sClusterDetail(clusterID uint) (model.K8sClusterDetail, e
 	return result.(model.K8sClusterDetail), nil
 }
 
+// GetK8sClusterDetailFresh bypasses the short overview cache. Mutation flows
+// call it immediately after a PATCH so the UI cannot join an older in-flight
+// overview request and render the pre-update resource limits as if the update
+// did not take effect.
+func (s *Service) GetK8sClusterDetailFresh(clusterID uint) (model.K8sClusterDetail, error) {
+	detail, err := s.getK8sClusterDetailUncached(clusterID)
+	if err != nil {
+		return model.K8sClusterDetail{}, err
+	}
+	s.k8sOverviewMu.Lock()
+	s.k8sOverviewCache[clusterID] = k8sOverviewCacheEntry{detail: detail, expiresAt: time.Now().Add(k8sOverviewCacheTTL)}
+	s.k8sOverviewMu.Unlock()
+	return detail, nil
+}
+
 func (s *Service) cachedK8sClusterDetail(clusterID uint) (model.K8sClusterDetail, bool) {
 	s.k8sOverviewMu.Lock()
 	defer s.k8sOverviewMu.Unlock()
@@ -1090,7 +1105,10 @@ func (s *Service) GetK8sPodMetrics(clusterID uint, namespace string, podName str
 	}
 	selector := fmt.Sprintf(`namespace=%q,pod=%q,container!="",container!="POD"`, namespace, podName)
 	queries := map[string]string{
-		"cpu":    fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
+		// CPU is an instantaneous cores value in the Pod detail. Use irate so
+		// its sampling semantics match the Grafana CPU-cores dashboard instead
+		// of a five-minute average that hides short CPU bursts.
+		"cpu":    fmt.Sprintf("sum(irate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
 		"memory": fmt.Sprintf("sum(container_memory_working_set_bytes{%s})", selector),
 	}
 	metrics := response["metrics"].(map[string]any)
@@ -1168,7 +1186,7 @@ func (s *Service) getK8sPodMetricComparison(clusterID uint, namespace string, po
 	}
 	selector := fmt.Sprintf(`namespace=%q,pod=~%q,container!="",container!="POD"`, namespace, "^("+strings.Join(quotedNames, "|")+")$")
 	queries := map[string]string{
-		"cpu":    fmt.Sprintf("sum by (pod) (rate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
+		"cpu":    fmt.Sprintf("sum by (pod) (irate(container_cpu_usage_seconds_total{%s}[5m]))", selector),
 		"memory": fmt.Sprintf("sum by (pod) (container_memory_rss{%s})", selector),
 		"wss": fmt.Sprintf(
 			"100 * (sum by (pod) (container_memory_working_set_bytes{%s}) / on (pod) sum by (pod) (kube_pod_container_resource_limits{namespace=%q,pod=~%q,resource=\"memory\"}))",
@@ -1330,6 +1348,57 @@ func (s *Service) GetK8sPodEvents(clusterID uint, namespace string, podName stri
 	}
 
 	return fetchNamespacedEvents(client, runtime, namespace, fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName))
+}
+
+// UpdateK8sPodImages changes only the selected live Pod. It deliberately does
+// not alter any owning workload template, so a recreated Pod returns to the
+// workload image.
+func (s *Service) UpdateK8sPodImages(payload model.K8sPodImageUpdatePayload) (map[string]any, error) {
+	if payload.ClusterID == 0 || strings.TrimSpace(payload.Namespace) == "" || strings.TrimSpace(payload.PodName) == "" || len(payload.Containers) == 0 {
+		return nil, errors.New("invalid pod image payload")
+	}
+	_, runtime, client, err := s.k8sClientForCluster(payload.ClusterID)
+	if err != nil {
+		return nil, err
+	}
+	resourcePath := "/api/v1/namespaces/" + url.PathEscape(strings.TrimSpace(payload.Namespace)) + "/pods/" + url.PathEscape(strings.TrimSpace(payload.PodName))
+	var pod kubePod
+	if err := k8sGetJSON(client, runtime, resourcePath, &pod); err != nil {
+		return nil, errors.New(k8sClusterConnectError)
+	}
+	available := make(map[string]struct{}, len(pod.Spec.Containers))
+	for _, container := range pod.Spec.Containers {
+		available[container.Name] = struct{}{}
+	}
+	containers := make([]map[string]any, 0, len(payload.Containers))
+	seen := map[string]struct{}{}
+	for _, item := range payload.Containers {
+		name := strings.TrimSpace(item.Name)
+		image := strings.TrimSpace(item.Image)
+		if name == "" || image == "" {
+			return nil, errors.New("容器名称和镜像不能为空")
+		}
+		if _, exists := available[name]; !exists {
+			return nil, fmt.Errorf("Pod 中不存在容器 %s", name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("容器 %s 重复", name)
+		}
+		seen[name] = struct{}{}
+		containers = append(containers, map[string]any{"name": name, "image": image})
+	}
+	if err := k8sPatchJSON(client, runtime, resourcePath, map[string]any{
+		"spec": map[string]any{"containers": containers},
+	}, "application/strategic-merge-patch+json", nil); err != nil {
+		return nil, fmt.Errorf("更新 Pod 镜像失败: %w", err)
+	}
+	s.invalidateK8sClusterDetailCache(payload.ClusterID)
+	return map[string]any{
+		"namespace":  payload.Namespace,
+		"podName":    payload.PodName,
+		"containers": containers,
+		"temporary":  true,
+	}, nil
 }
 
 func (s *Service) GetK8sNamespaceDetail(clusterID uint, namespace string) (model.K8sNamespaceDetail, error) {
@@ -1706,41 +1775,75 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 	case "deployment":
 		var item kubeDeployment
 		path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildDeploymentDetail(client, runtime, item), nil
+		detail := buildDeploymentDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "statefulset":
 		var item kubeStatefulSet
 		path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/statefulsets/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildStatefulSetDetail(client, runtime, item), nil
+		detail := buildStatefulSetDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "daemonset":
 		var item kubeDaemonSet
 		path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/daemonsets/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildDaemonSetDetail(client, runtime, item), nil
+		detail := buildDaemonSetDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "job":
 		var item kubeJob
 		path := fmt.Sprintf("/apis/batch/v1/namespaces/%s/jobs/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildJobDetail(client, runtime, item), nil
+		detail := buildJobDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	case "cronjob":
 		var item kubeCronJob
 		path := fmt.Sprintf("/apis/batch/v1/namespaces/%s/cronjobs/%s", namespace, workloadName)
-		if err := k8sGetJSON(client, runtime, path, &item); err != nil {
+		resource, err := getK8sWorkloadResource(client, runtime, path, &item)
+		if err != nil {
 			return model.K8sWorkloadDetail{}, errors.New(k8sClusterConnectError)
 		}
-		return buildCronJobDetail(client, runtime, item), nil
+		detail := buildCronJobDetail(client, runtime, item)
+		detail.YAML = marshalK8sYAML(resource)
+		return detail, nil
 	default:
 		return model.K8sWorkloadDetail{}, errors.New("unsupported workload type")
 	}
+}
+
+// getK8sWorkloadResource keeps an unstructured copy for YAML editing. The
+// typed summaries intentionally model only fields used by the UI; rebuilding
+// YAML from them would turn JSON names such as valueFrom into valuefrom and
+// lose fields Kubernetes requires during a PUT update.
+func getK8sWorkloadResource(client *http.Client, runtime kubeClusterRuntime, path string, target any) (map[string]any, error) {
+	resource := map[string]any{}
+	if err := k8sGetJSON(client, runtime, path, &resource); err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(resource)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return nil, err
+	}
+	return resource, nil
 }
 
 func (s *Service) ScaleK8sWorkload(payload model.K8sWorkloadActionPayload) (map[string]any, error) {
@@ -1941,6 +2044,13 @@ func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesP
 		}
 	}
 	containers := make([]map[string]any, 0, len(payload.Containers))
+	resourcePatchOps := make([]map[string]any, 0, len(payload.Containers))
+	containerIndexes := make(map[string]int, len(existingContainers))
+	for index, container := range existingContainers {
+		if name, ok := container["name"].(string); ok && strings.TrimSpace(name) != "" {
+			containerIndexes[name] = index
+		}
+	}
 	for _, item := range payload.Containers {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
@@ -1991,10 +2101,33 @@ func (s *Service) UpdateK8sWorkloadResources(payload model.K8sWorkloadResourcesP
 		}
 		containerPatch["env"] = envPatch
 		containers = append(containers, containerPatch)
+
+		// Use a JSON Patch for the resources object as well as the strategic
+		// container patch below. Some API servers acknowledge the strategic
+		// patch but leave a nested resources map unchanged; replacing this exact
+		// path makes the requested CPU/memory values deterministic.
+		containerIndex, ok := containerIndexes[name]
+		if !ok {
+			return nil, fmt.Errorf("container %s index was not found in workload", name)
+		}
+		op := "add"
+		if _, exists := existing["resources"]; exists {
+			op = "replace"
+		}
+		resourcePatchOps = append(resourcePatchOps, map[string]any{
+			"op": op, "path": fmt.Sprintf("/spec/template/spec/containers/%d/resources", containerIndex), "value": resources,
+		})
 	}
 	patchBody := buildWorkloadContainerPatchBody(payload.WorkloadType, containers)
 	if err := k8sPatchJSON(client, runtime, path, patchBody, "application/strategic-merge-patch+json", nil); err != nil {
-		return nil, errors.New(k8sClusterConnectError)
+		return nil, friendlyK8sWorkloadUpdateError(err)
+	}
+	updatedResource := map[string]any{}
+	if err := k8sPatchJSON(client, runtime, path, resourcePatchOps, "application/json-patch+json", &updatedResource); err != nil {
+		return nil, friendlyK8sWorkloadUpdateError(err)
+	}
+	if err := verifyWorkloadContainerResources(updatedResource, payload.Containers); err != nil {
+		return nil, err
 	}
 	s.invalidateK8sClusterDetailCache(payload.ClusterID)
 	return map[string]any{
@@ -2910,6 +3043,13 @@ func fetchNamespacedEvents(client *http.Client, runtime kubeClusterRuntime, name
 			Count     int    `json:"count"`
 			FirstTime string `json:"firstTimestamp"`
 			LastTime  string `json:"lastTimestamp"`
+			EventTime string `json:"eventTime"`
+			Metadata  struct {
+				CreationTimestamp string `json:"creationTimestamp"`
+			} `json:"metadata"`
+			Series *struct {
+				LastObservedTime string `json:"lastObservedTime"`
+			} `json:"series"`
 		} `json:"items"`
 	}
 	if err := k8sGetJSONWithQuery(client, runtime, "/api/v1/namespaces/"+namespace+"/events", map[string]string{"fieldSelector": fieldSelector}, &payload); err != nil {
@@ -2918,13 +3058,18 @@ func fetchNamespacedEvents(client *http.Client, runtime kubeClusterRuntime, name
 
 	events := make([]model.K8sEventItem, 0, len(payload.Items))
 	for _, item := range payload.Items {
+		firstTime := firstNonEmptyEventTime(item.EventTime, item.FirstTime, item.Metadata.CreationTimestamp)
+		lastTime := firstNonEmptyEventTime(item.LastTime, item.EventTime, item.FirstTime, item.Metadata.CreationTimestamp)
+		if item.Series != nil {
+			lastTime = firstNonEmptyEventTime(item.Series.LastObservedTime, lastTime)
+		}
 		events = append(events, model.K8sEventItem{
 			Type:      fallbackText(item.Type),
 			Reason:    fallbackText(item.Reason),
 			Message:   fallbackText(item.Message),
 			Count:     item.Count,
-			FirstTime: formatTimestamp(item.FirstTime),
-			LastTime:  formatTimestamp(item.LastTime),
+			FirstTime: formatTimestamp(firstTime),
+			LastTime:  formatTimestamp(lastTime),
 		})
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].LastTime > events[j].LastTime })
@@ -3026,11 +3171,15 @@ func buildContainerItems(containers []kubeContainer) []model.K8sContainerItem {
 }
 
 func marshalK8sYAML(v any) string {
-	body, err := yaml.Marshal(v)
+	body, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
-	return string(body)
+	yamlBody, err := ksyaml.JSONToYAML(body)
+	if err != nil {
+		return ""
+	}
+	return string(yamlBody)
 }
 
 func buildDeploymentDetail(client *http.Client, runtime kubeClusterRuntime, item kubeDeployment) model.K8sWorkloadDetail {
@@ -3569,8 +3718,12 @@ func buildPodItemsWithRefs(pods []kubePod, refs map[string]podWorkloadRef) []mod
 	items := make([]model.K8sPodItem, 0, len(pods))
 	for _, pod := range pods {
 		restarts := 0
+		readyContainers := 0
 		for _, status := range pod.Status.ContainerStatuses {
 			restarts += status.RestartCount
+			if status.Ready {
+				readyContainers++
+			}
 		}
 
 		workload := refs[podWorkloadKey(pod.Metadata.Namespace, pod.Metadata.Name)]
@@ -3584,8 +3737,9 @@ func buildPodItemsWithRefs(pods []kubePod, refs map[string]podWorkloadRef) []mod
 		}
 		items = append(items, model.K8sPodItem{
 			Name: pod.Metadata.Name, Namespace: pod.Metadata.Namespace, WorkloadName: workload.Name, WorkloadType: workload.Type,
-			Status: fallbackText(pod.Status.Phase), Node: fallbackText(pod.Spec.NodeName), NodeIP: fallbackText(pod.Status.HostIP),
-			Restarts: restarts, Age: humanizeAge(pod.Metadata.CreationTimestamp), IP: fallbackText(pod.Status.PodIP),
+			Status: fallbackText(pod.Status.Phase), ReadyContainers: readyContainers, TotalContainers: len(pod.Spec.Containers),
+			Node: fallbackText(pod.Spec.NodeName), NodeIP: fallbackText(pod.Status.HostIP), Restarts: restarts,
+			Age: humanizeAge(pod.Metadata.CreationTimestamp), IP: fallbackText(pod.Status.PodIP),
 		})
 	}
 
@@ -3880,6 +4034,56 @@ func buildWorkloadContainerPatchBody(workloadType string, containers []map[strin
 		return map[string]any{"spec": map[string]any{"jobTemplate": map[string]any{"spec": template}}}
 	}
 	return map[string]any{"spec": template}
+}
+
+// verifyWorkloadContainerResources prevents the UI from reporting a successful
+// save when the API server accepted a patch but did not apply the CPU/memory
+// portion of the Pod template.
+func verifyWorkloadContainerResources(resource map[string]any, expected []model.K8sWorkloadContainerResources) error {
+	containers, err := extractWorkloadContainers(resource)
+	if err != nil {
+		return errors.New("工作负载更新后无法读取容器资源配置")
+	}
+	byName := make(map[string]map[string]any, len(containers))
+	for _, container := range containers {
+		if name, ok := container["name"].(string); ok {
+			byName[name] = container
+		}
+	}
+	for _, item := range expected {
+		container, ok := byName[strings.TrimSpace(item.Name)]
+		if !ok {
+			return fmt.Errorf("工作负载更新后未找到容器 %s", item.Name)
+		}
+		resources, _ := container["resources"].(map[string]any)
+		requests, _ := resources["requests"].(map[string]any)
+		limits, _ := resources["limits"].(map[string]any)
+		if err := verifyK8sResourceQuantity("CPU 请求", requests, "cpu", item.RequestCPU); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+		if err := verifyK8sResourceQuantity("CPU 限制", limits, "cpu", item.LimitCPU); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+		if err := verifyK8sResourceQuantity("内存请求", requests, "memory", item.RequestMemory); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+		if err := verifyK8sResourceQuantity("内存限制", limits, "memory", item.LimitMemory); err != nil {
+			return fmt.Errorf("容器 %s %w", item.Name, err)
+		}
+	}
+	return nil
+}
+
+func verifyK8sResourceQuantity(label string, values map[string]any, key string, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return nil
+	}
+	actual, _ := values[key].(string)
+	if strings.TrimSpace(actual) != expected {
+		return fmt.Errorf("%s未生效（期望 %s，实际 %s）", label, expected, strings.TrimSpace(actual))
+	}
+	return nil
 }
 
 func formatWorkloadResourceSummary(containers []kubeContainer, requests bool) string {
@@ -5195,27 +5399,67 @@ func friendlyK8sYAMLError(payload model.K8sResourceYAMLPayload, err error) error
 	message := err.Error()
 	lower := strings.ToLower(message)
 
-	if strings.Contains(lower, "field is immutable") || strings.Contains(lower, "immutable") {
-		switch strings.ToLower(Trimmed(payload.ResourceType)) {
+	resourceType := strings.ToLower(strings.TrimSpace(payload.ResourceType))
+
+	if strings.Contains(lower, "immutable") {
+		switch resourceType {
 		case "pod":
-			return errors.New("Pod 瀛樺湪涓嶅彲鍙樺瓧娈碉紝Kubernetes 涓嶅厑璁哥洿鎺ユ洿鏂拌繖閮ㄥ垎鍐呭銆傚缓璁慨鏀瑰彲鍙樺瓧娈碉紝鎴栧垹闄ゅ悗閲嶆柊鍒涘缓 Pod")
+			return errors.New(
+				"Pod 存在不可变字段，Kubernetes 不允许直接更新这部分内容。" +
+					"请仅修改可变字段，或者删除后重新创建 Pod",
+			)
+
 		case "pv", "pvc":
-			return errors.New("褰撳墠瀛樺偍璧勬簮鍖呭惈涓嶅彲鍙樺瓧娈碉紝Kubernetes 涓嶅厑璁哥洿鎺ヨ鐩栦繚瀛樸€傝浠呬慨鏀瑰彲鍙樺瓧娈碉紝鎴栨寜瀛樺偍鍙樻洿娴佺▼澶勭悊")
+			return errors.New(
+				"当前存储资源包含不可变字段，Kubernetes 不允许直接覆盖保存。" +
+					"请仅修改可变字段，或者按照存储资源变更流程处理",
+			)
+
 		default:
-			return errors.New("褰撳墠璧勬簮鍖呭惈涓嶅彲鍙樺瓧娈碉紝Kubernetes 涓嶅厑璁哥洿鎺ヨ鐩栦繚瀛樸€傝妫€鏌?metadata銆乻elector銆乿olume 绛夊瓧娈垫槸鍚﹁淇敼")
+			return errors.New(
+				"当前资源包含不可变字段，Kubernetes 不允许直接覆盖保存。" +
+					"请检查 metadata、selector、volume 等字段是否被修改",
+			)
 		}
 	}
 
 	if strings.Contains(lower, "already exists") {
-		return errors.New("YAML 涓殑璧勬簮鏍囪瘑涓庡綋鍓嶉泦缇ょ幇鏈夎祫婧愬啿绐侊紝璇锋鏌ュ悕绉般€佸懡鍚嶇┖闂存垨鍏宠仈瀵硅薄")
+		return errors.New(
+			"YAML 中的资源名称与当前集群中的现有资源冲突，" +
+				"请检查资源名称、命名空间或者关联对象",
+		)
 	}
+
 	if strings.Contains(lower, "not found") {
-		return errors.New("目标资源不存在，可能已被删除或命名空间已变化，请刷新后重试")
+		return errors.New(
+			"目标资源不存在，可能已被删除或者命名空间已经发生变化，请刷新后重试",
+		)
 	}
-	if strings.Contains(lower, "invalid") || strings.Contains(lower, "unprocessable entity") {
-		return errors.New("YAML 鏍￠獙鏈€氳繃锛岃妫€鏌ュ瓧娈垫牸寮忋€乤piVersion銆乲ind 浠ュ強 spec 鍐呭鏄惁姝ｇ‘")
+
+	if strings.Contains(lower, "invalid") ||
+		strings.Contains(lower, "unprocessable entity") {
+		return errors.New(
+			"YAML 校验未通过，请检查字段格式、apiVersion、kind 以及 spec 内容是否正确",
+		)
 	}
 	return err
+}
+
+func friendlyK8sWorkloadUpdateError(err error) error {
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "forbidden"):
+		return errors.New("集群拒绝更新工作负载，请确认当前 Kubernetes 凭据具有更新该工作负载的权限")
+	case strings.Contains(lower, "invalid") || strings.Contains(lower, "unprocessable entity"):
+		return fmt.Errorf("工作负载资源配置校验未通过: %w", err)
+	case strings.Contains(lower, "not found"):
+		return errors.New("工作负载不存在，可能已被删除或命名空间已变化，请刷新后重试")
+	default:
+		return fmt.Errorf("更新工作负载失败: %w", err)
+	}
 }
 
 func k8sGetText(client *http.Client, runtime kubeClusterRuntime, path string, query map[string]string) (string, error) {
@@ -5418,7 +5662,16 @@ func formatTimestamp(value string) string {
 	if err != nil {
 		return "-"
 	}
-	return t.Format("2006-01-02 15:04")
+	return t.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04")
+}
+
+func firstNonEmptyEventTime(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringifyTargetPort(value interface{}) string {

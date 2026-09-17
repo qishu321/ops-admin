@@ -2,7 +2,11 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -128,15 +132,21 @@ func (ctl *Controller) ExecuteOpsScript(c *gin.Context) {
 }
 
 func (ctl *Controller) ExecuteOpsFileDispatch(c *gin.Context) {
-	payload, uploadName, uploadBytes, err := parseOpsFileDispatchPayload(c)
+	payload, upload, err := parseOpsFileDispatchPayload(c)
 	if err != nil {
-		httpx.Failed(c, 400, err.Error())
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) || strings.Contains(err.Error(), "request body too large") {
+			httpx.Failed(c, http.StatusRequestEntityTooLarge, "本地上传文件大小不能超过 500 MB")
+		} else {
+			httpx.Failed(c, 400, err.Error())
+		}
 		return
 	}
 	payload.Operator = c.GetString("username")
 	payload.SourceIP = c.ClientIP()
-	data, runErr := ctl.service.ExecuteOpsFileDispatch(payload, uploadName, uploadBytes)
+	data, runErr := ctl.service.ExecuteOpsFileDispatch(payload, upload)
 	if runErr != nil {
+		upload.Cleanup()
 		httpx.Failed(c, 400, runErr.Error())
 		return
 	}
@@ -204,12 +214,17 @@ func (ctl *Controller) GetOpsExecTaskDetail(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
-func parseOpsFileDispatchPayload(c *gin.Context) (service.OpsFileDispatchPayload, string, []byte, error) {
+func parseOpsFileDispatchPayload(c *gin.Context) (service.OpsFileDispatchPayload, *service.OpsFileDispatchUpload, error) {
+	// Keep a small envelope allowance for multipart fields and boundaries, while
+	// enforcing the exact 500 MiB content limit below from the file metadata.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, service.OpsFileDispatchMaxUploadBytes+2*1024*1024)
 	payload := service.OpsFileDispatchPayload{
 		Title:          strings.TrimSpace(c.PostForm("title")),
 		SourceType:     strings.TrimSpace(c.PostForm("sourceType")),
 		SourceHostID:   uint(mustAtoi(c.PostForm("sourceHostId"))),
 		SourcePath:     strings.TrimSpace(c.PostForm("sourcePath")),
+		TargetDir:      strings.TrimSpace(c.PostForm("targetDir")),
+		TargetFileName: strings.TrimSpace(c.PostForm("targetFileName")),
 		TargetPath:     strings.TrimSpace(c.PostForm("targetPath")),
 		Concurrency:    mustAtoi(c.DefaultPostForm("concurrency", "5")),
 		TimeoutSeconds: mustAtoi(c.DefaultPostForm("timeoutSeconds", "10")),
@@ -219,11 +234,11 @@ func parseOpsFileDispatchPayload(c *gin.Context) (service.OpsFileDispatchPayload
 
 	hostIDs, err := parseUintSliceField(c.PostForm("hostIds"))
 	if err != nil {
-		return payload, "", nil, err
+		return payload, nil, err
 	}
 	groupIDs, err := parseUintSliceField(c.PostForm("groupIds"))
 	if err != nil {
-		return payload, "", nil, err
+		return payload, nil, err
 	}
 	payload.HostIDs = hostIDs
 	payload.GroupIDs = groupIDs
@@ -231,20 +246,45 @@ func parseOpsFileDispatchPayload(c *gin.Context) (service.OpsFileDispatchPayload
 	file, err := c.FormFile("file")
 	if err != nil {
 		if payload.SourceType == "upload" {
-			return payload, "", nil, err
+			return payload, nil, err
 		}
-		return payload, "", nil, nil
+		return payload, nil, nil
+	}
+	if file.Size > service.OpsFileDispatchMaxUploadBytes {
+		return payload, nil, errors.New("本地上传文件大小不能超过 500 MB")
 	}
 	reader, err := file.Open()
 	if err != nil {
-		return payload, "", nil, err
+		return payload, nil, err
 	}
 	defer reader.Close()
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return payload, "", nil, err
+	directory := filepath.Join("uploads", "temp", "file-dispatch")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return payload, nil, err
 	}
-	return payload, file.Filename, content, nil
+	target, err := os.CreateTemp(directory, "upload-*")
+	if err != nil {
+		return payload, nil, err
+	}
+	tempPath := target.Name()
+	cleanup := func(err error) (service.OpsFileDispatchPayload, *service.OpsFileDispatchUpload, error) {
+		_ = target.Close()
+		_ = os.Remove(tempPath)
+		return payload, nil, err
+	}
+	size, copyErr := io.Copy(target, io.LimitReader(reader, service.OpsFileDispatchMaxUploadBytes+1))
+	if copyErr != nil {
+		return cleanup(copyErr)
+	}
+	if closeErr := target.Close(); closeErr != nil {
+		_ = os.Remove(tempPath)
+		return payload, nil, closeErr
+	}
+	if size > service.OpsFileDispatchMaxUploadBytes {
+		_ = os.Remove(tempPath)
+		return payload, nil, errors.New("本地上传文件大小不能超过 500 MB")
+	}
+	return payload, &service.OpsFileDispatchUpload{FileName: filepath.Base(file.Filename), TempPath: tempPath, Size: size}, nil
 }
 
 func parseUintSliceField(raw string) ([]uint, error) {

@@ -601,6 +601,32 @@ defineProps({
   </el-dialog>
 
   <el-dialog
+    v-model="page.podImageDialogVisible"
+    :title="`编辑 Pod 镜像 · ${page.podImageForm.podName || '-'}`"
+    width="720px"
+    destroy-on-close
+  >
+    <el-alert
+      title="仅修改当前 Pod"
+      description="此操作不会更新 Deployment、StatefulSet 等工作负载模板。Pod 被控制器重建或迁移后，镜像会恢复为模板中的配置。"
+      type="warning"
+      :closable="false"
+      show-icon
+    />
+    <el-form label-width="96px" class="pod-image-edit-form">
+      <el-form-item label="命名空间"><el-input :model-value="page.podImageForm.namespace" readonly /></el-form-item>
+      <el-form-item label="Pod 名称"><el-input :model-value="page.podImageForm.podName" readonly /></el-form-item>
+      <el-form-item v-for="container in page.podImageForm.containers" :key="container.name" :label="container.name">
+        <el-input v-model.trim="container.image" placeholder="请输入完整镜像地址，例如 registry.example/app:1.2.3" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="page.podImageDialogVisible = false">{{ page.t('cancel') }}</el-button>
+      <el-button type="primary" :loading="page.podImageSaving" @click="page.submitPodImageEdit">保存临时修改</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog
     v-model="page.istioCreateDialogVisible"
     :title="page.t('k8sCreateIstioResourceTitle', { resource: page.yamlResourceLabel(page.istioCreateForm.resourceType) })"
     width="980px"

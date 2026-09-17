@@ -486,6 +486,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.GET("/k8s/pod/containers", ctl.GetK8sPodContainers)
 		authGroup.GET("/k8s/pod/logs", ctl.GetK8sPodLogs)
 		authGroup.GET("/k8s/pod/events", ctl.GetK8sPodEvents)
+		authGroup.PUT("/k8s/pod/images", ctl.UpdateK8sPodImages)
 		authGroup.GET("/k8s/workload/detail", ctl.GetK8sWorkloadDetail)
 		authGroup.POST("/k8s/workload/scale", ctl.ScaleK8sWorkload)
 		authGroup.POST("/k8s/workload/restart", ctl.RestartK8sWorkload)

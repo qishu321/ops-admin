@@ -68,9 +68,9 @@ const hostAggregateTrendModes = new Map([
 ])
 
 const k8sPodPanelDefinitions = [
-  { title: 'Pod CPU 使用量 Top', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))' },
+  { title: 'Pod CPU 使用量 Top', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (irate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m])))' },
   { title: 'Pod 内存使用量 Top', chartType: 'line', unit: 'B', span: 12, promql: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))' },
-  { title: 'Pod CPU 使用趋势', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))' },
+  { title: 'Pod CPU 使用趋势', chartType: 'line', unit: 'Core', span: 12, promql: 'topk(10, sum by(namespace, pod) (irate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m])))' },
   { title: 'Pod 内存使用趋势', chartType: 'line', unit: 'B', span: 12, promql: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}))' },
   { title: 'Pod 网络接收速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])))' },
   { title: 'Pod 网络发送速率 Top', chartType: 'bar', unit: 'B/s', span: 12, promql: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])))' },

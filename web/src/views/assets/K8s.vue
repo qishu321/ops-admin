@@ -21,6 +21,7 @@ import {
   queryK8sPodContainers,
   queryK8sPodEvents,
   queryK8sPodLogs,
+  updateK8sPodImages,
   queryK8sWorkloadDetail,
   queryK8sServiceDetail,
   updateK8sService,
@@ -145,6 +146,9 @@ const podDrawerVisible = ref(false)
 const podDrawerLoading = ref(false)
 const podDetail = ref(null)
 const podEvents = ref([])
+const podImageDialogVisible = ref(false)
+const podImageSaving = ref(false)
+const podImageForm = reactive({ namespace: '', podName: '', containers: [] })
 const podLogDrawerVisible = ref(false)
 const podLogLoading = ref(false)
 const podLogs = ref('')
@@ -1159,12 +1163,12 @@ async function loadClusters(preferId) {
   }
 }
 
-async function loadClusterData(clusterId) {
+async function loadClusterData(clusterId, fresh = false) {
   loading.value = true
   try {
     Object.keys(workloadImageMap).forEach((key) => delete workloadImageMap[key])
     selectedWorkloads.value = []
-    const data = await queryK8sClusterOverview(clusterId)
+    const data = await queryK8sClusterOverview(clusterId, fresh)
     cluster.value = data.cluster
     overview.value = data.overview
     nodes.value = data.nodes || []
@@ -1189,7 +1193,7 @@ async function loadClusterData(clusterId) {
 
 async function refreshCurrentClusterData() {
   if (!cluster.value?.id) return
-  await loadClusterData(cluster.value.id)
+  await loadClusterData(cluster.value.id, true)
 }
 
 async function handleClusterChange(clusterId) {
@@ -1464,6 +1468,60 @@ async function openIngressYAML(row) {
     name: detail.name,
     yaml: detail.yaml
   })
+}
+
+async function openPodImageEdit(row) {
+  if (!cluster.value?.id || !row?.namespace || !row?.name) return
+  const detail = await queryK8sPodDetail(cluster.value.id, row.namespace, row.name)
+  podImageForm.namespace = detail.namespace
+  podImageForm.podName = detail.name
+  podImageForm.containers = (detail.containers || []).map((item) => ({
+    name: item.name,
+    image: item.image,
+    originalImage: item.image
+  }))
+  podImageDialogVisible.value = true
+}
+
+async function submitPodImageEdit() {
+  if (!cluster.value?.id || !podImageForm.containers.length) return
+  const changed = podImageForm.containers
+    .filter((item) => String(item.image || '').trim() !== String(item.originalImage || '').trim())
+    .map((item) => ({ name: item.name, image: String(item.image || '').trim() }))
+  if (!changed.length) {
+    ElMessage.info('镜像未发生变化')
+    return
+  }
+  if (changed.some((item) => !item.image)) {
+    ElMessage.warning('镜像不能为空')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将仅修改 Pod ${podImageForm.podName} 的镜像。若该 Pod 被 StatefulSet 等控制器重建，会恢复工作负载模板中的镜像。是否继续？`,
+      '确认临时修改 Pod 镜像',
+      { type: 'warning', confirmButtonText: '确认修改', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  podImageSaving.value = true
+  try {
+    await updateK8sPodImages({
+      clusterId: cluster.value.id,
+      namespace: podImageForm.namespace,
+      podName: podImageForm.podName,
+      containers: changed
+    })
+    ElMessage.success('Pod 镜像已更新，正在等待 Kubernetes 拉取并重建容器')
+    podImageDialogVisible.value = false
+    await refreshCurrentClusterData()
+    if (podDrawerVisible.value && podDetail.value?.name === podImageForm.podName) {
+      podDetail.value = await queryK8sPodDetail(cluster.value.id, podImageForm.namespace, podImageForm.podName)
+    }
+  } finally {
+    podImageSaving.value = false
+  }
 }
 
 async function openIngressEdit(row) {
@@ -2908,7 +2966,7 @@ function translateIstioDetailLabel(label) {
 const monitorChartDefinitions = {
   cluster: [
     { title: 'CPU 使用率（%）', query: '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', unit: '%' },
-    { title: 'CPU 使用量（核）', query: 'sum(rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))', unit: '核', seriesLabel: '集群 CPU' },
+    { title: 'CPU 使用量（核）', query: 'sum(irate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m]))', unit: '核', seriesLabel: '集群 CPU' },
     { title: '内存使用率（%）', query: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100', unit: '%' },
     { title: '内存使用量（GiB）', query: 'sum(container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024 / 1024', unit: 'GiB', seriesLabel: '集群内存' },
     { title: '磁盘使用率（%）', query: '100 - (sum by(instance) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) / sum by(instance) (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/run.*|/boot.*"}) * 100)', unit: '%' },
@@ -2929,12 +2987,12 @@ const monitorChartDefinitions = {
     { key: 'uptime', title: '在线时间', query: 'time() - node_boot_time_seconds', unit: '秒', summaryOnly: true }
   ],
   pod: [
-    { title: 'Pod CPU 使用量 Top 10（核）', query: 'topk(10, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])))', unit: '核' },
-    { title: 'Pod 内存使用量 Top 10（MiB）', query: 'topk(10, sum by(namespace, pod) (container_memory_working_set_bytes{container!="",pod!=""}) / 1024 / 1024)', unit: 'MiB' },
-    { title: '各命名空间运行中 Pod', query: 'sum by(namespace) (kube_pod_status_phase{phase="Running"})', unit: '个' },
-    { title: 'Pod 最近 1 小时新增重启 Top 10', query: 'topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{pod!=""}[1h])))', unit: '次' },
-    { title: 'Pod 网络接收速率（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' },
-    { title: 'Pod 网络发送速率（MiB/s）', query: 'topk(10, sum by(namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s' }
+    { title: 'Pod CPU 使用量 Top 10（核）', query: (selector) => `topk(10, sum by(namespace, pod) (irate(container_cpu_usage_seconds_total{${selector},container!="",container!="POD"}[5m])))`, unit: '核' },
+    { title: 'Pod 内存使用量 Top 10（MiB）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, container) (container_memory_working_set_bytes{${selector},container!="",container!="POD"})) / 1024 / 1024)`, unit: 'MiB' },
+    { title: '各命名空间运行中 Pod', query: (selector) => `sum by(namespace) (max by(namespace, pod) (kube_pod_status_phase{${selector},phase="Running"}))`, unit: '个' },
+    { title: 'Pod 最近 1 小时新增重启 Top 10', query: (selector) => `topk(10, sum by(namespace, pod) (increase(kube_pod_container_status_restarts_total{${selector}}[1h])))`, unit: '次' },
+    { title: 'Pod 网络接收速率（MiB/s）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, interface) (rate(container_network_receive_bytes_total{${selector},interface!="lo"}[5m]))) / 1024 / 1024)`, unit: 'MiB/s' },
+    { title: 'Pod 网络发送速率（MiB/s）', query: (selector) => `topk(10, sum by(namespace, pod) (max by(namespace, pod, interface) (rate(container_network_transmit_bytes_total{${selector},interface!="lo"}[5m]))) / 1024 / 1024)`, unit: 'MiB/s' }
   ],
   network: [
     { title: 'Pod 网络流入 Top 10', query: 'topk(10, sum by(namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m])) / 1024 / 1024)', unit: 'MiB/s', type: 'bar' },
@@ -2950,6 +3008,28 @@ function monitorSeriesMatchesNode(series, node) {
   const label = String(series?.label || '')
   const internalIP = String(node?.internalIP || '')
   return label === node?.name || label === internalIP || (internalIP && label.startsWith(`${internalIP}:`))
+}
+
+function escapePrometheusRegex(value) {
+  return String(value).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+}
+
+function monitorPodMetricSelector() {
+  const selectedPods = monitorPodFilteredPods.value
+  if (!selectedPods.length) return 'namespace=~"^$",pod=~"^$"'
+  const namespaces = [...new Set(selectedPods.map((pod) => pod.namespace).filter(Boolean))].sort()
+  const podNames = [...new Set(selectedPods.map((pod) => pod.name).filter(Boolean))].sort()
+  return `namespace=~"^(${namespaces.map(escapePrometheusRegex).join('|')})$",pod=~"^(${podNames.map(escapePrometheusRegex).join('|')})$"`
+}
+
+function monitorDefinitions() {
+  const definitions = monitorChartDefinitions[monitorView.value] || monitorChartDefinitions.cluster
+  if (monitorView.value !== 'pod') return definitions
+  const selector = monitorPodMetricSelector()
+  return definitions.map((definition) => ({
+    ...definition,
+    query: typeof definition.query === 'function' ? definition.query(selector) : definition.query
+  }))
 }
 
 function monitorNodeMetric(node, key) {
@@ -3158,12 +3238,25 @@ function updateMonitorChartHover(chart, event) {
   monitorHover.value = { chart: chart.title, time: targetTime, position: ratio, points, unit: chart.unit }
 }
 
+function monitorTooltipStyle() {
+  const position = Math.min(.96, Math.max(.04, Number(monitorHover.value?.position) || 0))
+  const openLeft = position > .56
+  return {
+    left: `${position * 100}%`,
+    transform: openLeft ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
+    transformOrigin: openLeft ? 'right top' : 'left top'
+  }
+}
+
 async function loadMonitoringCharts(force = false) {
   if (!cluster.value?.monitorDatasourceId) {
     monitorCharts.value = []
     return
   }
-  const cacheKey = `${cluster.value.monitorDatasourceId}:${monitorView.value}:${monitorRange.value}`
+  const podScopeKey = monitorView.value === 'pod'
+    ? monitorPodFilteredPods.value.map((pod) => `${pod.namespace}/${pod.name}`).sort().join(',')
+    : ''
+  const cacheKey = `${cluster.value.monitorDatasourceId}:${monitorView.value}:${monitorRange.value}:${podScopeKey}`
   const cached = monitorCache.get(cacheKey)
   if (!force && cached && Date.now() - cached.timestamp < 60000) {
     monitorCharts.value = cached.charts
@@ -3176,7 +3269,7 @@ async function loadMonitoringCharts(force = false) {
   try {
     const endAt = Math.floor(Date.now() / 1000)
     const duration = { '1h': 3600, '6h': 21600, '24h': 86400, '3d': 259200, '7d': 604800 }[monitorRange.value] || 3600
-    const definitions = monitorChartDefinitions[monitorView.value] || monitorChartDefinitions.cluster
+    const definitions = monitorDefinitions()
     const nodeTrafficPromise = monitorView.value === 'node' ? Promise.allSettled([
       queryMonitorPrometheus({ datasourceId: cluster.value.monitorDatasourceId, query: 'sum(increase(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[30d])) / 1024 / 1024 / 1024' }),
       queryMonitorPrometheus({ datasourceId: cluster.value.monitorDatasourceId, query: 'sum(increase(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br.*"}[30d])) / 1024 / 1024 / 1024' })
@@ -3313,6 +3406,9 @@ const page = reactive({
   podDrawerLoading,
   podDetail,
   podEvents,
+  podImageDialogVisible,
+  podImageSaving,
+  podImageForm,
   podLogDrawerVisible,
   podLogLoading,
   podLogs,
@@ -3467,6 +3563,8 @@ const page = reactive({
   handleDeleteWorkload,
   submitWorkloadImageVersionUpdate,
   openPodDetail,
+  openPodImageEdit,
+  submitPodImageEdit,
   openPodLogs,
   openPodYAML,
   openPodTerminal,
@@ -3534,6 +3632,7 @@ const page = reactive({
   monitorColor,
   monitorTimeText,
   updateMonitorChartHover,
+  monitorTooltipStyle,
   openMonitorNode,
   runYAMLSearch,
   searchYAMLPrev,
@@ -3564,6 +3663,13 @@ watch(
   () => [currentTab.value, monitorView.value, monitorRange.value, cluster.value?.monitorDatasourceId],
   ([tab]) => {
     if (tab === 'monitoring') void loadMonitoringCharts()
+  }
+)
+
+watch(
+  () => [monitorPodNamespace.value, monitorPodNode.value, monitorPodWorkload.value, monitorPodName.value],
+  () => {
+    if (currentTab.value === 'monitoring' && monitorView.value === 'pod') void loadMonitoringCharts()
   }
 )
 

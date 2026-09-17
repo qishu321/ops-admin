@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -786,10 +787,11 @@ func (s *Service) executeOpsJobFileNode(stepName string, config map[string]any) 
 	if err != nil {
 		return "failed", err.Error(), "", 0, err
 	}
-	sourceHost, content, err := s.readRemoteFile(sourceHostID, sourcePath)
+	sourceHost, stagedPath, err := s.stageRemoteFile(sourceHostID, sourcePath)
 	if err != nil {
 		return "failed", err.Error(), "", 0, err
 	}
+	defer os.Remove(stagedPath)
 	task := model.OpsExecTask{
 		TaskType:       "file",
 		Title:          stepName,
@@ -811,7 +813,7 @@ func (s *Service) executeOpsJobFileNode(stepName string, config map[string]any) 
 	}
 	overwrite := boolConfig(config, "overwrite")
 	result, err := s.runOpsTaskLegacy(task, hosts, func(host model.AssetHost) model.OpsExecTargetResult {
-		return s.dispatchFileToHost(host, task.FileName, targetPath, content, overwrite, task.TimeoutSeconds)
+		return s.dispatchFileFromPath(host, task.FileName, targetPath, stagedPath, overwrite, task.TimeoutSeconds)
 	})
 	if err != nil {
 		return "failed", err.Error(), "", 0, err

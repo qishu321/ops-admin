@@ -373,6 +373,21 @@ function closeTag(tag) {
   }
 }
 
+// Some pages own long-lived resources (such as Pod terminal WebSockets). A
+// page can explicitly request that its own tag be closed for a deliberate
+// return action, while ordinary navigation continues to preserve the tag.
+function closeRequestedTag(event) {
+  const path = event.detail?.path
+  const nextPath = event.detail?.nextPath || '/dashboard'
+  const index = tagViews.value.findIndex((item) => item.path === path)
+  if (index !== -1) {
+    releaseTagResources(tagViews.value[index])
+    tagViews.value.splice(index, 1)
+    saveTags()
+  }
+  router.push(nextPath)
+}
+
 function openTagContextMenu(event, tag) {
   event.preventDefault()
   tagContextMenu.value = {
@@ -531,9 +546,13 @@ onMounted(() => {
   applySystemTheme(layoutConfig.value)
   syncProfile()
   window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('ops-admin:close-tab-request', closeRequestedTag)
 })
 
-onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('ops-admin:close-tab-request', closeRequestedTag)
+})
 </script>
 
 <template>

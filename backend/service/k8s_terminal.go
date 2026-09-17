@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"ops-admin/backend/model"
 
@@ -23,6 +26,8 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+const maxK8sPodUploadSize int64 = 50 * 1024 * 1024
 
 type k8sTerminalMessage struct {
 	Operation string `json:"operation"`
@@ -139,6 +144,67 @@ func (s *Service) GetK8sPodContainers(clusterID uint, namespace string, podName 
 		containers = append(containers, item.Name)
 	}
 	return containers, nil
+}
+
+// UploadK8sPodFile streams one file through the Kubernetes exec channel.  The
+// file never becomes a cluster-side API object and is written via a temporary
+// sibling before the final rename, so readers cannot observe a partial file.
+func (s *Service) UploadK8sPodFile(clusterID uint, namespace string, podName string, container string, directory string, filename string, size int64, content io.Reader) (map[string]any, error) {
+	directory = path.Clean(strings.TrimSpace(directory))
+	filename = strings.TrimSpace(filename)
+	if clusterID == 0 || strings.TrimSpace(namespace) == "" || strings.TrimSpace(podName) == "" || !strings.HasPrefix(directory, "/") {
+		return nil, errors.New("invalid pod upload target")
+	}
+	if filename == "" || filename == "." || filename == ".." || path.Base(filename) != filename || strings.ContainsAny(filename, "\\\x00\r\n") {
+		return nil, errors.New("invalid upload file name")
+	}
+	if size < 0 || size > maxK8sPodUploadSize {
+		return nil, errors.New("单个文件不能超过 50 MB")
+	}
+
+	cluster, err := s.GetK8sCluster(clusterID)
+	if err != nil {
+		return nil, err
+	}
+	config, cleanup, err := s.k8sSPDYConfigForCluster(cluster)
+	if err != nil {
+		return nil, errors.New(k8sClusterConnectError)
+	}
+	defer cleanup()
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, errors.New(k8sClusterConnectError)
+	}
+	pod, err := clientset.CoreV1().Pods(namespace).Get(context.Background(), podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	targetContainer := chooseK8sContainerName(pod, container)
+	if targetContainer == "" {
+		return nil, errors.New("pod container not found")
+	}
+
+	req := clientset.CoreV1().RESTClient().Post().Resource("pods").Name(podName).Namespace(namespace).SubResource("exec")
+	req.VersionedParams(&corev1.PodExecOptions{
+		Container: targetContainer,
+		Command:   []string{"/bin/sh", "-c", `set -eu; dir="$1"; name="$2"; test -d "$dir"; test -w "$dir"; tmp="$dir/.${name}.ops-upload-$$"; trap 'rm -f "$tmp"' EXIT HUP INT TERM; cat > "$tmp"; mv -f "$tmp" "$dir/$name"; trap - EXIT`, "--", directory, filename},
+		Stdin:     true, Stdout: true, Stderr: true, TTY: false,
+	}, scheme.ParameterCodec)
+	executor, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: io.LimitReader(content, maxK8sPodUploadSize+1), Stdout: &stdout, Stderr: &stderr, Tty: false}); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message != "" {
+			return nil, fmt.Errorf("上传到容器失败：%s", message)
+		}
+		return nil, err
+	}
+	return map[string]any{"directory": directory, "filename": filename, "size": size, "container": targetContainer}, nil
 }
 
 func (s *Service) OpenK8sPodTerminal(clusterID uint, namespace string, podName string, container string, command string, rows int, cols int, conn *websocket.Conn) error {
@@ -390,7 +456,9 @@ func normalizeK8sTerminalCommand(command string) []string {
 		// Kubernetes exec receives stdin through a pipe. Be explicit about
 		// interactive mode so the shell enables line editing and Tab completion.
 		// Prefer bash when the image provides it, with a portable sh fallback.
-		return []string{"/bin/sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash -i; else exec /bin/sh -i; fi"}
+		// The marker is consumed by the browser terminal and keeps the upload
+		// destination in sync with the interactive shell's current directory.
+		return []string{"/bin/sh", "-c", `if command -v bash >/dev/null 2>&1; then export PROMPT_COMMAND='printf "\036OPS_ADMIN_CWD:%s\037" "$PWD"'; exec bash -i; else export PS1='$(printf "\036OPS_ADMIN_CWD:%s\037" "$PWD")$ '; exec /bin/sh -i; fi`}
 	case "bash", "/bin/bash":
 		return []string{"/bin/bash", "-i"}
 	default:

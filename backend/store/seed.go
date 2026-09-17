@@ -609,7 +609,7 @@ func seedApplicationMenus(db *gorm.DB) error {
 		{"assets:gateway:list", "新增网关", "assets:gateway:add"}, {"assets:gateway:list", "编辑网关", "assets:gateway:edit"}, {"assets:gateway:list", "删除网关", "assets:gateway:delete"}, {"assets:gateway:list", "测试网关", "assets:gateway:test"},
 		{"assets:k8s:cluster", "新增集群", "assets:k8s:cluster:add"}, {"assets:k8s:cluster", "编辑集群", "assets:k8s:cluster:edit"}, {"assets:k8s:cluster", "删除集群", "assets:k8s:cluster:delete"},
 		{"assets:k8s:workload", "新增工作负载", "assets:k8s:workload:create"}, {"assets:k8s:workload", "伸缩工作负载", "assets:k8s:workload:scale"}, {"assets:k8s:workload", "重启工作负载", "assets:k8s:workload:restart"}, {"assets:k8s:workload", "更新镜像", "assets:k8s:workload:image"}, {"assets:k8s:workload", "编辑 YAML", "assets:k8s:workload:yaml"},
-		{"assets:k8s:pod", "进入 Pod 终端", "assets:k8s:pod:terminal"}, {"assets:k8s:pod", "删除 Pod", "assets:k8s:pod:delete"}, {"assets:k8s:pod", "编辑 YAML", "assets:k8s:pod:yaml"},
+		{"assets:k8s:pod", "进入 Pod 终端", "assets:k8s:pod:terminal"}, {"assets:k8s:pod", "上传 Pod 文件", "assets:k8s:pod:upload"}, {"assets:k8s:pod", "删除 Pod", "assets:k8s:pod:delete"}, {"assets:k8s:pod", "编辑 YAML", "assets:k8s:pod:yaml"},
 
 		// Standard operations
 		{"ops:script:list", "新增脚本", "ops:script:add"}, {"ops:script:list", "编辑脚本", "ops:script:edit"}, {"ops:script:list", "删除脚本", "ops:script:delete"}, {"ops:script:list", "启用或禁用脚本", "ops:script:status"},

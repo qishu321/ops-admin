@@ -14,9 +14,7 @@ const iconMap = {
   namespaces: Grid,
   workloads: SetUp,
   pods: Promotion,
-  services: Connection,
-  ingresses: Connection,
-  'advanced-network': Connection,
+  network: Connection,
   'config-storage': Grid,
   monitoring: Monitor
 }
@@ -120,7 +118,7 @@ const iconMap = {
             @update:model-value="page.handleNamespaceKeywordChange"
           />
           <el-button
-            v-if="['namespaces', 'pods', 'workloads', 'services', 'ingresses', 'advanced-network', 'config-storage'].includes(page.currentTab)"
+            v-if="['namespaces', 'pods', 'workloads', 'network', 'config-storage'].includes(page.currentTab)"
             class="pod-list-refresh"
             plain
             :icon="Refresh"
@@ -145,8 +143,8 @@ const iconMap = {
           <el-button v-if="page.currentTab === 'workloads'" type="primary" @click="page.openWorkloadCreate">
             新增工作负载
           </el-button>
-          <template v-if="page.currentTab === 'services'"><el-button @click="page.openServiceCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openServiceFormCreate">新增服务</el-button></template>
-          <template v-if="page.currentTab === 'ingresses' && page.ingressTab === 'ingresses'"><el-button @click="page.openIngressCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openIngressFormCreate">新增 Ingress</el-button></template>
+          <template v-if="page.currentTab === 'network' && page.networkTab === 'services'"><el-button @click="page.openServiceCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openServiceFormCreate">新增服务</el-button></template>
+          <template v-if="page.currentTab === 'network' && page.networkTab === 'ingresses'"><el-button @click="page.openIngressCreate">YAML 创建资源</el-button><el-button type="primary" @click="page.openIngressFormCreate">新增 Ingress</el-button></template>
           <el-button v-if="page.currentTab === 'namespaces'" type="primary" @click="page.openNamespaceCreate">
             {{ page.t('k8sCreateNamespace') }}
           </el-button>

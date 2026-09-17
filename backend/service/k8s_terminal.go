@@ -81,8 +81,9 @@ func (q *k8sTerminalSizeQueue) Close() {
 }
 
 type k8sTerminalOutput struct {
-	conn    *websocket.Conn
-	writeMu *sync.Mutex
+	conn      *websocket.Conn
+	writeMu   *sync.Mutex
+	readyOnce *sync.Once
 }
 
 func (w *k8sTerminalOutput) Write(p []byte) (int, error) {
@@ -91,6 +92,21 @@ func (w *k8sTerminalOutput) Write(p []byte) (int, error) {
 	}
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
+	if w.readyOnce != nil {
+		var readyErr error
+		w.readyOnce.Do(func() {
+			readyErr = w.conn.WriteJSON(k8sTerminalMessage{
+				Operation: "status",
+				Data: map[string]any{
+					"state":   "connected",
+					"message": "Pod 终端已连接",
+				},
+			})
+		})
+		if readyErr != nil {
+			return 0, readyErr
+		}
+	}
 	if err := w.conn.WriteJSON(k8sTerminalMessage{
 		Operation: "stdout",
 		Data:      string(p),
@@ -130,7 +146,7 @@ func (s *Service) OpenK8sPodTerminal(clusterID uint, namespace string, podName s
 	if err != nil {
 		return err
 	}
-	config, cleanup, err := s.k8sRESTConfigForCluster(cluster)
+	config, cleanup, err := s.k8sSPDYConfigForCluster(cluster)
 	if err != nil {
 		return errors.New(k8sClusterConnectError)
 	}
@@ -181,14 +197,15 @@ func (s *Service) OpenK8sPodTerminal(clusterID uint, namespace string, podName s
 	defer sizeQueue.Close()
 
 	writeMu := &sync.Mutex{}
+	readyOnce := &sync.Once{}
 	streamErrCh := make(chan error, 1)
 	readErrCh := make(chan error, 1)
 
 	go func() {
 		streamErrCh <- executor.StreamWithContext(ctx, remotecommand.StreamOptions{
 			Stdin:             stdinReader,
-			Stdout:            &k8sTerminalOutput{conn: conn, writeMu: writeMu},
-			Stderr:            &k8sTerminalOutput{conn: conn, writeMu: writeMu},
+			Stdout:            &k8sTerminalOutput{conn: conn, writeMu: writeMu, readyOnce: readyOnce},
+			Stderr:            &k8sTerminalOutput{conn: conn, writeMu: writeMu, readyOnce: readyOnce},
 			Tty:               true,
 			TerminalSizeQueue: sizeQueue,
 		})
@@ -245,6 +262,80 @@ func (s *Service) OpenK8sPodTerminal(clusterID uint, namespace string, podName s
 	}
 }
 
+// k8sSPDYConfigForCluster uses a short-lived localhost tunnel for gateway
+// clusters. client-go's SPDY transport does not honor rest.Config.Dial, so the
+// regular gateway REST config is insufficient for pod exec/attach requests.
+func (s *Service) k8sSPDYConfigForCluster(cluster model.K8sCluster) (*rest.Config, func(), error) {
+	config, _, err := s.k8sRESTConfigForCluster(cluster)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if normalizeConnectionMode(cluster.ConnectionMode) != "gateway" || cluster.GatewayID == nil || *cluster.GatewayID == 0 {
+		return config, func() {}, nil
+	}
+
+	targetAddress, err := k8sAPITargetAddress(config.Host)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	tunnelAddress, cleanup, err := s.startGatewayTunnel(*cluster.GatewayID, targetAddress)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	tunnelConfig, _, err := k8sSPDYConfigThroughGateway(config, tunnelAddress)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	return tunnelConfig, cleanup, nil
+}
+
+func k8sSPDYConfigThroughGateway(config *rest.Config, tunnelAddress string) (*rest.Config, string, error) {
+	if config == nil {
+		return nil, "", errors.New("Kubernetes REST config is nil")
+	}
+	endpoint, err := url.Parse(config.Host)
+	if err != nil || endpoint.Scheme == "" || endpoint.Hostname() == "" {
+		return nil, "", fmt.Errorf("invalid Kubernetes API server URL: %s", config.Host)
+	}
+	targetAddress, err := k8sAPITargetAddress(config.Host)
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.TrimSpace(tunnelAddress) == "" {
+		return nil, "", errors.New("Kubernetes gateway tunnel address is empty")
+	}
+
+	tunnelEndpoint := *endpoint
+	tunnelEndpoint.Host = tunnelAddress
+	result := rest.CopyConfig(config)
+	result.Host = tunnelEndpoint.String()
+	result.Dial = nil
+	if result.TLSClientConfig.ServerName == "" {
+		result.TLSClientConfig.ServerName = endpoint.Hostname()
+	}
+	return result, targetAddress, nil
+}
+
+func k8sAPITargetAddress(rawURL string) (string, error) {
+	endpoint, err := url.Parse(rawURL)
+	if err != nil || endpoint.Hostname() == "" {
+		return "", fmt.Errorf("invalid Kubernetes API server URL: %s", rawURL)
+	}
+	port := endpoint.Port()
+	if port == "" {
+		switch strings.ToLower(endpoint.Scheme) {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		default:
+			return "", fmt.Errorf("unsupported Kubernetes API server scheme: %s", endpoint.Scheme)
+		}
+	}
+	return net.JoinHostPort(endpoint.Hostname(), port), nil
+}
+
 func (s *Service) k8sRESTConfigForCluster(cluster model.K8sCluster) (*rest.Config, func(), error) {
 	config, err := clientcmd.RESTConfigFromKubeConfig([]byte(cluster.KubeConfig))
 	if err != nil {
@@ -259,10 +350,8 @@ func (s *Service) k8sRESTConfigForCluster(cluster model.K8sCluster) (*rest.Confi
 			return nil, func() {}, fmt.Errorf("Kubernetes API server is configured as %s, which is a stale local tunnel address; restore the original API server address in kubeconfig", config.Host)
 		}
 		gatewayID := *cluster.GatewayID
-		// Keep the original API server URL and TLS identity intact.  client-go
-		// opens every HTTP/SPDY connection through the shared SSH client instead
-		// of routing it through a short-lived localhost listener.  The latter
-		// produced stale 127.0.0.1:<port> connections during terminal sessions.
+		// Standard Kubernetes HTTP requests honor rest.Config.Dial. SPDY-based
+		// exec/attach requests are handled separately by k8sSPDYConfigForCluster.
 		config.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
 			return s.dialGatewayTarget(gatewayID, network, address)
 		}

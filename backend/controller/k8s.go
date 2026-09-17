@@ -319,6 +319,13 @@ func (ctl *Controller) K8sPodTerminalWS(c *gin.Context) {
 		return
 	}
 	defer conn.Close()
+	_ = conn.WriteJSON(map[string]any{
+		"operation": "status",
+		"data": map[string]any{
+			"state":   "connecting",
+			"message": "正在建立 Kubernetes exec 通道…",
+		},
+	})
 
 	if err := ctl.service.OpenK8sPodTerminal(
 		query.ClusterID,
@@ -331,10 +338,31 @@ func (ctl *Controller) K8sPodTerminalWS(c *gin.Context) {
 		conn,
 	); err != nil {
 		_ = conn.WriteJSON(map[string]any{
-			"operation": "stdout",
-			"data":      "\r\n" + err.Error() + "\r\n",
+			"operation": "error",
+			"data": map[string]any{
+				"message": k8sPodTerminalErrorMessage(err),
+			},
 		})
 	}
+}
+
+func k8sPodTerminalErrorMessage(err error) string {
+	if err == nil {
+		return "Pod 终端连接失败"
+	}
+	message := err.Error()
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "connectex") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connection timed out") ||
+		strings.Contains(lower, "i/o timeout") ||
+		strings.Contains(lower, "unexpected eof") ||
+		strings.HasSuffix(lower, ": eof") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "no route to host") {
+		return "通过访问网关连接 Kubernetes API Server 失败，请检查网关到集群 API Server 的网络、防火墙和端口"
+	}
+	return message
 }
 
 func (ctl *Controller) GetK8sNamespaceDetail(c *gin.Context) {

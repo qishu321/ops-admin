@@ -55,7 +55,7 @@ func (s *Service) execAssetServiceDiagnosis(clusterID uint, namespace string, ta
 	if err != nil {
 		return "", err
 	}
-	config, cleanup, err := s.k8sRESTConfigForCluster(cluster)
+	config, cleanup, err := s.k8sSPDYConfigForCluster(cluster)
 	if err != nil {
 		return "", errors.New(k8sClusterConnectError)
 	}
@@ -152,7 +152,7 @@ func (s *Service) UploadAssetServiceArthas(target AssetServiceDiagnosisTarget, c
 	if err != nil {
 		return nil, err
 	}
-	config, cleanup, err := s.k8sRESTConfigForCluster(cluster)
+	config, cleanup, err := s.k8sSPDYConfigForCluster(cluster)
 	if err != nil {
 		return nil, errors.New(k8sClusterConnectError)
 	}

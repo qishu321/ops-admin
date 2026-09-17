@@ -26,6 +26,7 @@ let socket
 let inputDisposable
 let resizeObserver
 let resizeFrame
+let connectionHintTimer
 let terminalRoutePath = ''
 let terminalInitialization
 let terminalGeneration = 0
@@ -50,7 +51,7 @@ function createTerminal() {
   term.open(terminalRef.value)
   term.focus()
   inputDisposable = term.onData((data) => {
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (connected.value && socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ operation: 'stdin', data }))
     }
   })
@@ -129,12 +130,14 @@ function connectTerminal() {
   })
   socket = new WebSocket(url)
   socket.onopen = () => {
-    connecting.value = false
-    connected.value = true
     term?.clear()
-    term?.writeln(`\x1b[32m已连接到 ${namespace.value}/${podName.value}\x1b[0m`)
-    term?.writeln(`\x1b[36m容器: ${selectedContainer.value}\x1b[0m`)
-    term?.writeln('')
+    term?.writeln('\x1b[36m浏览器通道已建立，正在连接 Kubernetes API Server…\x1b[0m')
+    clearConnectionHintTimer()
+    connectionHintTimer = window.setTimeout(() => {
+      if (connecting.value) {
+        term?.writeln('\x1b[33m连接耗时较长，仍在等待访问网关建立 exec 通道…\x1b[0m')
+      }
+    }, 5000)
     syncTerminalSize()
   }
   socket.onmessage = (event) => {
@@ -144,17 +147,44 @@ function connectTerminal() {
         term?.write(payload.data)
         return
       }
+      if (payload?.operation === 'status') {
+        const state = payload.data?.state
+        const message = payload.data?.message
+        if (state === 'connected') {
+          clearConnectionHintTimer()
+          connecting.value = false
+          connected.value = true
+          term?.writeln(`\x1b[32m已连接到 ${namespace.value}/${podName.value}\x1b[0m`)
+          term?.writeln(`\x1b[36m容器: ${selectedContainer.value}\x1b[0m`)
+          term?.writeln('')
+          term?.focus()
+        } else if (message) {
+          term?.writeln(`\x1b[36m${message}\x1b[0m`)
+        }
+        return
+      }
+      if (payload?.operation === 'error') {
+        const message = payload.data?.message || 'Pod 终端连接失败'
+        clearConnectionHintTimer()
+        connecting.value = false
+        connected.value = false
+        term?.writeln(`\r\n\x1b[31m${message}\x1b[0m`)
+        ElMessage.error(message)
+        return
+      }
     } catch (error) {
       // ignore non-json payload
     }
     term?.write(event.data)
   }
   socket.onerror = () => {
+    clearConnectionHintTimer()
     connecting.value = false
     connected.value = false
     ElMessage.error('Pod 终端连接失败')
   }
   socket.onclose = () => {
+    clearConnectionHintTimer()
     connecting.value = false
     connected.value = false
     term?.writeln('\r\n\x1b[33m连接已关闭。\x1b[0m')
@@ -162,6 +192,7 @@ function connectTerminal() {
 }
 
 function disconnectTerminal() {
+  clearConnectionHintTimer()
   if (socket) {
     socket.onclose = null
     socket.close()
@@ -169,6 +200,13 @@ function disconnectTerminal() {
   }
   connected.value = false
   connecting.value = false
+}
+
+function clearConnectionHintTimer() {
+  if (connectionHintTimer) {
+    window.clearTimeout(connectionHintTimer)
+    connectionHintTimer = undefined
+  }
 }
 
 function clearTerminal() {

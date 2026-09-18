@@ -599,7 +599,7 @@ func seedApplicationMenus(db *gorm.DB) error {
 
 	buttons := []buttonSeed{
 		// Asset management
-		{"assets:host:list", "新增主机", "assets:host:add"}, {"assets:host:list", "编辑主机", "assets:host:edit"}, {"assets:host:list", "删除主机", "assets:host:delete"}, {"assets:host:list", "复制主机", "assets:host:copy"}, {"assets:host:list", "终端登录", "assets:host:terminal"},
+		{"assets:host:list", "新增主机", "assets:host:add"}, {"assets:host:list", "编辑主机", "assets:host:edit"}, {"assets:host:list", "删除主机", "assets:host:delete"}, {"assets:host:list", "复制主机", "assets:host:copy"}, {"assets:host:list", "终端登录", "assets:host:terminal"}, {"assets:host:list", "上传主机文件", "assets:host:upload"}, {"assets:host:list", "下载主机文件", "assets:host:download"},
 		{"assets:hostgroup:list", "新增主机组", "assets:hostgroup:add"}, {"assets:hostgroup:list", "编辑主机组", "assets:hostgroup:edit"}, {"assets:hostgroup:list", "删除主机组", "assets:hostgroup:delete"},
 		{"assets:credential:list", "新增凭据", "assets:credential:add"}, {"assets:credential:list", "编辑凭据", "assets:credential:edit"}, {"assets:credential:list", "删除凭据", "assets:credential:delete"},
 		{"assets:cloudaccount:list", "新增云账号", "assets:cloudaccount:add"}, {"assets:cloudaccount:list", "编辑云账号", "assets:cloudaccount:edit"}, {"assets:cloudaccount:list", "删除云账号", "assets:cloudaccount:delete"},

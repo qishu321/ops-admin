@@ -1061,6 +1061,63 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	}
 }
 
+func (ctl *Controller) UploadAssetTerminalFile(c *gin.Context) {
+	const maxFileSize = int64(500 * 1024 * 1024)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFileSize+1024*1024)
+	hostID := uint(mustAtoi(c.PostForm("hostId")))
+	directory := strings.TrimSpace(c.PostForm("directory"))
+	if hostID == 0 || directory == "" {
+		httpx.Failed(c, http.StatusBadRequest, "invalid host upload target")
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "请选择一个要上传的文件")
+		return
+	}
+	defer file.Close()
+	if header.Size > maxFileSize {
+		httpx.Failed(c, http.StatusBadRequest, "单个文件不能超过 500 MB")
+		return
+	}
+	data, err := ctl.service.UploadAssetTerminalFile(hostID, directory, header.Filename, header.Size, file)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
+func (ctl *Controller) DownloadAssetTerminalFile(c *gin.Context) {
+	hostID := uint(mustAtoi(c.Query("hostId")))
+	remotePath := strings.TrimSpace(c.Query("path"))
+	download, err := ctl.service.OpenAssetTerminalFileDownload(hostID, remotePath)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer download.Session.Close()
+	defer download.Client.Close()
+	filename := strings.ReplaceAll(download.Filename, `"`, "")
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	if _, err := io.Copy(c.Writer, download.Reader); err != nil {
+		return
+	}
+	_ = download.Session.Wait()
+}
+
+func (ctl *Controller) ListAssetTerminalFiles(c *gin.Context) {
+	hostID := uint(mustAtoi(c.Query("hostId")))
+	directory := strings.TrimSpace(c.Query("path"))
+	data, err := ctl.service.ListAssetTerminalFiles(hostID, directory)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) DeleteAssetHost(c *gin.Context) {
 	var payload service.IDPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {

@@ -37,6 +37,9 @@ export const batchSyncAssetHosts = (ids) => http.post('/api/v1/asset/host/batch/
 export const batchDeleteAssetHosts = (ids) => http.delete('/api/v1/asset/host/batch/delete', { data: { ids } })
 export const batchReplaceAssetHostCredential = (data) => http.put('/api/v1/asset/host/batch/credential', data)
 export const removeAssetHostsFromGroup = (data) => http.delete('/api/v1/asset/host/group/remove', { data })
+export const uploadAssetTerminalFile = (data, onUploadProgress) => http.post('/api/v1/asset/terminal/upload', data, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10 * 60 * 1000, onUploadProgress })
+export const downloadAssetTerminalFile = (hostId, path) => http.get('/api/v1/asset/terminal/download', { params: { hostId, path }, responseType: 'blob', timeout: 10 * 60 * 1000 })
+export const queryAssetTerminalFiles = (hostId, path) => http.get('/api/v1/asset/terminal/files', { params: { hostId, path }, timeout: 60000 })
 
 export const queryAssetHostGroupList = (params) => http.get('/api/v1/asset/hostGroup/list', { params })
 export const assetHostGroupInfo = (id) => http.get('/api/v1/asset/hostGroup/info', { params: { id } })

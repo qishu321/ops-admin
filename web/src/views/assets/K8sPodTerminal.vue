@@ -2,10 +2,10 @@
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Back, Monitor } from '@element-plus/icons-vue'
+import { Back, Monitor, UploadFilled } from '@element-plus/icons-vue'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { buildK8sPodTerminalWSUrl, queryK8sPodContainers } from '../../api/k8s'
+import { buildK8sPodTerminalWSUrl, queryK8sPodContainers, uploadK8sPodFile } from '../../api/k8s'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +20,14 @@ const containers = ref([])
 const selectedContainer = ref(String(route.query.container || ''))
 const connecting = ref(false)
 const connected = ref(false)
+const currentDirectory = ref('')
+const uploadDialogVisible = ref(false)
+const uploadFile = ref()
+const uploadInputRef = ref()
+const uploading = ref(false)
+const uploadProgress = ref(0)
+
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 let term
 let socket
@@ -30,6 +38,40 @@ let connectionHintTimer
 let terminalRoutePath = ''
 let terminalInitialization
 let terminalGeneration = 0
+let terminalOutputBuffer = ''
+
+function writeTerminalOutput(data) {
+  const markerStart = '\x1eOPS_ADMIN_CWD:'
+  const markerEnd = '\x1f'
+  terminalOutputBuffer += String(data || '')
+  let visible = ''
+  while (terminalOutputBuffer) {
+    const start = terminalOutputBuffer.indexOf(markerStart)
+    if (start < 0) {
+      let keep = 0
+      const maximum = Math.min(markerStart.length - 1, terminalOutputBuffer.length)
+      for (let length = maximum; length > 0; length -= 1) {
+        if (terminalOutputBuffer.endsWith(markerStart.slice(0, length))) {
+          keep = length
+          break
+        }
+      }
+      visible += terminalOutputBuffer.slice(0, terminalOutputBuffer.length - keep)
+      terminalOutputBuffer = keep ? terminalOutputBuffer.slice(-keep) : ''
+      break
+    }
+    visible += terminalOutputBuffer.slice(0, start)
+    const end = terminalOutputBuffer.indexOf(markerEnd, start + markerStart.length)
+    if (end < 0) {
+      terminalOutputBuffer = terminalOutputBuffer.slice(start)
+      break
+    }
+    const directory = terminalOutputBuffer.slice(start + markerStart.length, end).trim()
+    if (directory.startsWith('/')) currentDirectory.value = directory
+    terminalOutputBuffer = terminalOutputBuffer.slice(end + markerEnd.length)
+  }
+  if (visible) term?.write(visible)
+}
 
 function createTerminal() {
   term = new Terminal({
@@ -118,7 +160,9 @@ function connectTerminal() {
     ElMessage.warning('请先选择容器')
     return
   }
-  disconnectTerminal()
+  disconnectTerminal(true)
+  currentDirectory.value = ''
+  terminalOutputBuffer = ''
   connecting.value = true
   const url = buildK8sPodTerminalWSUrl({
     clusterId: clusterId.value,
@@ -144,7 +188,7 @@ function connectTerminal() {
     try {
       const payload = JSON.parse(event.data)
       if (payload?.operation === 'stdout' && payload.data) {
-        term?.write(payload.data)
+        writeTerminalOutput(payload.data)
         return
       }
       if (payload?.operation === 'status') {
@@ -175,7 +219,7 @@ function connectTerminal() {
     } catch (error) {
       // ignore non-json payload
     }
-    term?.write(event.data)
+    writeTerminalOutput(event.data)
   }
   socket.onerror = () => {
     clearConnectionHintTimer()
@@ -191,8 +235,15 @@ function connectTerminal() {
   }
 }
 
-function disconnectTerminal() {
+function disconnectTerminal(silent = false) {
+  const wasConnected = Boolean(socket || connected.value || connecting.value)
   clearConnectionHintTimer()
+  // Write before closing the socket. xterm writes asynchronously, so doing it
+  // after teardown can be swallowed when a closing stream repaints the prompt.
+  if (!silent && wasConnected) {
+    term?.writeln('\r\n\x1b[33m已断开 Pod 终端连接。\x1b[0m')
+    term?.scrollToBottom()
+  }
   if (socket) {
     socket.onclose = null
     socket.close()
@@ -200,6 +251,16 @@ function disconnectTerminal() {
   }
   connected.value = false
   connecting.value = false
+  currentDirectory.value = ''
+  terminalOutputBuffer = ''
+}
+
+function handleManualDisconnect() {
+  // A remote exec stream may already have closed while the terminal remains
+  // visible. The explicit user action must still leave an unambiguous record.
+  term?.write('\r\n\x1b[33m已断开 Pod 终端连接。\x1b[0m\r\n')
+  term?.scrollToBottom()
+  disconnectTerminal(true)
 }
 
 function clearConnectionHintTimer() {
@@ -217,8 +278,73 @@ function handleContainerChange() {
   connectTerminal()
 }
 
+function openUploadDialog() {
+  if (!connected.value) {
+    ElMessage.warning('请先连接 Pod 终端')
+    return
+  }
+  if (!currentDirectory.value) {
+    ElMessage.warning('正在识别当前终端目录，请稍后重试')
+    return
+  }
+  uploadFile.value = undefined
+  uploadProgress.value = 0
+  uploadDialogVisible.value = true
+}
+
+function chooseUploadFile() {
+  uploadInputRef.value?.click()
+}
+
+function handleUploadFileChange(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (file.size > MAX_UPLOAD_SIZE) {
+    ElMessage.error('单个文件不能超过 50 MB')
+    return
+  }
+  uploadFile.value = file
+}
+
+function formatFileSize(size = 0) {
+  return size >= 1024 * 1024 ? `${(size / (1024 * 1024)).toFixed(2)} MB` : `${Math.max(1, Math.ceil(size / 1024))} KB`
+}
+
+async function submitUpload() {
+  if (!uploadFile.value) {
+    ElMessage.warning('请选择一个文件')
+    return
+  }
+  const form = new FormData()
+  form.append('clusterId', String(clusterId.value))
+  form.append('namespace', namespace.value)
+  form.append('podName', podName.value)
+  form.append('container', selectedContainer.value)
+  form.append('directory', currentDirectory.value)
+  form.append('file', uploadFile.value)
+  uploading.value = true
+  uploadProgress.value = 0
+  try {
+    const result = await uploadK8sPodFile(form, (event) => {
+      if (event.total) uploadProgress.value = Math.min(100, Math.round(event.loaded * 100 / event.total))
+    })
+    const destination = `${result.directory}/${result.filename}`.replace(/\/+/g, '/')
+    term?.writeln(`\r\n\x1b[32m上传完成：${result.filename} → ${destination}\x1b[0m`)
+    ElMessage.success('文件已上传到当前目录')
+    uploadDialogVisible.value = false
+  } catch (error) {
+    const message = error.message || '文件上传失败'
+    term?.writeln(`\r\n\x1b[31m文件上传失败：${message}\x1b[0m`)
+  } finally {
+    uploading.value = false
+  }
+}
+
 function goBack() {
-  router.push('/containers/k8s/pods')
+  window.dispatchEvent(new CustomEvent('ops-admin:close-tab-request', {
+    detail: { path: route.path, nextPath: '/containers/k8s/pods' }
+  }))
 }
 
 function disposeTerminal() {
@@ -229,7 +355,7 @@ function disposeTerminal() {
   resizeObserver = undefined
   inputDisposable?.dispose()
   inputDisposable = undefined
-  disconnectTerminal()
+  disconnectTerminal(true)
   term?.dispose()
   term = undefined
 }
@@ -303,6 +429,10 @@ onBeforeUnmount(() => {
             <strong>{{ namespace }}/{{ podName }}</strong>
             <span class="terminal-shortcut-hint">Tab 补全命令或路径</span>
           </div>
+          <el-button class="upload-current-button" :disabled="!connected" @click="openUploadDialog">
+            <el-icon><UploadFilled /></el-icon>
+            上传文件
+          </el-button>
         </div>
 
         <div class="toolbar">
@@ -317,7 +447,7 @@ onBeforeUnmount(() => {
             <el-option v-for="item in containers" :key="item" :label="item" :value="item" />
           </el-select>
           <el-button :loading="connecting" type="primary" @click="connectTerminal">连接</el-button>
-          <el-button @click="disconnectTerminal">断开</el-button>
+          <el-button @click="handleManualDisconnect">断开</el-button>
           <el-button @click="clearTerminal">清屏</el-button>
         </div>
       </header>
@@ -325,6 +455,23 @@ onBeforeUnmount(() => {
       <div ref="terminalBoxRef" class="terminal-stage">
         <div ref="terminalRef" class="terminal-body" />
       </div>
+
+      <el-dialog v-model="uploadDialogVisible" title="上传到当前目录" width="480px" :close-on-click-modal="false" append-to-body>
+        <div class="upload-target">
+          <span>目标目录</span>
+          <code>{{ currentDirectory }}</code>
+        </div>
+        <p class="upload-description">容器：{{ selectedContainer }}。仅支持单个文件，最大 50 MB。</p>
+        <input ref="uploadInputRef" class="upload-file-input" type="file" @change="handleUploadFileChange" />
+        <button class="upload-picker" type="button" @click="chooseUploadFile">
+          <el-icon><UploadFilled /></el-icon>
+          <span>{{ uploadFile ? '重新选择文件' : '选择文件' }}</span>
+          <small>文件会直接上传到当前终端目录</small>
+        </button>
+        <div v-if="uploadFile" class="upload-file-summary"><span>{{ uploadFile.name }}</span><small>{{ formatFileSize(uploadFile.size) }}</small></div>
+        <el-progress v-if="uploading" :percentage="uploadProgress" :stroke-width="7" />
+        <template #footer><el-button :disabled="uploading" @click="uploadDialogVisible = false">取消</el-button><el-button type="primary" :loading="uploading" @click="submitUpload">上传文件</el-button></template>
+      </el-dialog>
     </section>
   </div>
 </template>
@@ -389,6 +536,19 @@ onBeforeUnmount(() => {
   line-height: 1.3;
 }
 
+.upload-current-button {
+  margin-left: 14px;
+  border-color: #b8cdf4;
+  color: #356fd0;
+  background: #f6f9ff;
+}
+
+.upload-current-button:not(:disabled):hover {
+  border-color: #6598ec;
+  color: #1f5dc4;
+  background: #edf4ff;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -420,6 +580,66 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
+.upload-target {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid #dce8f8;
+  border-radius: 6px;
+  background: #f7faff;
+}
+
+.upload-target span,
+.upload-file-summary small,
+.upload-description {
+  color: #7d8fa8;
+  font-size: 13px;
+}
+
+.upload-target code {
+  overflow: hidden;
+  color: #2f68c5;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-description { margin: 13px 0; }
+.upload-file-input { display: none; }
+
+.upload-picker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 84px;
+  border: 1px dashed #a9c4ed;
+  border-radius: 7px;
+  color: #3975d1;
+  background: #fbfdff;
+  cursor: pointer;
+}
+
+.upload-picker:hover { border-color: #5c92e6; background: #f4f8ff; }
+.upload-picker small { color: #8b9cb3; }
+
+.upload-file-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f6f8fc;
+  color: #425672;
+  font-size: 13px;
+}
+
+.upload-file-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-file-summary small { flex: 0 0 auto; }
+
 @media (max-width: 960px) {
   .terminal-head {
     flex-direction: column;
@@ -438,5 +658,7 @@ onBeforeUnmount(() => {
   .container-select {
     width: 100%;
   }
+
+  .upload-current-button { margin-left: 0; }
 }
 </style>

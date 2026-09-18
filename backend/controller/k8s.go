@@ -347,6 +347,38 @@ func (ctl *Controller) K8sPodTerminalWS(c *gin.Context) {
 	}
 }
 
+func (ctl *Controller) UploadK8sPodFile(c *gin.Context) {
+	const maxFileSize = int64(50 * 1024 * 1024)
+	// Leave room for multipart boundaries while enforcing the actual file limit
+	// below from the parsed header as well.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFileSize+1024*1024)
+	clusterID := uint(mustAtoi(c.PostForm("clusterId")))
+	namespace := strings.TrimSpace(c.PostForm("namespace"))
+	podName := strings.TrimSpace(c.PostForm("podName"))
+	container := strings.TrimSpace(c.PostForm("container"))
+	directory := strings.TrimSpace(c.PostForm("directory"))
+	if clusterID == 0 || namespace == "" || podName == "" || container == "" || directory == "" {
+		httpx.Failed(c, http.StatusBadRequest, "invalid pod upload target")
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, "请选择一个要上传的文件")
+		return
+	}
+	defer file.Close()
+	if header.Size > maxFileSize {
+		httpx.Failed(c, http.StatusBadRequest, "单个文件不能超过 50 MB")
+		return
+	}
+	data, err := ctl.service.UploadK8sPodFile(clusterID, namespace, podName, container, directory, header.Filename, header.Size, file)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func k8sPodTerminalErrorMessage(err error) string {
 	if err == nil {
 		return "Pod 终端连接失败"

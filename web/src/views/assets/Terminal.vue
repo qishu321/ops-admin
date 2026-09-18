@@ -3,7 +3,8 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, 
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { ElMessage } from 'element-plus'
-import { queryAssetHostGroupList, queryAssetHostList } from '../../api/asset'
+import { Download, Folder, Monitor, Refresh, UploadFilled } from '@element-plus/icons-vue'
+import { queryAssetHostGroupList, queryAssetHostList, uploadAssetTerminalFile, downloadAssetTerminalFile, queryAssetTerminalFiles } from '../../api/asset'
 import { getToken } from '../../utils/auth'
 
 const loading = ref(false)
@@ -13,6 +14,19 @@ const groupTree = ref([])
 const sessions = ref([])
 const activeSessionId = ref()
 const query = reactive({ keyword: '' })
+const uploadDialogVisible = ref(false)
+const uploadDirectory = ref('~')
+const uploadFile = ref()
+const uploadInputRef = ref()
+const uploading = ref(false)
+const uploadProgress = ref(0)
+const downloadDialogVisible = ref(false)
+const downloadDirectory = ref('~')
+const downloadParent = ref('')
+const downloadItems = ref([])
+const downloadLoading = ref(false)
+const downloading = ref(false)
+const MAX_UPLOAD_SIZE = 500 * 1024 * 1024
 
 // xterm and WebSocket instances must stay outside Vue reactivity. Each opened
 // host has an independent runtime, so switching a tab never disconnects it.
@@ -93,14 +107,54 @@ function createTerminal(id) {
     fontFamily: 'Consolas, "Courier New", monospace',
     theme: { background: '#050000', foreground: '#e6edf3', cursor: '#00ff88', green: '#00ff88', brightGreen: '#23ff9a', red: '#ff4d4f' }
   })
-  const runtime = { term, socket: undefined, inputDisposable: undefined }
+  const runtime = { term, socket: undefined, inputDisposable: undefined, commandLine: '', promptBuffer: '', currentDirectory: '~' }
   runtimes.set(id, runtime)
   term.open(element)
   runtime.inputDisposable = term.onData((data) => {
-    if (runtime.socket?.readyState === WebSocket.OPEN) runtime.socket.send(data)
+    if (runtime.socket?.readyState !== WebSocket.OPEN) return
+    if (shouldBlockZmodemCommand(runtime, data)) {
+      runtime.socket.send('\x15')
+      runtime.term.writeln('\r\n\x1b[33mWeb 终端不支持 rz / sz 命令，请使用上传文件或下载文件功能。\x1b[0m')
+      return
+    }
+    runtime.socket.send(data)
   })
   term.focus()
   scheduleTerminalSizeSync()
+}
+
+function shouldBlockZmodemCommand(runtime, data) {
+  const text = String(data || '')
+  if (!/[\r\n]/.test(text)) {
+    runtime.commandLine = `${runtime.commandLine}${text}`.slice(-1024)
+    return false
+  }
+  const lines = `${runtime.commandLine}${text}`.split(/[\r\n]/)
+  runtime.commandLine = lines.at(-1) || ''
+  return lines.slice(0, -1).some((line) => /^\s*(?:rz|sz)(?:\s|$)/i.test(line))
+}
+
+function trackPromptDirectory(runtime, output) {
+  // A terminal prompt is not a protocol. It can include carriage returns,
+  // OSC titles and BEL (\x07). Never let those control bytes become part of a
+  // filesystem path sent to the transfer API.
+  runtime.promptBuffer = `${runtime.promptBuffer}${String(output || '')}`
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/\r/g, '\n')
+    .slice(-2048)
+  const matches = [...runtime.promptBuffer.matchAll(/(?:^|\n)[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:([~/][^\r\n$#]*)[$#]\s*/g)]
+  const directory = matches.at(-1)?.[1]?.trim()
+  if (isSafeTerminalDirectory(directory)) runtime.currentDirectory = directory
+}
+
+function isSafeTerminalDirectory(directory) {
+  return typeof directory === 'string' && /^(?:~(?:\/[^\x00-\x1F:@]*)?|\/[^\x00-\x1F:@]*)$/.test(directory)
+}
+
+function currentTerminalDirectory(runtime) {
+  return isSafeTerminalDirectory(runtime?.currentDirectory) ? runtime.currentDirectory : '~'
 }
 
 function updateSession(id, patch) {
@@ -129,7 +183,10 @@ function connectSocket(id) {
     }
   }
   currentSocket.onmessage = (event) => {
-    if (runtime.socket === currentSocket) runtime.term.write(event.data)
+    if (runtime.socket === currentSocket) {
+      trackPromptDirectory(runtime, event.data)
+      runtime.term.write(event.data)
+    }
   }
   currentSocket.onerror = () => {
     if (runtime.socket !== currentSocket) return
@@ -172,6 +229,76 @@ function reconnect() {
 }
 function disconnect() { if (activeSession.value) disconnectSession(activeSession.value.id) }
 function clearTerminal() { if (activeSession.value) runtimes.get(activeSession.value.id)?.term.clear() }
+
+function openUploadDialog() {
+  const runtime = activeSessionId.value && runtimes.get(activeSessionId.value)
+  if (!activeSession.value || !runtime?.socket || runtime.socket.readyState !== WebSocket.OPEN) return ElMessage.warning('请先连接 SSH 终端')
+  uploadDirectory.value = currentTerminalDirectory(runtime)
+  uploadFile.value = undefined
+  uploadProgress.value = 0
+  uploadDialogVisible.value = true
+}
+async function openDownloadDialog() {
+  const runtime = activeSessionId.value && runtimes.get(activeSessionId.value)
+  if (!activeSession.value || !runtime?.socket || runtime.socket.readyState !== WebSocket.OPEN) return ElMessage.warning('请先连接 SSH 终端')
+  downloadDirectory.value = currentTerminalDirectory(runtime)
+  downloadParent.value = ''
+  downloadItems.value = []
+  downloadDialogVisible.value = true
+  await loadDownloadDirectory(downloadDirectory.value)
+}
+function chooseUploadFile() { uploadInputRef.value?.click() }
+function handleUploadFileChange(event) {
+  const file = event.target.files?.[0]; event.target.value = ''
+  if (!file) return
+  if (file.size > MAX_UPLOAD_SIZE) return ElMessage.error('单个文件不能超过 500 MB')
+  uploadFile.value = file
+}
+function formatFileSize(size = 0) { if (!size) return '0 B'; return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(2)} MB` : `${Math.max(1, Math.ceil(size / 1024))} KB` }
+async function submitUpload() {
+  if (!uploadFile.value) return ElMessage.warning('请选择一个文件')
+  if (!isSafeTerminalDirectory(uploadDirectory.value)) return ElMessage.error('目标目录格式异常，请填写绝对路径或以 ~/ 开头的路径')
+  const form = new FormData(); form.append('hostId', String(activeSession.value.host.id)); form.append('directory', uploadDirectory.value); form.append('file', uploadFile.value)
+  uploading.value = true; uploadProgress.value = 0
+  try {
+    const result = await uploadAssetTerminalFile(form, (event) => { if (event.total) uploadProgress.value = Math.round(event.loaded * 100 / event.total) })
+    const runtime = runtimes.get(activeSessionId.value)
+    runtime?.term.writeln(`\r\n\x1b[32m上传完成：${result.filename} → ${result.destination || uploadDirectory.value}\x1b[0m`)
+    uploadDialogVisible.value = false; ElMessage.success('文件已上传')
+  } finally { uploading.value = false }
+}
+async function loadDownloadDirectory(directory = downloadDirectory.value) {
+  if (!activeSession.value || !directory) return
+  downloadLoading.value = true
+  try {
+    const result = await queryAssetTerminalFiles(activeSession.value.host.id, directory)
+    downloadDirectory.value = result.path
+    downloadParent.value = result.parent || ''
+    downloadItems.value = result.items || []
+  } finally { downloadLoading.value = false }
+}
+function openDownloadEntry(entry) {
+  if (entry.directory) loadDownloadDirectory(entry.path)
+}
+async function submitDownload(entry) {
+  if (!entry || entry.directory) return
+  downloading.value = true
+  try {
+    const response = await downloadAssetTerminalFile(activeSession.value.host.id, entry.path)
+    // Empty files are valid downloads. The backend validates the remote target
+    // before it writes attachment headers, so an error is returned as HTTP 400
+    // instead of being saved by the browser as a fake 0 B download.
+    if (!response.data) throw new Error('下载响应为空')
+    const url = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = entry.name || 'download'
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url)
+    const runtime = runtimes.get(activeSessionId.value)
+    runtime?.term.writeln(`\r\n\x1b[32m已开始下载：${entry.path}\x1b[0m`)
+    ElMessage.success(`已开始下载 ${entry.name}`)
+  } finally { downloading.value = false }
+}
 
 function closeSession(id = activeSessionId.value) {
   const index = sessions.value.findIndex((item) => item.id === id)
@@ -287,6 +414,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="terminal-toolbar">
         <span class="active-host">{{ activeSession?.host.hostName || activeSession?.host.sshIp }}</span>
+        <div class="terminal-transfer-actions"><button type="button" class="terminal-transfer-button" @click="openUploadDialog"><el-icon><UploadFilled /></el-icon>上传文件</button><button type="button" class="terminal-transfer-button" @click="openDownloadDialog"><el-icon><Download /></el-icon>下载文件</button></div>
         <div class="terminal-actions">
           <el-button size="small" color="#00d084" plain @click="reconnect">重新连接</el-button>
           <el-button size="small" color="#00d084" plain @click="disconnect">断开</el-button>
@@ -294,6 +422,26 @@ onBeforeUnmount(() => {
           <el-button size="small" type="danger" plain @click="closeSession()">关闭</el-button>
         </div>
       </div>
+      <el-dialog v-model="uploadDialogVisible" title="上传文件到主机" width="480px" :close-on-click-modal="false" append-to-body>
+        <el-form label-width="88px"><el-form-item label="目标目录"><el-input v-model="uploadDirectory" placeholder="例如：/opt/app 或 ~" /></el-form-item></el-form>
+        <p class="terminal-upload-hint">单次仅支持一个文件，最大 500 MB。</p>
+        <input ref="uploadInputRef" class="terminal-upload-input" type="file" @change="handleUploadFileChange" />
+        <button class="terminal-upload-picker" type="button" @click="chooseUploadFile"><el-icon><UploadFilled /></el-icon>{{ uploadFile ? '重新选择文件' : '选择文件' }}</button>
+        <div v-if="uploadFile" class="terminal-upload-file"><span>{{ uploadFile.name }}</span><small>{{ formatFileSize(uploadFile.size) }}</small></div>
+        <el-progress v-if="uploading" :percentage="uploadProgress" :stroke-width="7" />
+        <template #footer><el-button :disabled="uploading" @click="uploadDialogVisible = false">取消</el-button><el-button type="primary" :loading="uploading" @click="submitUpload">上传文件</el-button></template>
+      </el-dialog>
+      <el-dialog v-model="downloadDialogVisible" title="选择要下载的文件" width="680px" :close-on-click-modal="false" append-to-body>
+        <div class="terminal-file-browser-toolbar"><span class="terminal-file-path" :title="downloadDirectory">{{ downloadDirectory }}</span><div><el-button size="small" :disabled="!downloadParent || downloadLoading" @click="loadDownloadDirectory(downloadParent)">上一级</el-button><el-button size="small" :icon="Refresh" :loading="downloadLoading" @click="loadDownloadDirectory()">刷新</el-button></div></div>
+        <p class="terminal-upload-hint">双击目录进入；选择文件后下载到本地。</p>
+        <el-table v-loading="downloadLoading" :data="downloadItems" max-height="350" class="terminal-file-table" empty-text="当前目录没有可下载的普通文件">
+          <el-table-column label="名称" min-width="270"><template #default="{ row }"><button class="terminal-file-name" :class="{ directory: row.directory }" @dblclick="openDownloadEntry(row)" @click="row.directory && openDownloadEntry(row)"><el-icon><Folder v-if="row.directory" /><Download v-else /></el-icon>{{ row.name }}</button></template></el-table-column>
+          <el-table-column label="大小" width="110"><template #default="{ row }">{{ row.directory ? '—' : formatFileSize(row.size) }}</template></el-table-column>
+          <el-table-column prop="updatedAt" label="修改时间" width="150" />
+          <el-table-column label="操作" width="88"><template #default="{ row }"><el-button v-if="!row.directory" link type="primary" :loading="downloading" @click="submitDownload(row)">下载</el-button><el-button v-else link type="primary" @click="openDownloadEntry(row)">进入</el-button></template></el-table-column>
+        </el-table>
+        <template #footer><el-button :disabled="downloading" @click="downloadDialogVisible = false">关闭</el-button></template>
+      </el-dialog>
       <div v-for="session in sessions" :key="`screen-${session.id}`" v-show="session.id === activeSessionId" class="terminal-stage">
         <div :ref="(element) => setTerminalElement(session.id, element)" class="terminal-body" />
       </div>
@@ -316,7 +464,8 @@ onBeforeUnmount(() => {
 .terminal-tab { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; max-width: 240px; padding: 0 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; background: transparent; color: #aabac7; cursor: pointer; font-size: 13px; }.terminal-tab:hover { background: rgba(0, 208, 132, .08); color: #ecf6f1; }.terminal-tab.active { border-color: rgba(0, 208, 132, .55); background: #20384c; color: #f4fffa; }.terminal-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .connection-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #8393a5; }.connection-dot.connecting { background: #f2c94c; box-shadow: 0 0 0 3px rgba(242, 201, 76, .14); }.connection-dot.connected { background: #00d084; box-shadow: 0 0 0 3px rgba(0, 208, 132, .14); }.connection-dot.error { background: #ff6b6b; }
 .terminal-tab-close { display: inline-grid; width: 18px; height: 18px; place-items: center; border-radius: 4px; color: #91a2b1; font-size: 18px; line-height: 1; }.terminal-tab-close:hover { background: rgba(255, 77, 79, .18); color: #ff8a8c; }
-.terminal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 0 12px; border-bottom: 1px solid rgba(0, 208, 132, .6); }.active-host { overflow: hidden; color: #d6e4ec; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.terminal-actions { display: flex; flex: 0 0 auto; gap: 10px; }
+.terminal-toolbar { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 12px; border-bottom: 1px solid rgba(0, 208, 132, .6); }.active-host { overflow: hidden; color: #d6e4ec; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.terminal-actions { display: flex; flex: 0 0 auto; gap: 10px; margin-left: auto; }
+.terminal-transfer-actions { display: flex; flex: 0 0 auto; gap: 8px; margin-left: 8px; }.terminal-transfer-button { display: inline-flex; align-items: center; gap: 5px; height: 29px; padding: 0 10px; border: 1px solid rgba(0, 208, 132, .72); border-radius: 5px; color: #00b978; background: rgba(0, 208, 132, .08); cursor: pointer; font-size: 12px; }.terminal-transfer-button:hover { color: #d9fff0; background: rgba(0, 208, 132, .25); }.terminal-upload-hint { margin: 0 0 14px; color: #72849a; font-size: 13px; }.terminal-upload-input { display: none; }.terminal-upload-picker { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 76px; border: 1px dashed #7dbca8; border-radius: 7px; color: #159669; background: #f3fcf8; cursor: pointer; font-size: 14px; }.terminal-upload-picker:hover { border-color: #00a878; background: #ebfaf3; }.terminal-upload-file { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 12px; border-radius: 6px; background: #f3f7f6; color: #42566a; font-size: 13px; }.terminal-upload-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.terminal-upload-file small { flex: 0 0 auto; color: #8393a5; }.terminal-file-browser-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 9px 10px; border: 1px solid #e0e8f2; border-radius: 6px; background: #f7faff; }.terminal-file-path { overflow: hidden; color: #36506b; font-family: Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.terminal-file-table { border: 1px solid #e5edf5; border-radius: 6px; }.terminal-file-name { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; border: 0; background: transparent; color: #3f5267; cursor: pointer; font: inherit; }.terminal-file-name.directory { color: #2472d7; font-weight: 600; }.terminal-file-name:hover { color: #409eff; }
 .terminal-stage { display: flex; flex: 1; min-height: 0; }.terminal-body { display: flex; flex: 1; min-height: 0; padding: 10px 12px; box-sizing: border-box; background: #050000; overflow: hidden; }.terminal-body :deep(.xterm) { width: 100%; height: 100%; }
 .terminal-empty { display: grid; place-items: center; border-radius: 12px; background: linear-gradient(135deg, #243d70, #466df4); color: #fff; }.terminal-empty h2 { margin: 0 0 10px; font-size: 34px; }.terminal-empty p { max-width: 580px; margin: 0; color: rgba(255, 255, 255, .8); line-height: 1.7; }
 @media (max-width: 960px) { .terminal-page { grid-template-columns: 240px minmax(0, 1fr); }.terminal-toolbar { align-items: flex-start; flex-direction: column; padding: 10px 12px; } }

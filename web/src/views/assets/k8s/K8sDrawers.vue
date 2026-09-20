@@ -238,6 +238,26 @@ defineProps({
             <el-table-column prop="value" :label="page.t('k8sBackend')" min-width="220" />
           </el-table>
         </div>
+
+        <div class="drawer-section ingress-annotation-section">
+          <div class="ingress-detail-section-head">
+            <strong>注解</strong>
+            <span>{{ Object.keys(page.ingressDetail.annotations || {}).length }} 项</span>
+          </div>
+          <el-table
+            v-if="Object.keys(page.ingressDetail.annotations || {}).length"
+            :data="Object.entries(page.ingressDetail.annotations || {}).map(([key, value]) => ({ key, value }))"
+            class="data-table ingress-annotation-table"
+          >
+            <el-table-column prop="key" label="注解键" min-width="280">
+              <template #default="{ row }"><code class="ingress-annotation-key">{{ row.key }}</code></template>
+            </el-table-column>
+            <el-table-column label="注解值" min-width="360">
+              <template #default="{ row }"><div class="ingress-annotation-value">{{ row.value }}</div></template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="ingress-annotation-empty">该 Ingress 未配置注解。</div>
+        </div>
       </template>
     </div>
   </el-drawer>

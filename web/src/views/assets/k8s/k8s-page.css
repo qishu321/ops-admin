@@ -1278,6 +1278,44 @@
   gap: 16px;
 }
 
+.ingress-detail-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ingress-detail-section-head > span {
+  color: #8090a4;
+  font-size: 12px;
+}
+
+.ingress-annotation-table .el-table__cell {
+  vertical-align: top;
+}
+
+.ingress-annotation-key {
+  display: inline-block;
+  padding: 3px 6px;
+  border-radius: 4px;
+  color: #375d93;
+  background: #f0f5fc;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ingress-annotation-value {
+  margin: 0;
+  color: #45566d;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .tag-group {
   display: flex;
   flex-wrap: wrap;

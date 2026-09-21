@@ -17,6 +17,8 @@ const form = reactive({
   rememberLogin: false
 })
 
+const canSubmit = computed(() => Boolean(form.username.trim() && form.password))
+
 const logoText = computed(() => {
   if (config.value.logoType === 'text' && config.value.logoValue) {
     return String(config.value.logoValue).slice(0, 2).toUpperCase()
@@ -56,9 +58,13 @@ async function loadSystemConfig() {
 }
 
 async function submit() {
+  if (!form.username.trim() || !form.password) {
+    ElMessage.warning('请输入用户名和密码')
+    return
+  }
   loading.value = true
   try {
-    const data = await login(form)
+    const data = await login({ ...form, username: form.username.trim() })
     setAuthPersistence(data.rememberLogin === true)
     setToken(data.token, data.accessTokenExpiresAt, data.sessionExpiresAt)
     setUser(data.sysAdmin)
@@ -68,8 +74,10 @@ async function submit() {
       setSystemConfig(data.systemConfig)
       applySystemTheme(data.systemConfig)
     }
-    ElMessage.success(t('saveSuccess'))
-    router.push('/dashboard')
+    ElMessage.success('登录成功')
+    await router.push('/dashboard')
+  } catch {
+    // 请求层负责展示服务端错误；组件在此收口异常，避免 Vue 未捕获事件告警。
   } finally {
     loading.value = false
   }
@@ -101,14 +109,14 @@ onMounted(loadSystemConfig)
           <h2>{{ t('loginWelcome') }}</h2>
           <p>{{ t('loginHint') }}</p>
         </div>
-        <el-form label-position="top" @submit.prevent>
+        <el-form label-position="top" @submit.prevent="submit">
           <el-form-item :label="t('username')">
             <el-input v-model="form.username" :placeholder="t('username')" />
           </el-form-item>
           <el-form-item :label="t('password')">
             <el-input v-model="form.password" type="password" show-password :placeholder="t('password')" />
           </el-form-item>
-          <el-button type="primary" class="submit-btn" :loading="loading" @click="submit">{{ t('loginSystem') }}</el-button>
+          <el-button native-type="submit" type="primary" class="submit-btn" :loading="loading" :disabled="!canSubmit">{{ t('loginSystem') }}</el-button>
           <div v-if="configLoaded && config.rememberLoginEnabled" class="remember-login-row">
             <el-checkbox v-model="form.rememberLogin">{{ t('rememberLoginSevenDays') }}</el-checkbox>
             <span>{{ t('rememberLoginFixedHint') }}</span>

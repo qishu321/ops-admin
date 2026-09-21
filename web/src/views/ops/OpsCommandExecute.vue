@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { queryAssetHostGroupList, queryAssetHostList } from '../../api/asset'
 import { executeOpsCommand, queryOpsExecHistoryDetail } from '../../api/ops'
@@ -24,6 +24,10 @@ const form = reactive({
   concurrency: 5,
   timeoutSeconds: 10
 })
+
+const canSubmit = computed(() => Boolean(
+  form.commandText.trim() && (form.hostIds.length || form.groupId)
+))
 
 async function loadOptions() {
   const [hosts, groups] = await Promise.all([
@@ -158,7 +162,8 @@ onBeforeUnmount(stopPolling)
         <span class="inline-hint">秒，超过后自动终止执行</span>
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" :loading="submitting" @click="submit">立即执行</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">立即执行</el-button>
+        <span v-if="!canSubmit" class="inline-hint">填写命令并选择目标主机或主机组后可执行</span>
       </el-form-item>
     </el-form>
     <OpsExecutionResultDialog

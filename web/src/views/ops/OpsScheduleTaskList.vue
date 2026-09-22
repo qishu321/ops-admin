@@ -7,6 +7,7 @@ import {
   batchDeleteOpsScheduleTask,
   deleteOpsScheduleTask,
   opsScheduleTaskInfo,
+  previewOpsScheduleTaskNotification,
   queryNotifyRuleOptions,
   queryOpsScheduleTaskList,
   queryOpsScheduleTemplateList,
@@ -31,6 +32,10 @@ const hostOptions = ref([])
 const groupOptions = ref([])
 const templateOptions = ref([])
 const notifyRuleOptions = ref([])
+const previewVisible = ref(false)
+const previewLoading = ref(false)
+const previewStatus = ref('failed')
+const previewData = ref(null)
 
 const query = reactive({
   pageNum: 1,
@@ -56,6 +61,11 @@ const form = reactive({
   body: '',
   expectedStatus: 200,
   timeoutSeconds: 10,
+  retryEnabled: false,
+  maxRetries: 2,
+  retryIntervalSeconds: 5,
+  retryBackoff: 'exponential',
+  allowUnsafeRetry: false,
   cronExpr: '0 */5 * * * *',
   description: '',
   status: 1,
@@ -73,6 +83,8 @@ const selectedScriptVariables = computed(() => {
   const current = scriptOptions.value.find((item) => Number(item.id) === Number(form.scriptId))
   return current?.variables || []
 })
+
+const unsafeRetryMethod = computed(() => ['POST', 'PATCH', 'DELETE'].includes(form.httpMethod))
 
 function formatDateTime(value) {
   if (!value) return '-'
@@ -107,6 +119,11 @@ function resetForm() {
     body: '',
     expectedStatus: 200,
     timeoutSeconds: 10,
+    retryEnabled: false,
+    maxRetries: 2,
+    retryIntervalSeconds: 5,
+    retryBackoff: 'exponential',
+    allowUnsafeRetry: false,
     cronExpr: '0 */5 * * * *',
     description: '',
     status: 1,
@@ -136,6 +153,14 @@ watch(
 
 watch(() => form.scriptId, () => {
   if (form.taskType === 'script') syncScriptVariables(form.variables)
+})
+
+watch(() => form.httpMethod, () => {
+  if (!unsafeRetryMethod.value) form.allowUnsafeRetry = false
+})
+
+watch(() => form.notifyOnFailureOnly, (failureOnly) => {
+  if (failureOnly) previewStatus.value = 'failed'
 })
 
 async function loadBaseOptions() {
@@ -206,6 +231,11 @@ async function openEdit(row) {
     body: data.body || '',
     expectedStatus: data.expectedStatus || 200,
     timeoutSeconds: data.timeoutSeconds || 10,
+    retryEnabled: !!data.retryEnabled,
+    maxRetries: data.maxRetries || 2,
+    retryIntervalSeconds: data.retryIntervalSeconds || 5,
+    retryBackoff: data.retryBackoff || 'exponential',
+    allowUnsafeRetry: !!data.allowUnsafeRetry,
     cronExpr: data.cronExpr || '0 */5 * * * *',
     description: data.description || '',
     status: data.status || 1,
@@ -236,6 +266,11 @@ async function handleCopy(row) {
     body: data.body || '',
     expectedStatus: data.expectedStatus || 200,
     timeoutSeconds: data.timeoutSeconds || 10,
+    retryEnabled: !!data.retryEnabled,
+    maxRetries: data.maxRetries || 2,
+    retryIntervalSeconds: data.retryIntervalSeconds || 5,
+    retryBackoff: data.retryBackoff || 'exponential',
+    allowUnsafeRetry: !!data.allowUnsafeRetry,
     cronExpr: data.cronExpr || '0 */5 * * * *',
     description: data.description || '',
     status: data.status || 1,
@@ -285,6 +320,11 @@ function buildPayload() {
     body: form.body,
     expectedStatus: form.expectedStatus,
     timeoutSeconds: form.timeoutSeconds,
+    retryEnabled: form.taskType === 'http' && form.retryEnabled,
+    maxRetries: form.maxRetries,
+    retryIntervalSeconds: form.retryIntervalSeconds,
+    retryBackoff: form.retryBackoff,
+    allowUnsafeRetry: form.taskType === 'http' && form.retryEnabled && form.allowUnsafeRetry,
     cronExpr: form.cronExpr,
     description: form.description,
     status: form.status,
@@ -294,6 +334,34 @@ function buildPayload() {
   }
 }
 
+async function loadNotifyPreview() {
+  if (form.notifyOnFailureOnly) previewStatus.value = 'failed'
+  previewLoading.value = true
+  previewData.value = null
+  try {
+    previewData.value = await previewOpsScheduleTaskNotification({
+      task: buildPayload(),
+      previewStatus: previewStatus.value
+    })
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+async function openNotifyPreview() {
+  if (!form.notifyEnabled) {
+    ElMessage.warning('请先开启消息通知')
+    return
+  }
+  if (!form.notifyRuleId) {
+    ElMessage.warning('请选择通知规则')
+    return
+  }
+  previewStatus.value = form.notifyOnFailureOnly ? 'failed' : previewStatus.value
+  previewVisible.value = true
+  await loadNotifyPreview()
+}
+
 async function submit() {
   if (!form.name.trim()) {
     ElMessage.warning('请输入任务名称')
@@ -301,6 +369,10 @@ async function submit() {
   }
   if (form.notifyEnabled && !form.notifyRuleId) {
     ElMessage.warning('请选择通知规则')
+    return
+  }
+  if (form.taskType === 'http' && form.retryEnabled && unsafeRetryMethod.value && !form.allowUnsafeRetry) {
+    ElMessage.warning('请确认允许该请求方法重复提交后再保存')
     return
   }
   saving.value = true
@@ -596,6 +668,43 @@ onMounted(async () => {
               </el-form-item>
             </el-col>
             <el-col :span="18">
+              <el-form-item label="失败重试">
+                <el-switch v-model="form.retryEnabled" active-text="启用" inactive-text="关闭" />
+                <span class="form-tip">请求异常或状态码不等于期望值时重试，包含 400、401、403、404 等所有 4xx。</span>
+              </el-form-item>
+            </el-col>
+            <template v-if="form.retryEnabled">
+              <el-col :span="6">
+                <el-form-item label="重试次数">
+                  <el-input-number v-model="form.maxRetries" :min="1" :max="5" style="width: 100%" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="重试间隔">
+                  <el-input-number v-model="form.retryIntervalSeconds" :min="1" :max="300" style="width: 100%">
+                    <template #suffix>秒</template>
+                  </el-input-number>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6">
+                <el-form-item label="退避策略">
+                  <el-select v-model="form.retryBackoff" style="width: 100%">
+                    <el-option label="指数退避" value="exponential" />
+                    <el-option label="固定间隔" value="fixed" />
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <el-col :span="6" class="retry-summary">
+                最多请求 {{ Number(form.maxRetries || 0) + 1 }} 次
+              </el-col>
+              <el-col v-if="unsafeRetryMethod" :span="24">
+                <el-alert type="warning" :closable="false" show-icon>
+                  <template #title>该方法可能产生重复写入，请确认接口具备幂等性。</template>
+                  <el-checkbox v-model="form.allowUnsafeRetry">允许重复提交 {{ form.httpMethod }} 请求</el-checkbox>
+                </el-alert>
+              </el-col>
+            </template>
+            <el-col :span="18">
               <el-form-item label="请求头 JSON">
                 <el-input v-model="form.headersJson" type="textarea" :rows="4" />
               </el-form-item>
@@ -615,8 +724,45 @@ onMounted(async () => {
         </el-row>
       </el-form>
       <template #footer>
+        <el-button :disabled="!form.notifyEnabled || !form.notifyRuleId" @click="openNotifyPreview">发送预览</el-button>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="previewVisible" title="通知发送预览" width="min(760px, 90vw)" append-to-body>
+      <div class="preview-toolbar">
+        <span>预览场景</span>
+        <el-radio-group v-model="previewStatus" :disabled="form.notifyOnFailureOnly" @change="loadNotifyPreview">
+          <el-radio-button value="failed">失败通知</el-radio-button>
+          <el-radio-button v-if="!form.notifyOnFailureOnly" value="success">成功通知</el-radio-button>
+        </el-radio-group>
+      </div>
+      <el-alert
+        v-if="form.notifyOnFailureOnly"
+        title="当前为“仅失败时通知”，发送预览只展示失败通知。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <div v-loading="previewLoading" class="notify-preview">
+        <template v-if="previewData">
+          <div class="preview-meta">
+            <div><span>通知规则</span><strong>{{ previewData.ruleName }}</strong></div>
+            <div><span>消息模板</span><strong>{{ previewData.templateName }}</strong></div>
+            <div><span>预览状态</span><el-tag :type="previewData.previewStatus === 'failed' ? 'danger' : 'success'">{{ previewData.statusLabel }}</el-tag></div>
+            <div><span>目标媒介</span><div class="preview-channels"><el-tag v-for="item in previewData.channels" :key="item.id" effect="plain">{{ item.name }} · {{ item.channelType }}</el-tag></div></div>
+          </div>
+          <div class="preview-message">
+            <h4>{{ previewData.title }}</h4>
+            <pre>{{ previewData.content }}</pre>
+          </div>
+          <p class="preview-note">预览使用示例执行结果渲染，不会实际发送，也不会产生发送记录。</p>
+        </template>
+      </div>
+      <template #footer>
+        <el-button :loading="previewLoading" @click="loadNotifyPreview">刷新预览</el-button>
+        <el-button type="primary" @click="previewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -632,6 +778,17 @@ onMounted(async () => {
 .toolbar-left, .toolbar-right { display: flex; gap: 12px; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; }
 .form-tip { margin-left: 12px; color: #8694ad; font-size: 13px; }
+.retry-summary { display: flex; align-items: center; min-height: 40px; color: #66748f; font-size: 13px; }
+.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; color: #52617a; }
+.notify-preview { min-height: 220px; margin-top: 14px; }
+.preview-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; margin-bottom: 18px; }
+.preview-meta span { display: block; margin-bottom: 5px; color: #7b89a2; font-size: 12px; }
+.preview-meta strong { color: #172744; }
+.preview-channels { display: flex; gap: 6px; flex-wrap: wrap; }
+.preview-message { overflow: hidden; border: 1px solid #dce5f2; border-radius: 10px; }
+.preview-message h4 { margin: 0; padding: 13px 16px; background: #f5f8fd; color: #172744; }
+.preview-message pre { margin: 0; padding: 16px; min-height: 120px; white-space: pre-wrap; word-break: break-word; color: #34435d; font: 13px/1.7 'JetBrains Mono', 'Consolas', monospace; }
+.preview-note { margin: 10px 0 0; color: #8694ad; font-size: 12px; }
 .variable-panel { padding: 16px; border: 1px solid #d9e6ff; border-radius: 10px; background: linear-gradient(135deg, #f8fbff, #fff); }
 .variable-panel__header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .variable-panel__title { color: #172744; font-size: 15px; font-weight: 700; }

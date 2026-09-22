@@ -28,6 +28,7 @@ export const addOpsScheduleTask = (data) => http.post('/api/v1/ops/schedule/task
 export const updateOpsScheduleTask = (data) => http.put('/api/v1/ops/schedule/task/update', data)
 export const updateOpsScheduleTaskStatus = (data) => http.put('/api/v1/ops/schedule/task/status', data)
 export const runOpsScheduleTask = (id) => http.post('/api/v1/ops/schedule/task/run', { id })
+export const previewOpsScheduleTaskNotification = (data) => http.post('/api/v1/ops/schedule/task/notify-preview', data)
 export const deleteOpsScheduleTask = (id) => http.delete('/api/v1/ops/schedule/task/delete', { data: { id } })
 export const batchDeleteOpsScheduleTask = (ids) => http.delete('/api/v1/ops/schedule/task/batch/delete', { data: { ids } })
 

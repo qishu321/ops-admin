@@ -107,6 +107,20 @@ func (ctl *Controller) RunOpsScheduleTask(c *gin.Context) {
 	httpx.Success(c, true)
 }
 
+func (ctl *Controller) PreviewOpsScheduleTaskNotification(c *gin.Context) {
+	var payload service.OpsScheduleNotifyPreviewPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid notification preview payload")
+		return
+	}
+	data, err := ctl.service.PreviewOpsScheduleTaskNotification(payload)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetOpsScheduleLogList(c *gin.Context) {
 	pageNum, _ := strconv.Atoi(c.DefaultQuery("pageNum", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))

@@ -36,27 +36,37 @@ type OpsScheduleTemplatePayload struct {
 }
 
 type OpsScheduleTaskPayload struct {
-	ID                  uint              `json:"id"`
-	Name                string            `json:"name"`
-	TaskType            string            `json:"taskType"`
-	TemplateID          uint              `json:"templateId"`
-	ScriptID            uint              `json:"scriptId"`
-	Variables           map[string]string `json:"variables"`
-	HostIDs             []uint            `json:"hostIds"`
-	GroupIDs            []uint            `json:"groupIds"`
-	Concurrency         int               `json:"concurrency"`
-	HTTPMethod          string            `json:"httpMethod"`
-	URL                 string            `json:"url"`
-	HeadersJSON         string            `json:"headersJson"`
-	Body                string            `json:"body"`
-	ExpectedStatus      int               `json:"expectedStatus"`
-	TimeoutSeconds      int               `json:"timeoutSeconds"`
-	CronExpr            string            `json:"cronExpr"`
-	Description         string            `json:"description"`
-	Status              int               `json:"status"`
-	NotifyEnabled       bool              `json:"notifyEnabled"`
-	NotifyRuleID        uint              `json:"notifyRuleId"`
-	NotifyOnFailureOnly bool              `json:"notifyOnFailureOnly"`
+	ID                   uint              `json:"id"`
+	Name                 string            `json:"name"`
+	TaskType             string            `json:"taskType"`
+	TemplateID           uint              `json:"templateId"`
+	ScriptID             uint              `json:"scriptId"`
+	Variables            map[string]string `json:"variables"`
+	HostIDs              []uint            `json:"hostIds"`
+	GroupIDs             []uint            `json:"groupIds"`
+	Concurrency          int               `json:"concurrency"`
+	HTTPMethod           string            `json:"httpMethod"`
+	URL                  string            `json:"url"`
+	HeadersJSON          string            `json:"headersJson"`
+	Body                 string            `json:"body"`
+	ExpectedStatus       int               `json:"expectedStatus"`
+	TimeoutSeconds       int               `json:"timeoutSeconds"`
+	RetryEnabled         bool              `json:"retryEnabled"`
+	MaxRetries           int               `json:"maxRetries"`
+	RetryIntervalSeconds int               `json:"retryIntervalSeconds"`
+	RetryBackoff         string            `json:"retryBackoff"`
+	AllowUnsafeRetry     bool              `json:"allowUnsafeRetry"`
+	CronExpr             string            `json:"cronExpr"`
+	Description          string            `json:"description"`
+	Status               int               `json:"status"`
+	NotifyEnabled        bool              `json:"notifyEnabled"`
+	NotifyRuleID         uint              `json:"notifyRuleId"`
+	NotifyOnFailureOnly  bool              `json:"notifyOnFailureOnly"`
+}
+
+type OpsScheduleNotifyPreviewPayload struct {
+	Task          OpsScheduleTaskPayload `json:"task"`
+	PreviewStatus string                 `json:"previewStatus"`
 }
 
 type OpsScheduleTaskStatusPayload struct {
@@ -101,6 +111,45 @@ func normalizeExpectedStatus(value int) int {
 		return 200
 	}
 	return value
+}
+
+func normalizeScheduleMaxRetries(enabled bool, value int) int {
+	if !enabled {
+		return 0
+	}
+	if value <= 0 {
+		return 2
+	}
+	if value > 5 {
+		return 5
+	}
+	return value
+}
+
+func normalizeScheduleRetryInterval(value int) int {
+	if value <= 0 {
+		return 5
+	}
+	if value > 300 {
+		return 300
+	}
+	return value
+}
+
+func normalizeScheduleRetryBackoff(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "fixed") {
+		return "fixed"
+	}
+	return "exponential"
+}
+
+func scheduleMethodNeedsUnsafeRetryApproval(method string) bool {
+	switch normalizeHTTPMethod(method) {
+	case "POST", "PATCH", "DELETE":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeCronExpr(value string) string {
@@ -301,34 +350,39 @@ func (s *Service) removeOpsScheduleTask(taskID uint) {
 
 func mapScheduleTaskItem(item model.OpsScheduleTask) map[string]any {
 	return map[string]any{
-		"id":                  item.ID,
-		"name":                item.Name,
-		"taskType":            item.TaskType,
-		"templateId":          item.TemplateID,
-		"scriptId":            item.ScriptID,
-		"scriptName":          item.ScriptName,
-		"parameters":          item.Parameters,
-		"hostIds":             decodeUintList(item.HostIDsJSON),
-		"groupIds":            decodeUintList(item.GroupIDsJSON),
-		"concurrency":         item.Concurrency,
-		"httpMethod":          item.HTTPMethod,
-		"url":                 item.URL,
-		"headersJson":         firstNonEmpty(item.HeadersJSON, "{}"),
-		"body":                item.Body,
-		"expectedStatus":      item.ExpectedStatus,
-		"timeoutSeconds":      item.TimeoutSeconds,
-		"cronExpr":            item.CronExpr,
-		"description":         item.Description,
-		"status":              item.Status,
-		"notifyEnabled":       item.NotifyEnabled,
-		"notifyRuleId":        item.NotifyRuleID,
-		"notifyOnFailureOnly": item.NotifyOnFailureOnly,
-		"lastStatus":          item.LastStatus,
-		"lastSummary":         item.LastSummary,
-		"lastRunAt":           item.LastRunAt,
-		"nextRunAt":           item.NextRunAt,
-		"createTime":          item.CreatedAt,
-		"updateTime":          item.UpdatedAt,
+		"id":                   item.ID,
+		"name":                 item.Name,
+		"taskType":             item.TaskType,
+		"templateId":           item.TemplateID,
+		"scriptId":             item.ScriptID,
+		"scriptName":           item.ScriptName,
+		"parameters":           item.Parameters,
+		"hostIds":              decodeUintList(item.HostIDsJSON),
+		"groupIds":             decodeUintList(item.GroupIDsJSON),
+		"concurrency":          item.Concurrency,
+		"httpMethod":           item.HTTPMethod,
+		"url":                  item.URL,
+		"headersJson":          firstNonEmpty(item.HeadersJSON, "{}"),
+		"body":                 item.Body,
+		"expectedStatus":       item.ExpectedStatus,
+		"timeoutSeconds":       item.TimeoutSeconds,
+		"retryEnabled":         item.RetryEnabled,
+		"maxRetries":           item.MaxRetries,
+		"retryIntervalSeconds": item.RetryIntervalSeconds,
+		"retryBackoff":         firstNonEmpty(item.RetryBackoff, "exponential"),
+		"allowUnsafeRetry":     item.AllowUnsafeRetry,
+		"cronExpr":             item.CronExpr,
+		"description":          item.Description,
+		"status":               item.Status,
+		"notifyEnabled":        item.NotifyEnabled,
+		"notifyRuleId":         item.NotifyRuleID,
+		"notifyOnFailureOnly":  item.NotifyOnFailureOnly,
+		"lastStatus":           item.LastStatus,
+		"lastSummary":          item.LastSummary,
+		"lastRunAt":            item.LastRunAt,
+		"nextRunAt":            item.NextRunAt,
+		"createTime":           item.CreatedAt,
+		"updateTime":           item.UpdatedAt,
 	}
 }
 
@@ -434,6 +488,11 @@ func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, ex
 		"body":                   payload.Body,
 		"expected_status":        normalizeExpectedStatus(payload.ExpectedStatus),
 		"timeout_seconds":        normalizeOpsTimeout(payload.TimeoutSeconds),
+		"retry_enabled":          payload.RetryEnabled,
+		"max_retries":            normalizeScheduleMaxRetries(payload.RetryEnabled, payload.MaxRetries),
+		"retry_interval_seconds": normalizeScheduleRetryInterval(payload.RetryIntervalSeconds),
+		"retry_backoff":          normalizeScheduleRetryBackoff(payload.RetryBackoff),
+		"allow_unsafe_retry":     payload.RetryEnabled && payload.AllowUnsafeRetry,
 		"cron_expr":              normalizeCronExpr(payload.CronExpr),
 		"description":            Trimmed(payload.Description),
 		"status":                 normalizeScheduleStatus(payload.Status),
@@ -479,9 +538,15 @@ func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, ex
 		updates["headers_json"] = "{}"
 		updates["body"] = ""
 		updates["expected_status"] = 0
+		updates["retry_enabled"] = false
+		updates["max_retries"] = 0
+		updates["allow_unsafe_retry"] = false
 	case "http":
 		if strings.TrimSpace(payload.URL) == "" {
 			return nil, errors.New("HTTP 地址不能为空")
+		}
+		if payload.RetryEnabled && scheduleMethodNeedsUnsafeRetryApproval(payload.HTTPMethod) && !payload.AllowUnsafeRetry {
+			return nil, errors.New("POST、PATCH、DELETE 请求开启重试前必须确认允许重复提交")
 		}
 		updates["script_id"] = 0
 		updates["script_name"] = ""
@@ -815,17 +880,20 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 	_ = s.db.Create(&logItem).Error
 
 	var (
-		status      string
-		summary     string
-		detail      string
-		execTaskID  uint
-		httpCode    int
-		responseRaw string
+		status       string
+		summary      string
+		detail       string
+		execTaskID   uint
+		httpCode     int
+		responseRaw  string
+		attemptCount = 1
 	)
 
 	switch task.TaskType {
 	case "http":
-		status, summary, detail, httpCode, responseRaw = s.runScheduledHTTPTask(task)
+		result := s.runScheduledHTTPTask(task)
+		status, summary, detail = result.Status, result.Summary, result.Detail
+		httpCode, responseRaw, attemptCount = result.HTTPCode, result.ResponseBody, result.AttemptCount
 	default:
 		status, summary, detail, execTaskID = s.runScheduledScriptTask(task)
 	}
@@ -842,6 +910,7 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 		"response_body":   responseRaw,
 		"finished_at":     &finishedAt,
 		"duration_ms":     finishedAt.Sub(startedAt).Milliseconds(),
+		"attempt_count":   attemptCount,
 	}).Error
 	_ = s.db.Model(&model.OpsScheduleTask{}).Where("id = ?", task.ID).Updates(map[string]any{
 		"last_status":  status,
@@ -861,7 +930,7 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 			// The execution log keeps the complete response body. Notifications
 			// intentionally use a compact result, otherwise a successful HTTP
 			// probe can push an entire HTML page into chat.
-			Detail:     compactScheduleNotifyDetail(task, status, detail, httpCode),
+			Detail:     compactScheduleNotifyDetail(task, status, detail, httpCode, attemptCount),
 			StartedAt:  &startedAt,
 			FinishedAt: &finishedAt,
 			Extra: map[string]string{
@@ -873,6 +942,8 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 				"durationMs":     fmt.Sprintf("%d", duration.Milliseconds()),
 				"httpStatus":     formatScheduleHTTPStatus(httpCode),
 				"expectedStatus": fmt.Sprintf("%d", normalizeExpectedStatus(task.ExpectedStatus)),
+				"attemptCount":   strconv.Itoa(attemptCount),
+				"retryCount":     strconv.Itoa(maxInt(attemptCount-1, 0)),
 				"alertName":      task.Name,
 				"severity":       "定时任务",
 			},
@@ -880,21 +951,25 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 	}
 }
 
-func compactScheduleNotifyDetail(task model.OpsScheduleTask, status, detail string, httpCode int) string {
+func compactScheduleNotifyDetail(task model.OpsScheduleTask, status, detail string, httpCode, attemptCount int) string {
 	if task.TaskType == "http" {
-		return scheduleHTTPNotifyDetail(status, httpCode, normalizeExpectedStatus(task.ExpectedStatus))
+		return scheduleHTTPNotifyDetail(status, httpCode, normalizeExpectedStatus(task.ExpectedStatus), attemptCount)
 	}
 	return trimNotifyText(detail, 1200)
 }
 
-func scheduleHTTPNotifyDetail(status string, httpCode, expectedStatus int) string {
+func scheduleHTTPNotifyDetail(status string, httpCode, expectedStatus, attemptCount int) string {
+	attemptText := ""
+	if attemptCount > 1 {
+		attemptText = fmt.Sprintf("共尝试 %d 次。", attemptCount)
+	}
 	if strings.EqualFold(status, "success") {
-		return fmt.Sprintf("HTTP 探针返回 %d，符合预期状态码 %d。", httpCode, expectedStatus)
+		return fmt.Sprintf("HTTP 探针返回 %d，符合预期状态码 %d。%s", httpCode, expectedStatus, attemptText)
 	}
 	if httpCode > 0 {
-		return fmt.Sprintf("HTTP 探针返回 %d，未达到预期状态码 %d。完整响应内容请在任务日志中查看。", httpCode, expectedStatus)
+		return fmt.Sprintf("HTTP 探针返回 %d，未达到预期状态码 %d。%s完整响应内容请在任务日志中查看。", httpCode, expectedStatus, attemptText)
 	}
-	return "HTTP 探针请求失败。完整错误信息请在任务日志中查看。"
+	return "HTTP 探针请求失败。" + attemptText + "完整错误信息请在任务日志中查看。"
 }
 
 func trimNotifyText(value string, limit int) string {
@@ -993,25 +1068,229 @@ func (s *Service) runScheduledScriptTask(task model.OpsScheduleTask) (string, st
 	return status, firstNonEmpty(taskInfo.Summary, "执行完成"), strings.Join(lines, "\n"), taskInfo.ID
 }
 
-func (s *Service) runScheduledHTTPTask(task model.OpsScheduleTask) (string, string, string, int, string) {
+type scheduledHTTPRunResult struct {
+	Status       string
+	Summary      string
+	Detail       string
+	HTTPCode     int
+	ResponseBody string
+	AttemptCount int
+}
+
+func (s *Service) runScheduledHTTPTask(task model.OpsScheduleTask) scheduledHTTPRunResult {
 	client := &http.Client{Timeout: time.Duration(normalizeOpsTimeout(task.TimeoutSeconds)) * time.Second}
-	request, err := http.NewRequest(normalizeHTTPMethod(task.HTTPMethod), task.URL, strings.NewReader(task.Body))
+	return executeScheduledHTTPTask(task, client.Do, time.Sleep)
+}
+
+func executeScheduledHTTPTask(task model.OpsScheduleTask, do func(*http.Request) (*http.Response, error), sleep func(time.Duration)) scheduledHTTPRunResult {
+	maxAttempts := 1 + normalizeScheduleMaxRetries(task.RetryEnabled, task.MaxRetries)
+	expectedStatus := normalizeExpectedStatus(task.ExpectedStatus)
+	method := normalizeHTTPMethod(task.HTTPMethod)
+	detailLines := make([]string, 0, maxAttempts*2)
+	lastCode := 0
+	lastBody := ""
+	lastError := ""
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		startedAt := time.Now()
+		request, err := http.NewRequest(method, task.URL, strings.NewReader(task.Body))
+		if err != nil {
+			message := err.Error()
+			return scheduledHTTPRunResult{Status: "failed", Summary: message, Detail: message, AttemptCount: attempt}
+		}
+		for key, value := range parseHeaderMap(task.HeadersJSON) {
+			request.Header.Set(key, value)
+		}
+
+		response, requestErr := do(request)
+		duration := time.Since(startedAt)
+		if requestErr != nil {
+			lastError = requestErr.Error()
+			lastCode = 0
+			lastBody = ""
+			detailLines = append(detailLines, fmt.Sprintf("第 %d 次：请求失败（%s），耗时 %s", attempt, lastError, formatScheduleDuration(duration)))
+		} else {
+			bodyBytes, readErr := io.ReadAll(io.LimitReader(response.Body, 32768))
+			_ = response.Body.Close()
+			lastCode = response.StatusCode
+			lastBody = string(bodyBytes)
+			if readErr != nil {
+				lastError = readErr.Error()
+				detailLines = append(detailLines, fmt.Sprintf("第 %d 次：读取响应失败（%s），耗时 %s", attempt, lastError, formatScheduleDuration(duration)))
+			} else {
+				lastError = ""
+				detailLines = append(detailLines, fmt.Sprintf("第 %d 次：HTTP %d，耗时 %s", attempt, lastCode, formatScheduleDuration(duration)))
+				if lastCode == expectedStatus {
+					return scheduledHTTPRunResult{
+						Status: "success", Summary: fmt.Sprintf("%s %s -> %d（第 %d 次尝试成功）", method, task.URL, lastCode, attempt),
+						Detail: strings.Join(detailLines, "\n"), HTTPCode: lastCode, ResponseBody: lastBody, AttemptCount: attempt,
+					}
+				}
+			}
+		}
+
+		if attempt < maxAttempts {
+			delay := scheduleHTTPRetryDelay(task, attempt)
+			detailLines = append(detailLines, fmt.Sprintf("等待 %s 后重试", formatScheduleDuration(delay)))
+			sleep(delay)
+		}
+	}
+
+	summary := lastError
+	if lastCode > 0 {
+		summary = fmt.Sprintf("%s %s -> %d，期望状态码 %d，已尝试 %d 次", method, task.URL, lastCode, expectedStatus, maxAttempts)
+	} else if summary == "" {
+		summary = fmt.Sprintf("%s %s 请求失败，已尝试 %d 次", method, task.URL, maxAttempts)
+	} else {
+		summary = fmt.Sprintf("%s（已尝试 %d 次）", summary, maxAttempts)
+	}
+	return scheduledHTTPRunResult{
+		Status: "failed", Summary: summary, Detail: strings.Join(detailLines, "\n"),
+		HTTPCode: lastCode, ResponseBody: lastBody, AttemptCount: maxAttempts,
+	}
+}
+
+func scheduleHTTPRetryDelay(task model.OpsScheduleTask, completedAttempt int) time.Duration {
+	seconds := normalizeScheduleRetryInterval(task.RetryIntervalSeconds)
+	if normalizeScheduleRetryBackoff(task.RetryBackoff) == "exponential" {
+		for step := 1; step < completedAttempt && seconds < 300; step++ {
+			seconds *= 2
+			if seconds > 300 {
+				seconds = 300
+			}
+		}
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func buildOpsScheduleNotifyPreviewEvent(payload OpsScheduleTaskPayload, previewStatus string) (NotifyEvent, error) {
+	status := strings.ToLower(strings.TrimSpace(previewStatus))
+	if status != "success" && status != "failed" {
+		return NotifyEvent{}, errors.New("预览状态只能是成功或失败")
+	}
+	if payload.NotifyOnFailureOnly && status != "failed" {
+		return NotifyEvent{}, errors.New("当前通知策略为仅失败时通知，只能预览失败通知")
+	}
+
+	now := time.Now()
+	taskType := normalizeScheduleTaskType(payload.TaskType)
+	taskName := firstNonEmpty(strings.TrimSpace(payload.Name), "未命名定时任务")
+	attemptCount := 1
+	if taskType == "http" && payload.RetryEnabled {
+		attemptCount += normalizeScheduleMaxRetries(true, payload.MaxRetries)
+	}
+	expectedStatus := normalizeExpectedStatus(payload.ExpectedStatus)
+	actualStatus := expectedStatus
+	summary := "任务执行成功"
+	detail := "预览数据：任务首次执行即成功。"
+	if status == "failed" {
+		actualStatus = http.StatusInternalServerError
+		if actualStatus == expectedStatus {
+			actualStatus = http.StatusBadRequest
+		}
+		summary = "任务执行失败"
+		detail = "预览数据：任务执行失败，已达到最大尝试次数。"
+	}
+	if taskType == "http" {
+		method := normalizeHTTPMethod(payload.HTTPMethod)
+		url := firstNonEmpty(strings.TrimSpace(payload.URL), "https://example.com/healthz")
+		if status == "success" {
+			summary = fmt.Sprintf("%s %s -> %d（第 1 次尝试成功）", method, url, actualStatus)
+			detail = fmt.Sprintf("第 1 次：HTTP %d，耗时 120ms", actualStatus)
+		} else {
+			summary = fmt.Sprintf("%s %s -> %d，期望状态码 %d，已尝试 %d 次", method, url, actualStatus, expectedStatus, attemptCount)
+			lines := make([]string, 0, attemptCount)
+			for attempt := 1; attempt <= attemptCount; attempt++ {
+				lines = append(lines, fmt.Sprintf("第 %d 次：HTTP %d，未达到期望状态码 %d", attempt, actualStatus, expectedStatus))
+			}
+			detail = strings.Join(lines, "\n")
+		}
+	}
+
+	return NotifyEvent{
+		Scope: "schedule", Event: status, TargetID: payload.ID, TargetName: taskName,
+		Status: status, Summary: summary, Detail: detail, StartedAt: &now, FinishedAt: &now,
+		Extra: map[string]string{
+			"taskName": taskName, "taskType": map[string]string{"http": "HTTP 探针", "script": "脚本任务"}[taskType],
+			"triggerType": "发送预览", "cronExpr": firstNonEmpty(strings.TrimSpace(payload.CronExpr), "-"),
+			"duration": "120ms", "durationMs": "120", "httpStatus": strconv.Itoa(actualStatus),
+			"expectedStatus": strconv.Itoa(expectedStatus), "attemptCount": strconv.Itoa(attemptCount),
+			"retryCount": strconv.Itoa(attemptCount - 1), "alertName": taskName, "severity": "warning",
+		},
+	}, nil
+}
+
+func (s *Service) PreviewOpsScheduleTaskNotification(payload OpsScheduleNotifyPreviewPayload) (map[string]any, error) {
+	if !payload.Task.NotifyEnabled {
+		return nil, errors.New("请先开启消息通知")
+	}
+	if payload.Task.NotifyRuleID == 0 {
+		return nil, errors.New("请选择通知规则")
+	}
+	event, err := buildOpsScheduleNotifyPreviewEvent(payload.Task, payload.PreviewStatus)
 	if err != nil {
-		return "failed", err.Error(), err.Error(), 0, ""
+		return nil, err
 	}
-	for key, value := range parseHeaderMap(task.HeadersJSON) {
-		request.Header.Set(key, value)
+
+	var rule model.NotifyRule
+	if err := s.db.First(&rule, payload.Task.NotifyRuleID).Error; err != nil {
+		return nil, fmt.Errorf("读取通知规则失败: %w", err)
 	}
-	response, err := client.Do(request)
-	if err != nil {
-		return "failed", err.Error(), err.Error(), 0, ""
+	if rule.Status != 1 {
+		return nil, errors.New("通知规则已禁用")
 	}
-	defer response.Body.Close()
-	bodyBytes, _ := io.ReadAll(io.LimitReader(response.Body, 32768))
-	responseBody := string(bodyBytes)
-	summary := fmt.Sprintf("%s %s -> %d", request.Method, task.URL, response.StatusCode)
-	if response.StatusCode == normalizeExpectedStatus(task.ExpectedStatus) {
-		return "success", summary, responseBody, response.StatusCode, responseBody
+	if normalizeNotifyScope(rule.Scope) != "all" && normalizeNotifyScope(rule.Scope) != "schedule" {
+		return nil, errors.New("所选通知规则不适用于定时任务")
 	}
-	return "failed", fmt.Sprintf("%s，期望状态码 %d", summary, normalizeExpectedStatus(task.ExpectedStatus)), responseBody, response.StatusCode, responseBody
+	if !notifyEventMatch(decodeStringList(rule.EventsJSON), event.Event, event.Status) {
+		return nil, fmt.Errorf("所选通知规则未订阅%s事件", scheduleNotifyStatusLabel(event.Status))
+	}
+
+	var tmpl model.NotifyTemplate
+	if err := s.db.First(&tmpl, rule.TemplateID).Error; err != nil {
+		return nil, fmt.Errorf("读取消息模板失败: %w", err)
+	}
+	if tmpl.Status != 1 {
+		return nil, errors.New("消息模板已禁用")
+	}
+	if !notifyTemplateScopeCompatible(tmpl.Scope, event.Scope) {
+		return nil, fmt.Errorf("消息模板适用于%s，不能处理定时任务事件", notifyScopeLabel(tmpl.Scope))
+	}
+
+	channelIDs := decodeUintList(rule.ChannelIDsJSON)
+	if len(channelIDs) == 0 {
+		return nil, errors.New("通知规则未配置通知媒介")
+	}
+	var channels []model.NotifyChannel
+	if err := s.db.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	if len(channels) == 0 {
+		return nil, errors.New("通知规则关联的媒介不存在")
+	}
+
+	titleTemplate, contentTemplate := normalizeNotifyTemplateForEvent(firstNonEmpty(tmpl.Title, event.TargetName), tmpl.Content, event)
+	title := renderNotifyTemplate(titleTemplate, event)
+	content := renderNotifyTemplate(contentTemplate, event)
+	previewChannels := make([]map[string]any, 0, len(channels))
+	for _, channel := range channels {
+		if channel.Status != 1 {
+			return nil, fmt.Errorf("通知媒介「%s」已禁用", channel.Name)
+		}
+		if normalizeNotifyChannelType(channel.ChannelType) != normalizeNotifyChannelType(tmpl.ChannelType) {
+			return nil, fmt.Errorf("消息模板与通知媒介「%s」类型不兼容", channel.Name)
+		}
+		if _, err := buildNotifyBody(channel.ChannelType, title, content, event); err != nil {
+			return nil, fmt.Errorf("生成通知媒介「%s」消息失败: %w", channel.Name, err)
+		}
+		previewChannels = append(previewChannels, map[string]any{
+			"id": channel.ID, "name": channel.Name, "channelType": normalizeNotifyChannelType(channel.ChannelType),
+		})
+	}
+
+	return map[string]any{
+		"previewStatus": event.Status, "statusLabel": scheduleNotifyStatusLabel(event.Status),
+		"ruleName": rule.Name, "templateName": tmpl.Name, "title": title, "content": content,
+		"channels": previewChannels, "attemptCount": event.Extra["attemptCount"],
+	}, nil
 }

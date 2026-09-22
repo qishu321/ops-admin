@@ -200,35 +200,40 @@ func (OpsScheduleTemplate) TableName() string {
 }
 
 type OpsScheduleTask struct {
-	ID                  uint                    `json:"id" gorm:"primaryKey"`
-	Name                string                  `json:"name" gorm:"size:128;not null;index"`
-	TaskType            string                  `json:"taskType" gorm:"size:32;not null;index"`
-	TemplateID          uint                    `json:"templateId" gorm:"index"`
-	ScriptID            uint                    `json:"scriptId" gorm:"index"`
-	ScriptName          string                  `json:"scriptName" gorm:"size:128"`
-	Parameters          string                  `json:"parameters" gorm:"type:text"`
-	Variables           OpsScriptVariableValues `json:"variables" gorm:"type:text"`
-	HostIDsJSON         string                  `json:"hostIdsJson" gorm:"type:text"`
-	GroupIDsJSON        string                  `json:"groupIdsJson" gorm:"type:text"`
-	Concurrency         int                     `json:"concurrency" gorm:"default:5"`
-	HTTPMethod          string                  `json:"httpMethod" gorm:"size:16"`
-	URL                 string                  `json:"url" gorm:"size:1024"`
-	HeadersJSON         string                  `json:"headersJson" gorm:"type:text"`
-	Body                string                  `json:"body" gorm:"type:longtext"`
-	ExpectedStatus      int                     `json:"expectedStatus" gorm:"default:200"`
-	TimeoutSeconds      int                     `json:"timeoutSeconds" gorm:"default:10"`
-	CronExpr            string                  `json:"cronExpr" gorm:"size:128;not null"`
-	Description         string                  `json:"description" gorm:"size:255"`
-	Status              int                     `json:"status" gorm:"default:1;index"`
-	NotifyEnabled       bool                    `json:"notifyEnabled" gorm:"default:false;index"`
-	NotifyRuleID        uint                    `json:"notifyRuleId" gorm:"index"`
-	NotifyOnFailureOnly bool                    `json:"notifyOnFailureOnly" gorm:"default:false"`
-	LastStatus          string                  `json:"lastStatus" gorm:"size:32"`
-	LastSummary         string                  `json:"lastSummary" gorm:"type:text"`
-	LastRunAt           *time.Time              `json:"lastRunAt"`
-	NextRunAt           *time.Time              `json:"nextRunAt"`
-	CreatedAt           time.Time               `json:"createTime"`
-	UpdatedAt           time.Time               `json:"updateTime"`
+	ID                   uint                    `json:"id" gorm:"primaryKey"`
+	Name                 string                  `json:"name" gorm:"size:128;not null;index"`
+	TaskType             string                  `json:"taskType" gorm:"size:32;not null;index"`
+	TemplateID           uint                    `json:"templateId" gorm:"index"`
+	ScriptID             uint                    `json:"scriptId" gorm:"index"`
+	ScriptName           string                  `json:"scriptName" gorm:"size:128"`
+	Parameters           string                  `json:"parameters" gorm:"type:text"`
+	Variables            OpsScriptVariableValues `json:"variables" gorm:"type:text"`
+	HostIDsJSON          string                  `json:"hostIdsJson" gorm:"type:text"`
+	GroupIDsJSON         string                  `json:"groupIdsJson" gorm:"type:text"`
+	Concurrency          int                     `json:"concurrency" gorm:"default:5"`
+	HTTPMethod           string                  `json:"httpMethod" gorm:"size:16"`
+	URL                  string                  `json:"url" gorm:"size:1024"`
+	HeadersJSON          string                  `json:"headersJson" gorm:"type:text"`
+	Body                 string                  `json:"body" gorm:"type:longtext"`
+	ExpectedStatus       int                     `json:"expectedStatus" gorm:"default:200"`
+	TimeoutSeconds       int                     `json:"timeoutSeconds" gorm:"default:10"`
+	RetryEnabled         bool                    `json:"retryEnabled" gorm:"default:false"`
+	MaxRetries           int                     `json:"maxRetries" gorm:"default:0"`
+	RetryIntervalSeconds int                     `json:"retryIntervalSeconds" gorm:"default:5"`
+	RetryBackoff         string                  `json:"retryBackoff" gorm:"size:16;default:exponential"`
+	AllowUnsafeRetry     bool                    `json:"allowUnsafeRetry" gorm:"default:false"`
+	CronExpr             string                  `json:"cronExpr" gorm:"size:128;not null"`
+	Description          string                  `json:"description" gorm:"size:255"`
+	Status               int                     `json:"status" gorm:"default:1;index"`
+	NotifyEnabled        bool                    `json:"notifyEnabled" gorm:"default:false;index"`
+	NotifyRuleID         uint                    `json:"notifyRuleId" gorm:"index"`
+	NotifyOnFailureOnly  bool                    `json:"notifyOnFailureOnly" gorm:"default:false"`
+	LastStatus           string                  `json:"lastStatus" gorm:"size:32"`
+	LastSummary          string                  `json:"lastSummary" gorm:"type:text"`
+	LastRunAt            *time.Time              `json:"lastRunAt"`
+	NextRunAt            *time.Time              `json:"nextRunAt"`
+	CreatedAt            time.Time               `json:"createTime"`
+	UpdatedAt            time.Time               `json:"updateTime"`
 }
 
 func (OpsScheduleTask) TableName() string {
@@ -251,6 +256,7 @@ type OpsScheduleTaskLog struct {
 	StartedAt      *time.Time `json:"startedAt"`
 	FinishedAt     *time.Time `json:"finishedAt"`
 	DurationMs     int64      `json:"durationMs" gorm:"default:0"`
+	AttemptCount   int        `json:"attemptCount" gorm:"default:1"`
 	CreatedAt      time.Time  `json:"createTime"`
 }
 

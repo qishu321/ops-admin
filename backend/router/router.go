@@ -312,6 +312,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.PUT("/ops/schedule/task/update", ctl.UpdateOpsScheduleTask)
 		authGroup.PUT("/ops/schedule/task/status", ctl.UpdateOpsScheduleTaskStatus)
 		authGroup.POST("/ops/schedule/task/run", ctl.RunOpsScheduleTask)
+		authGroup.POST("/ops/schedule/task/notify-preview", ctl.PreviewOpsScheduleTaskNotification)
 		authGroup.DELETE("/ops/schedule/task/delete", ctl.DeleteOpsScheduleTask)
 		authGroup.DELETE("/ops/schedule/task/batch/delete", ctl.BatchDeleteOpsScheduleTask)
 		authGroup.GET("/ops/schedule/log/list", ctl.GetOpsScheduleLogList)

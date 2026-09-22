@@ -133,6 +133,7 @@ onMounted(loadData)
         </template>
       </el-table-column>
       <el-table-column prop="summary" label="执行摘要" min-width="260" show-overflow-tooltip />
+      <el-table-column prop="attemptCount" label="尝试次数" width="90" align="center" />
       <el-table-column prop="durationMs" label="耗时(ms)" width="100" />
       <el-table-column label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.startedAt) }}</template></el-table-column>
       <el-table-column label="结束时间" width="180"><template #default="{ row }">{{ formatDateTime(row.finishedAt) }}</template></el-table-column>
@@ -168,6 +169,7 @@ onMounted(loadData)
             <div><span>关联执行任务</span><strong>{{ detail.execTaskId || '-' }}</strong></div>
             <div><span>期望状态码</span><strong>{{ detail.expectedStatus || '-' }}</strong></div>
             <div><span>实际状态码</span><strong>{{ detail.actualStatus || '-' }}</strong></div>
+            <div><span>尝试次数</span><strong>{{ detail.attemptCount || 1 }}</strong></div>
           </div>
 
           <el-alert :title="detail.summary || '无摘要'" type="info" :closable="false" />

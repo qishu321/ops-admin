@@ -24,6 +24,7 @@ export const retryOpsExecTask = (taskId) => http.post('/api/v1/ops/exec/retry', 
 
 export const queryOpsScheduleTaskList = (params) => http.get('/api/v1/ops/schedule/task/list', { params })
 export const opsScheduleTaskInfo = (id) => http.get('/api/v1/ops/schedule/task/info', { params: { id } })
+export const queryOpsScheduleHTTPTaskOptions = () => http.get('/api/v1/ops/schedule/task/http-options')
 export const addOpsScheduleTask = (data) => http.post('/api/v1/ops/schedule/task/add', data)
 export const updateOpsScheduleTask = (data) => http.put('/api/v1/ops/schedule/task/update', data)
 export const updateOpsScheduleTaskStatus = (data) => http.put('/api/v1/ops/schedule/task/status', data)
@@ -34,6 +35,8 @@ export const batchDeleteOpsScheduleTask = (ids) => http.delete('/api/v1/ops/sche
 
 export const queryOpsScheduleLogList = (params) => http.get('/api/v1/ops/schedule/log/list', { params })
 export const opsScheduleLogInfo = (id) => http.get('/api/v1/ops/schedule/log/info', { params: { id } })
+export const getHTTPProbeLogRetention = () => http.get('/api/v1/ops/schedule/log/http-retention')
+export const saveHTTPProbeLogRetention = (data) => http.put('/api/v1/ops/schedule/log/http-retention', data)
 
 export const queryOpsScheduleTemplateList = (params) => http.get('/api/v1/ops/schedule/template/list', { params })
 export const opsScheduleTemplateInfo = (id) => http.get('/api/v1/ops/schedule/template/info', { params: { id } })

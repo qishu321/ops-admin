@@ -25,23 +25,24 @@ import (
 )
 
 type Service struct {
-	db                   *gorm.DB
-	opsScheduler         *OpsScheduler
-	opsSchedulerOnce     sync.Once
-	k8sScalingScheduler  *K8sScalingScheduler
-	k8sScalingOnce       sync.Once
-	monitorScheduler     *MonitorScheduler
-	monitorSchedulerOnce sync.Once
-	dbBackupScheduler    *DatabaseBackupScheduler
-	dbBackupOnce         sync.Once
-	finOpsScheduler      *FinOpsScheduler
-	finOpsSchedulerOnce  sync.Once
-	notifyDispatcherOnce sync.Once
-	notifyConcurrency    chan struct{}
-	dnsManager           *dnsserver.Manager
-	certificateConfig    CertificateRuntimeConfig
-	certificateOnce      sync.Once
-	monitorNotifyMu      sync.Mutex
+	db                    *gorm.DB
+	opsScheduler          *OpsScheduler
+	opsSchedulerOnce      sync.Once
+	httpProbeLogCleanupMu sync.Mutex
+	k8sScalingScheduler   *K8sScalingScheduler
+	k8sScalingOnce        sync.Once
+	monitorScheduler      *MonitorScheduler
+	monitorSchedulerOnce  sync.Once
+	dbBackupScheduler     *DatabaseBackupScheduler
+	dbBackupOnce          sync.Once
+	finOpsScheduler       *FinOpsScheduler
+	finOpsSchedulerOnce   sync.Once
+	notifyDispatcherOnce  sync.Once
+	notifyConcurrency     chan struct{}
+	dnsManager            *dnsserver.Manager
+	certificateConfig     CertificateRuntimeConfig
+	certificateOnce       sync.Once
+	monitorNotifyMu       sync.Mutex
 	// Gateway SSH connections are multiplexed by ssh.Client. Keeping one client
 	// per gateway avoids repeating the public-network SSH handshake on every
 	// Kubernetes API request.
@@ -74,6 +75,7 @@ func New(db *gorm.DB) *Service {
 	svc.dnsManager = dnsserver.NewManager(db)
 	svc.ensureDefaultEnvironments()
 	svc.initOpsScheduler()
+	svc.initHTTPProbeLogCleanup()
 	svc.initK8sScalingScheduler()
 	svc.initMonitorScheduler()
 	svc.initDatabaseBackupScheduler()

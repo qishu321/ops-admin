@@ -701,7 +701,7 @@ func (s *Service) ListOpsExecTasks(pageNum, pageSize int, keyword, taskType, sta
 		return nil, err
 	}
 	var list []model.OpsExecTask
-	if err := query.Order("id DESC").Offset((pageNum - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+	if err := query.Select("id", "task_type", "title", "script_name", "file_name", "host_count", "success_count", "failed_count", "status", "summary", "operator", "risk_level", "started_at", "created_at").Order("id DESC").Offset((pageNum - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
 		return nil, err
 	}
 	return map[string]any{

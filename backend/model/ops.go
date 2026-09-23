@@ -242,9 +242,9 @@ func (OpsScheduleTask) TableName() string {
 
 type OpsScheduleTaskLog struct {
 	ID             uint       `json:"id" gorm:"primaryKey"`
-	TaskID         uint       `json:"taskId" gorm:"index;not null"`
+	TaskID         uint       `json:"taskId" gorm:"index;not null;index:idx_schedule_log_task_time,priority:1"`
 	TaskName       string     `json:"taskName" gorm:"size:128"`
-	TaskType       string     `json:"taskType" gorm:"size:32;index"`
+	TaskType       string     `json:"taskType" gorm:"size:32;index;index:idx_schedule_log_type_time,priority:1;index:idx_schedule_log_type_created,priority:1"`
 	TriggerType    string     `json:"triggerType" gorm:"size:32"`
 	Status         string     `json:"status" gorm:"size:32;index"`
 	Summary        string     `json:"summary" gorm:"type:text"`
@@ -253,11 +253,11 @@ type OpsScheduleTaskLog struct {
 	ExpectedStatus int        `json:"expectedStatus"`
 	ActualStatus   int        `json:"actualStatus"`
 	ResponseBody   string     `json:"responseBody" gorm:"type:longtext"`
-	StartedAt      *time.Time `json:"startedAt"`
+	StartedAt      *time.Time `json:"startedAt" gorm:"index:idx_schedule_log_task_time,priority:2;index:idx_schedule_log_type_time,priority:2"`
 	FinishedAt     *time.Time `json:"finishedAt"`
 	DurationMs     int64      `json:"durationMs" gorm:"default:0"`
 	AttemptCount   int        `json:"attemptCount" gorm:"default:1"`
-	CreatedAt      time.Time  `json:"createTime"`
+	CreatedAt      time.Time  `json:"createTime" gorm:"index:idx_schedule_log_type_created,priority:2"`
 }
 
 func (OpsScheduleTaskLog) TableName() string {

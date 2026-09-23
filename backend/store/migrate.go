@@ -57,6 +57,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.OpsScheduleTemplate{},
 		&model.OpsScheduleTask{},
 		&model.OpsScheduleTaskLog{},
+		&model.OpsScheduleLogRetentionSetting{},
 		&model.OpsJobTemplate{},
 		&model.OpsJob{},
 		&model.OpsJobHistory{},

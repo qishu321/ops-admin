@@ -29,6 +29,15 @@ func (ctl *Controller) GetOpsScheduleTaskInfo(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+func (ctl *Controller) GetOpsScheduleHTTPTaskOptions(c *gin.Context) {
+	data, err := ctl.service.ListOpsScheduleHTTPTaskOptions()
+	if err != nil {
+		httpx.Failed(c, 500, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) CreateOpsScheduleTask(c *gin.Context) {
 	var payload service.OpsScheduleTaskPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -124,12 +133,29 @@ func (ctl *Controller) PreviewOpsScheduleTaskNotification(c *gin.Context) {
 func (ctl *Controller) GetOpsScheduleLogList(c *gin.Context) {
 	pageNum, _ := strconv.Atoi(c.DefaultQuery("pageNum", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
-	data, err := ctl.service.ListOpsScheduleTaskLogs(pageNum, pageSize, c.Query("keyword"), c.Query("taskType"), c.Query("status"))
+	filter, err := scheduleLogFilter(c)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	data, err := ctl.service.ListOpsScheduleTaskLogs(pageNum, pageSize, filter)
 	if err != nil {
 		httpx.Failed(c, 500, err.Error())
 		return
 	}
 	httpx.Success(c, data)
+}
+
+func scheduleLogFilter(c *gin.Context) (service.OpsScheduleLogFilter, error) {
+	filter := service.OpsScheduleLogFilter{Keyword: c.Query("keyword"), TaskType: c.Query("taskType"), Status: c.Query("status")}
+	if raw := c.Query("taskId"); raw != "" {
+		id, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			return filter, err
+		}
+		filter.TaskID = uint(id)
+	}
+	return filter, nil
 }
 
 func (ctl *Controller) GetOpsScheduleLogInfo(c *gin.Context) {
@@ -139,6 +165,31 @@ func (ctl *Controller) GetOpsScheduleLogInfo(c *gin.Context) {
 		return
 	}
 	httpx.Success(c, data)
+}
+
+func (ctl *Controller) GetHTTPProbeLogRetention(c *gin.Context) {
+	setting, err := ctl.service.GetHTTPProbeLogRetention()
+	if err != nil {
+		httpx.Failed(c, 500, err.Error())
+		return
+	}
+	httpx.Success(c, setting)
+}
+
+func (ctl *Controller) SaveHTTPProbeLogRetention(c *gin.Context) {
+	var payload struct {
+		RetentionDays int `json:"retentionDays"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid retention payload")
+		return
+	}
+	setting, err := ctl.service.SaveHTTPProbeLogRetention(payload.RetentionDays)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, setting)
 }
 
 func (ctl *Controller) GetOpsScheduleTemplateList(c *gin.Context) {

@@ -460,6 +460,18 @@ func (s *Service) GetOpsScheduleTask(id uint) (map[string]any, error) {
 	return result, nil
 }
 
+func (s *Service) ListOpsScheduleHTTPTaskOptions() ([]map[string]any, error) {
+	var tasks []model.OpsScheduleTask
+	if err := s.db.Model(&model.OpsScheduleTask{}).Select("id", "name").Where("task_type = ?", "http").Order("name ASC, id ASC").Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	options := make([]map[string]any, 0, len(tasks))
+	for _, task := range tasks {
+		options = append(options, map[string]any{"id": task.ID, "name": task.Name})
+	}
+	return options, nil
+}
+
 func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, existing *model.OpsScheduleTask) (map[string]any, error) {
 	taskType := normalizeScheduleTaskType(payload.TaskType)
 	name := Trimmed(payload.Name)
@@ -817,30 +829,48 @@ func (s *Service) DeleteOpsScheduleTemplate(id uint) error {
 	return s.db.Delete(&model.OpsScheduleTemplate{}, id).Error
 }
 
-func (s *Service) ListOpsScheduleTaskLogs(pageNum, pageSize int, keyword, taskType, status string) (map[string]any, error) {
+type OpsScheduleLogFilter struct {
+	Keyword  string
+	TaskType string
+	Status   string
+	TaskID   uint
+}
+
+func (s *Service) scheduleLogQuery(filter OpsScheduleLogFilter) *gorm.DB {
+	query := s.db.Model(&model.OpsScheduleTaskLog{})
+	if value := strings.TrimSpace(filter.Keyword); value != "" {
+		like := "%" + value + "%"
+		query = query.Where("task_name LIKE ? OR summary LIKE ?", like, like)
+	}
+	if filter.TaskType == "http" || filter.TaskType == "script" {
+		query = query.Where("task_type = ?", filter.TaskType)
+	}
+	if filter.Status != "" {
+		query = query.Where("status = ?", filter.Status)
+	}
+	if filter.TaskID > 0 {
+		query = query.Where("task_id = ?", filter.TaskID)
+	}
+	return query
+}
+
+func (s *Service) ListOpsScheduleTaskLogs(pageNum, pageSize int, filter OpsScheduleLogFilter) (map[string]any, error) {
 	if pageNum < 1 {
 		pageNum = 1
 	}
 	if pageSize < 1 {
 		pageSize = 10
 	}
-	query := s.db.Model(&model.OpsScheduleTaskLog{})
-	if strings.TrimSpace(keyword) != "" {
-		like := "%" + strings.TrimSpace(keyword) + "%"
-		query = query.Where("task_name LIKE ? OR summary LIKE ?", like, like)
+	if pageSize > 100 {
+		pageSize = 100
 	}
-	if strings.TrimSpace(taskType) != "" {
-		query = query.Where("task_type = ?", normalizeScheduleTaskType(taskType))
-	}
-	if strings.TrimSpace(status) != "" {
-		query = query.Where("status = ?", status)
-	}
+	query := s.scheduleLogQuery(filter)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, err
 	}
 	var list []model.OpsScheduleTaskLog
-	if err := query.Order("id DESC").Offset((pageNum - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+	if err := query.Select("id", "task_id", "task_name", "task_type", "trigger_type", "status", "summary", "exec_task_id", "expected_status", "actual_status", "started_at", "finished_at", "duration_ms", "attempt_count", "created_at").Order("id DESC").Offset((pageNum - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
 		return nil, err
 	}
 	return map[string]any{

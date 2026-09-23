@@ -16,6 +16,7 @@ import (
 func Seed(db *gorm.DB) error {
 	steps := []func(*gorm.DB) error{
 		seedSystemConfig,
+		seedOpsScheduleLogRetention,
 		seedMonitorAlertTemplates,
 		seedDept,
 		seedPost,
@@ -32,6 +33,11 @@ func Seed(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func seedOpsScheduleLogRetention(db *gorm.DB) error {
+	setting := model.OpsScheduleLogRetentionSetting{}
+	return db.Where("id = ?", 1).Attrs(model.OpsScheduleLogRetentionSetting{ID: 1, RetentionDays: 7}).FirstOrCreate(&setting).Error
 }
 
 // seedMonitorAlertTemplates provides a reviewed starting library. They are

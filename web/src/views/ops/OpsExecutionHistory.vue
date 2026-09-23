@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { queryOpsExecHistory, queryOpsExecHistoryDetail, retryOpsExecTask } from '../../api/ops'
@@ -12,22 +12,27 @@ const tableData = ref([])
 const total = ref(0)
 const detailTask = ref(null)
 const detailResults = ref([])
+const activeTab = ref('command')
+const tabFilters = reactive({
+  command: { pageNum: 1, pageSize: 10, keyword: '', status: '' },
+  script: { pageNum: 1, pageSize: 10, keyword: '', status: '' },
+  file: { pageNum: 1, pageSize: 10, keyword: '', status: '' }
+})
 
 const query = reactive({
   pageNum: 1,
   pageSize: 10,
   keyword: '',
-  taskType: '',
+  taskType: 'command',
   status: ''
 })
 
 async function loadData() {
   loading.value = true
   try {
-    const data = await queryOpsExecHistory(query)
+    const data = await queryOpsExecHistory({ ...query, taskType: activeTab.value })
     tableData.value = data.list || []
     total.value = data.total || 0
-    await openDetailFromQuery()
   } finally {
     loading.value = false
   }
@@ -38,10 +43,20 @@ function resetQuery() {
     pageNum: 1,
     pageSize: 10,
     keyword: '',
-    taskType: '',
+    taskType: activeTab.value,
     status: ''
   })
   loadData()
+}
+
+function changeTab(name, reload = true) {
+  if (!['command', 'script', 'file'].includes(name)) return
+  Object.assign(tabFilters[query.taskType], {
+    pageNum: query.pageNum, pageSize: query.pageSize, keyword: query.keyword, status: query.status
+  })
+  Object.assign(query, tabFilters[name], { taskType: name })
+  activeTab.value = name
+  if (reload) return loadData()
 }
 
 async function openDetail(row) {
@@ -58,11 +73,19 @@ async function openDetail(row) {
 
 async function openDetailFromQuery() {
   const taskId = Number(route.query.taskId || 0)
-  if (!taskId || detailVisible.value) return
-  const hit = tableData.value.find((item) => Number(item.id) === taskId)
-  if (hit) {
-    await openDetail(hit)
+  if (!taskId) return false
+  const data = await queryOpsExecHistoryDetail(taskId)
+  if (!data?.task) return false
+  const taskType = data.task.taskType
+  const tabChanged = ['command', 'script', 'file'].includes(taskType) && taskType !== activeTab.value
+  if (tabChanged) {
+    activeTab.value = taskType
+    changeTab(taskType, false)
   }
+  detailTask.value = data.task
+  detailResults.value = data.results || []
+  detailVisible.value = true
+  return tabChanged
 }
 
 function taskTypeLabel(value) {
@@ -111,7 +134,15 @@ function downloadExecutionResult() {
   URL.revokeObjectURL(link.href)
 }
 
-onMounted(loadData)
+onMounted(async () => {
+  await openDetailFromQuery()
+  await loadData()
+})
+watch(() => route.query.taskId, (value, previous) => {
+  if (value && value !== previous) openDetailFromQuery().then((changed) => {
+    if (changed) loadData()
+  })
+})
 </script>
 
 <template>
@@ -123,14 +154,15 @@ onMounted(loadData)
       </div>
     </div>
 
+    <el-tabs v-model="activeTab" class="history-tabs" @tab-click="(pane) => changeTab(pane.paneName)">
+      <el-tab-pane label="命令执行" name="command" />
+      <el-tab-pane label="脚本执行" name="script" />
+      <el-tab-pane label="文件分发" name="file" />
+    </el-tabs>
+
     <div class="toolbar">
       <div class="toolbar-left">
         <el-input v-model="query.keyword" clearable placeholder="搜索任务名称 / 脚本 / 文件 / 命令" style="width: 320px" @keyup.enter="loadData" />
-        <el-select v-model="query.taskType" clearable placeholder="任务类型" style="width: 140px">
-          <el-option label="命令执行" value="command" />
-          <el-option label="脚本执行" value="script" />
-          <el-option label="文件分发" value="file" />
-        </el-select>
         <el-select v-model="query.status" clearable placeholder="执行状态" style="width: 140px">
           <el-option label="成功" value="success" />
           <el-option label="部分成功" value="partial" />
@@ -143,11 +175,8 @@ onMounted(loadData)
 
     <el-table v-loading="loading" :data="tableData" border>
       <el-table-column prop="title" label="任务名称" min-width="220" />
-      <el-table-column label="类型" width="110">
-        <template #default="{ row }">{{ taskTypeLabel(row.taskType) }}</template>
-      </el-table-column>
-      <el-table-column prop="scriptName" label="脚本" min-width="160" />
-      <el-table-column prop="fileName" label="文件" min-width="160" />
+      <el-table-column v-if="activeTab === 'script'" prop="scriptName" label="脚本" min-width="160" />
+      <el-table-column v-if="activeTab === 'file'" prop="fileName" label="文件" min-width="160" />
       <el-table-column prop="hostCount" label="目标主机" width="100" />
       <el-table-column prop="successCount" label="成功" width="80" />
       <el-table-column prop="failedCount" label="失败" width="80" />
@@ -158,7 +187,7 @@ onMounted(loadData)
       </el-table-column>
       <el-table-column prop="summary" label="摘要" min-width="180" />
       <el-table-column prop="operator" label="发起人" width="120"><template #default="{ row }">{{ row.operator || 'system' }}</template></el-table-column>
-      <el-table-column label="风险" width="90"><template #default="{ row }"><el-tag :type="row.riskLevel === 'high' ? 'danger' : 'info'" effect="plain">{{ row.riskLevel === 'high' ? '高风险' : '普通' }}</el-tag></template></el-table-column>
+      <el-table-column v-if="activeTab !== 'file'" label="风险" width="90"><template #default="{ row }"><el-tag :type="row.riskLevel === 'high' ? 'danger' : 'info'" effect="plain">{{ row.riskLevel === 'high' ? '高风险' : '普通' }}</el-tag></template></el-table-column>
       <el-table-column label="执行时间" min-width="180"><template #default="{ row }">{{ formatExecutionTime(row.startedAt || row.createTime) }}</template></el-table-column>
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
@@ -217,6 +246,7 @@ onMounted(loadData)
 .page-title { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: #14213d; }
 .page-desc { margin: 0; color: #7282a0; }
 .toolbar-left { display: flex; flex-wrap: wrap; gap: 12px; }
+.history-tabs { margin-bottom: -14px; }
 .pager { display: flex; justify-content: flex-end; }
 .detail-wrap { display: flex; flex-direction: column; gap: 16px; }
 .detail-actions { display: flex; justify-content: flex-end; }

@@ -200,51 +200,57 @@ func (OpsScheduleTemplate) TableName() string {
 }
 
 type OpsScheduleTask struct {
-	ID                      uint                    `json:"id" gorm:"primaryKey"`
-	Name                    string                  `json:"name" gorm:"size:128;not null;index"`
-	TaskType                string                  `json:"taskType" gorm:"size:32;not null;index"`
-	TemplateID              uint                    `json:"templateId" gorm:"index"`
-	ScriptID                uint                    `json:"scriptId" gorm:"index"`
-	ScriptName              string                  `json:"scriptName" gorm:"size:128"`
-	Parameters              string                  `json:"parameters" gorm:"type:text"`
-	Variables               OpsScriptVariableValues `json:"variables" gorm:"type:text"`
-	HostIDsJSON             string                  `json:"hostIdsJson" gorm:"type:text"`
-	GroupIDsJSON            string                  `json:"groupIdsJson" gorm:"type:text"`
-	Concurrency             int                     `json:"concurrency" gorm:"default:5"`
-	HTTPMethod              string                  `json:"httpMethod" gorm:"size:16"`
-	URL                     string                  `json:"url" gorm:"size:1024"`
-	HeadersJSON             string                  `json:"headersJson" gorm:"type:text"`
-	Body                    string                  `json:"body" gorm:"type:longtext"`
-	ExpectedStatus          int                     `json:"expectedStatus" gorm:"default:200"`
-	TimeoutSeconds          int                     `json:"timeoutSeconds" gorm:"default:10"`
-	RetryEnabled            bool                    `json:"retryEnabled" gorm:"default:false"`
-	MaxRetries              int                     `json:"maxRetries" gorm:"default:0"`
-	RetryIntervalSeconds    int                     `json:"retryIntervalSeconds" gorm:"default:5"`
-	RetryBackoff            string                  `json:"retryBackoff" gorm:"size:16;default:exponential"`
-	AllowUnsafeRetry        bool                    `json:"allowUnsafeRetry" gorm:"default:false"`
-	CronExpr                string                  `json:"cronExpr" gorm:"size:128;not null"`
-	Description             string                  `json:"description" gorm:"size:255"`
-	Status                  int                     `json:"status" gorm:"default:1;index"`
-	NotifyEnabled           bool                    `json:"notifyEnabled" gorm:"default:false;index"`
-	NotifyRuleID            uint                    `json:"notifyRuleId" gorm:"index"`
-	NotifyOnFailureOnly     bool                    `json:"notifyOnFailureOnly" gorm:"default:false"`
-	ProbeFailureThreshold   int                     `json:"probeFailureThreshold" gorm:"default:2"`
-	ProbeRecoveryThreshold  int                     `json:"probeRecoveryThreshold" gorm:"default:2"`
-	ProbeReminderMinutes    int                     `json:"probeReminderMinutes" gorm:"default:0"`
-	ProbeFailureStreak      int                     `json:"probeFailureStreak" gorm:"default:0"`
-	ProbeSuccessStreak      int                     `json:"probeSuccessStreak" gorm:"default:0"`
-	ProbeIncidentOpen       bool                    `json:"probeIncidentOpen" gorm:"default:false"`
-	ProbeIncidentNotified   bool                    `json:"probeIncidentNotified" gorm:"default:false"`
-	ProbeIncidentStartedAt  *time.Time              `json:"probeIncidentStartedAt"`
-	ProbeLastNotifyAt       *time.Time              `json:"probeLastNotifyAt"`
-	ProbeLastProcessedLogID uint                    `json:"probeLastProcessedLogId" gorm:"default:0"`
-	ProbeStateEpoch         uint                    `json:"probeStateEpoch" gorm:"default:0"`
-	LastStatus              string                  `json:"lastStatus" gorm:"size:32"`
-	LastSummary             string                  `json:"lastSummary" gorm:"type:text"`
-	LastRunAt               *time.Time              `json:"lastRunAt"`
-	NextRunAt               *time.Time              `json:"nextRunAt"`
-	CreatedAt               time.Time               `json:"createTime"`
-	UpdatedAt               time.Time               `json:"updateTime"`
+	ID                       uint                    `json:"id" gorm:"primaryKey"`
+	Name                     string                  `json:"name" gorm:"size:128;not null;index"`
+	TaskType                 string                  `json:"taskType" gorm:"size:32;not null;index"`
+	TemplateID               uint                    `json:"templateId" gorm:"index"`
+	ScriptID                 uint                    `json:"scriptId" gorm:"index"`
+	ScriptName               string                  `json:"scriptName" gorm:"size:128"`
+	Parameters               string                  `json:"parameters" gorm:"type:text"`
+	Variables                OpsScriptVariableValues `json:"variables" gorm:"type:text"`
+	HostIDsJSON              string                  `json:"hostIdsJson" gorm:"type:text"`
+	GroupIDsJSON             string                  `json:"groupIdsJson" gorm:"type:text"`
+	Concurrency              int                     `json:"concurrency" gorm:"default:5"`
+	HTTPMethod               string                  `json:"httpMethod" gorm:"size:16"`
+	URL                      string                  `json:"url" gorm:"size:1024"`
+	HeadersJSON              string                  `json:"headersJson" gorm:"type:text"`
+	Body                     string                  `json:"body" gorm:"type:longtext"`
+	ExpectedStatus           int                     `json:"expectedStatus" gorm:"default:200"`
+	TimeoutSeconds           int                     `json:"timeoutSeconds" gorm:"default:10"`
+	RetryEnabled             bool                    `json:"retryEnabled" gorm:"default:false"`
+	MaxRetries               int                     `json:"maxRetries" gorm:"default:0"`
+	RetryIntervalSeconds     int                     `json:"retryIntervalSeconds" gorm:"default:5"`
+	RetryBackoff             string                  `json:"retryBackoff" gorm:"size:16;default:exponential"`
+	AllowUnsafeRetry         bool                    `json:"allowUnsafeRetry" gorm:"default:false"`
+	CronExpr                 string                  `json:"cronExpr" gorm:"size:128;not null"`
+	Description              string                  `json:"description" gorm:"size:255"`
+	Status                   int                     `json:"status" gorm:"default:1;index"`
+	NotifyEnabled            bool                    `json:"notifyEnabled" gorm:"default:false;index"`
+	NotifyRuleID             uint                    `json:"notifyRuleId" gorm:"index"`
+	NotifyOnFailureOnly      bool                    `json:"notifyOnFailureOnly" gorm:"default:false"`
+	ScriptFailureThreshold   int                     `json:"scriptFailureThreshold" gorm:"default:2"`
+	ScriptReminderFailures   int                     `json:"scriptReminderFailures" gorm:"default:0"`
+	ScriptFailureStreak      int                     `json:"scriptFailureStreak" gorm:"default:0"`
+	ScriptNotifiedAtStreak   int                     `json:"scriptNotifiedAtStreak" gorm:"default:0"`
+	ScriptLastProcessedLogID uint                    `json:"scriptLastProcessedLogId" gorm:"default:0"`
+	ScriptStateEpoch         uint                    `json:"scriptStateEpoch" gorm:"default:0"`
+	ProbeFailureThreshold    int                     `json:"probeFailureThreshold" gorm:"default:2"`
+	ProbeRecoveryThreshold   int                     `json:"probeRecoveryThreshold" gorm:"default:2"`
+	ProbeReminderMinutes     int                     `json:"probeReminderMinutes" gorm:"default:0"`
+	ProbeFailureStreak       int                     `json:"probeFailureStreak" gorm:"default:0"`
+	ProbeSuccessStreak       int                     `json:"probeSuccessStreak" gorm:"default:0"`
+	ProbeIncidentOpen        bool                    `json:"probeIncidentOpen" gorm:"default:false"`
+	ProbeIncidentNotified    bool                    `json:"probeIncidentNotified" gorm:"default:false"`
+	ProbeIncidentStartedAt   *time.Time              `json:"probeIncidentStartedAt"`
+	ProbeLastNotifyAt        *time.Time              `json:"probeLastNotifyAt"`
+	ProbeLastProcessedLogID  uint                    `json:"probeLastProcessedLogId" gorm:"default:0"`
+	ProbeStateEpoch          uint                    `json:"probeStateEpoch" gorm:"default:0"`
+	LastStatus               string                  `json:"lastStatus" gorm:"size:32"`
+	LastSummary              string                  `json:"lastSummary" gorm:"type:text"`
+	LastRunAt                *time.Time              `json:"lastRunAt"`
+	NextRunAt                *time.Time              `json:"nextRunAt"`
+	CreatedAt                time.Time               `json:"createTime"`
+	UpdatedAt                time.Time               `json:"updateTime"`
 }
 
 func (OpsScheduleTask) TableName() string {

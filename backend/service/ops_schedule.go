@@ -63,6 +63,8 @@ type OpsScheduleTaskPayload struct {
 	NotifyEnabled          bool              `json:"notifyEnabled"`
 	NotifyRuleID           uint              `json:"notifyRuleId"`
 	NotifyOnFailureOnly    bool              `json:"notifyOnFailureOnly"`
+	ScriptFailureThreshold int               `json:"scriptFailureThreshold"`
+	ScriptReminderFailures int               `json:"scriptReminderFailures"`
 	ProbeFailureThreshold  int               `json:"probeFailureThreshold"`
 	ProbeRecoveryThreshold int               `json:"probeRecoveryThreshold"`
 	ProbeReminderMinutes   int               `json:"probeReminderMinutes"`
@@ -123,6 +125,12 @@ func resetProbeIncidentUpdates(updates map[string]any) {
 	updates["probe_state_epoch"] = gorm.Expr("probe_state_epoch + 1")
 	// Keep the last processed log ID so a late completion from an older run
 	// cannot reopen an incident after a task configuration change.
+}
+
+func resetScriptFailureUpdates(updates map[string]any) {
+	updates["script_failure_streak"] = 0
+	updates["script_notified_at_streak"] = 0
+	updates["script_state_epoch"] = gorm.Expr("script_state_epoch + 1")
 }
 
 func normalizeScheduleStatus(value int) int {
@@ -413,6 +421,8 @@ func mapScheduleTaskItem(item model.OpsScheduleTask) map[string]any {
 		"notifyEnabled":          item.NotifyEnabled,
 		"notifyRuleId":           item.NotifyRuleID,
 		"notifyOnFailureOnly":    item.NotifyOnFailureOnly,
+		"scriptFailureThreshold": item.ScriptFailureThreshold,
+		"scriptReminderFailures": item.ScriptReminderFailures,
 		"probeFailureThreshold":  item.ProbeFailureThreshold,
 		"probeRecoveryThreshold": item.ProbeRecoveryThreshold,
 		"probeReminderMinutes":   item.ProbeReminderMinutes,
@@ -554,6 +564,8 @@ func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, ex
 		"notify_enabled":           payload.NotifyEnabled,
 		"notify_rule_id":           payload.NotifyRuleID,
 		"notify_on_failure_only":   payload.NotifyOnFailureOnly,
+		"script_failure_threshold": normalizeProbeThreshold(payload.ScriptFailureThreshold),
+		"script_reminder_failures": normalizeScriptReminderFailures(payload.ScriptReminderFailures),
 		"probe_failure_threshold":  normalizeProbeThreshold(payload.ProbeFailureThreshold),
 		"probe_recovery_threshold": normalizeProbeThreshold(payload.ProbeRecoveryThreshold),
 		"probe_reminder_minutes":   normalizeProbeReminderMinutes(payload.ProbeReminderMinutes),
@@ -626,6 +638,15 @@ func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, ex
 			existing.NotifyEnabled != payload.NotifyEnabled || existing.NotifyRuleID != payload.NotifyRuleID ||
 			normalizeScheduleStatus(payload.Status) != 1 {
 			resetProbeIncidentUpdates(updates)
+		}
+		if existing.TaskType != taskType || existing.ScriptID != payload.ScriptID ||
+			existing.HostIDsJSON != encodeUintList(payload.HostIDs) || existing.GroupIDsJSON != encodeUintList(payload.GroupIDs) ||
+			existing.NotifyEnabled != payload.NotifyEnabled || existing.NotifyRuleID != payload.NotifyRuleID ||
+			existing.NotifyOnFailureOnly != payload.NotifyOnFailureOnly ||
+			existing.ScriptFailureThreshold != normalizeProbeThreshold(payload.ScriptFailureThreshold) ||
+			existing.ScriptReminderFailures != normalizeScriptReminderFailures(payload.ScriptReminderFailures) ||
+			normalizeScheduleStatus(payload.Status) != 1 {
+			resetScriptFailureUpdates(updates)
 		}
 	}
 	return updates, nil
@@ -705,6 +726,7 @@ func (s *Service) UpdateOpsScheduleTaskStatus(payload OpsScheduleTaskStatusPaylo
 	updates := map[string]any{"status": status}
 	if status != 1 {
 		resetProbeIncidentUpdates(updates)
+		resetScriptFailureUpdates(updates)
 	}
 	if err := s.db.Model(&model.OpsScheduleTask{}).Where("id IN ?", payload.IDs).Updates(updates).Error; err != nil {
 		return err
@@ -1010,7 +1032,23 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 	notifyStatus := status
 	notifySummary := summary
 	probeDecision := probeIncidentDecision{}
+	scriptDecision := scriptFailureDecision{}
 	shouldNotify := task.NotifyEnabled && task.NotifyRuleID > 0 && (!task.NotifyOnFailureOnly || !strings.EqualFold(status, "success"))
+	if task.TaskType == "script" && task.NotifyOnFailureOnly {
+		shouldNotify = false
+		if triggerType == "schedule" {
+			decision, err := s.recordScheduledScriptResult(task, logItem.ID, status)
+			if err != nil {
+				log.Printf("script task %d failure transition failed: %v", task.ID, err)
+			} else {
+				scriptDecision = decision
+				shouldNotify = decision.Notify
+				if shouldNotify {
+					notifySummary = scriptFailureSummary(task, decision, summary)
+				}
+			}
+		}
+	}
 	if task.TaskType == "http" {
 		// A manual run is diagnostic: it must not open, close, or remind an
 		// incident owned by the scheduled probe, nor overwrite its last status.
@@ -1055,7 +1093,7 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 				"retryCount":           strconv.Itoa(maxInt(attemptCount-1, 0)),
 				"alertName":            task.Name,
 				"severity":             "定时任务",
-				"consecutiveFailures":  strconv.Itoa(probeDecision.FailureStreak),
+				"consecutiveFailures":  strconv.Itoa(maxInt(probeDecision.FailureStreak, scriptDecision.FailureStreak)),
 				"consecutiveSuccesses": strconv.Itoa(probeDecision.SuccessStreak),
 			},
 		})

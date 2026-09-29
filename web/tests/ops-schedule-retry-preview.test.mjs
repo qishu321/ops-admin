@@ -25,6 +25,12 @@ test('script notification preview remains failure-only when configured', () => {
   assert.match(opsApi, /\/ops\/schedule\/task\/notify-preview/)
 })
 
+test('script failure-only notification exposes a failure threshold and optional reminder interval', () => {
+  assert.match(taskView, /v-model="form\.scriptFailureThreshold"/)
+  assert.match(taskView, /v-model="form\.scriptReminderFailures"/)
+  assert.match(taskView, /0 为不重复通知/)
+})
+
 test('HTTP probe exposes incident thresholds and recovery preview', () => {
   assert.match(taskView, /v-model="form\.probeFailureThreshold"/)
   assert.match(taskView, /v-model="form\.probeRecoveryThreshold"/)

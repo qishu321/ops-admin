@@ -72,6 +72,8 @@ const form = reactive({
   notifyEnabled: false,
   notifyRuleId: undefined,
   notifyOnFailureOnly: false,
+  scriptFailureThreshold: 2,
+  scriptReminderFailures: 0,
   probeFailureThreshold: 2,
   probeRecoveryThreshold: 2,
   probeReminderMinutes: 0
@@ -133,6 +135,8 @@ function resetForm() {
     notifyEnabled: false,
     notifyRuleId: undefined,
     notifyOnFailureOnly: false,
+    scriptFailureThreshold: 2,
+    scriptReminderFailures: 0,
     probeFailureThreshold: 2,
     probeRecoveryThreshold: 2,
     probeReminderMinutes: 0
@@ -248,6 +252,8 @@ async function openEdit(row) {
     notifyEnabled: !!data.notifyEnabled,
     notifyRuleId: data.notifyRuleId || undefined,
     notifyOnFailureOnly: !!data.notifyOnFailureOnly,
+    scriptFailureThreshold: data.scriptFailureThreshold || 2,
+    scriptReminderFailures: data.scriptReminderFailures || 0,
     probeFailureThreshold: data.probeFailureThreshold || 2,
     probeRecoveryThreshold: data.probeRecoveryThreshold || 2,
     probeReminderMinutes: data.probeReminderMinutes || 0
@@ -286,6 +292,8 @@ async function handleCopy(row) {
     notifyEnabled: !!data.notifyEnabled,
     notifyRuleId: data.notifyRuleId || undefined,
     notifyOnFailureOnly: !!data.notifyOnFailureOnly,
+    scriptFailureThreshold: data.scriptFailureThreshold || 2,
+    scriptReminderFailures: data.scriptReminderFailures || 0,
     probeFailureThreshold: data.probeFailureThreshold || 2,
     probeRecoveryThreshold: data.probeRecoveryThreshold || 2,
     probeReminderMinutes: data.probeReminderMinutes || 0
@@ -343,6 +351,8 @@ function buildPayload() {
     notifyEnabled: form.notifyEnabled,
     notifyRuleId: form.notifyEnabled ? form.notifyRuleId : undefined,
     notifyOnFailureOnly: form.notifyEnabled && (form.taskType === 'http' || form.notifyOnFailureOnly),
+    scriptFailureThreshold: form.scriptFailureThreshold,
+    scriptReminderFailures: form.scriptReminderFailures,
     probeFailureThreshold: form.probeFailureThreshold,
     probeRecoveryThreshold: form.probeRecoveryThreshold,
     probeReminderMinutes: form.probeReminderMinutes
@@ -601,9 +611,13 @@ onMounted(async () => {
           <el-col v-if="form.notifyEnabled && form.taskType === 'script'" :span="24">
             <el-form-item label="通知策略">
               <el-switch v-model="form.notifyOnFailureOnly" active-text="仅失败时通知" inactive-text="每次执行后通知" />
-              <span class="form-tip">开启后，只有执行失败或 HTTP 状态码不符合预期时才发送通知。</span>
+              <span class="form-tip">仅统计定时执行；成功后清零，手动执行不影响计数。</span>
             </el-form-item>
           </el-col>
+          <template v-if="form.notifyEnabled && form.taskType === 'script' && form.notifyOnFailureOnly">
+            <el-col :span="12"><el-form-item label="连续失败触发"><el-input-number v-model="form.scriptFailureThreshold" :min="1" :max="10" /><span class="form-tip">次执行后通知一次</span></el-form-item></el-col>
+            <el-col :span="12"><el-form-item label="持续失败提醒"><el-input-number v-model="form.scriptReminderFailures" :min="0" :max="1000" /><span class="form-tip">次失败；0 为不重复通知</span></el-form-item></el-col>
+          </template>
           <template v-if="form.notifyEnabled && form.taskType === 'http'">
           <el-col :span="12"><el-form-item label="连续失败触发"><el-input-number v-model="form.probeFailureThreshold" :min="1" :max="10" /><span class="form-tip">次执行</span></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="连续成功恢复"><el-input-number v-model="form.probeRecoveryThreshold" :min="1" :max="10" /><span class="form-tip">次执行</span></el-form-item></el-col>

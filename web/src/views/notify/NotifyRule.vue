@@ -110,7 +110,7 @@ function defaultEventsForScope(scope) {
   if (scope === 'monitor') return ['firing', 'recovered']
   if (scope === 'job') return ['failed', 'waiting_approval', 'rejected']
   if (scope === 'pipeline') return ['success', 'failed', 'waiting_approval', 'rejected']
-  return ['success', 'failed']
+  return ['success', 'failed', 'recovered']
 }
 
 function resetForm() {

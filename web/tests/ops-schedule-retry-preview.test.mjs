@@ -18,9 +18,16 @@ test('unsafe HTTP retries require an explicit confirmation', () => {
   assert.match(taskView, /请确认允许该请求方法重复提交后再保存/)
 })
 
-test('notification preview is failure-only when the configured policy is failure-only', () => {
-  assert.match(taskView, /if \(form\.notifyOnFailureOnly\) previewStatus\.value = 'failed'/)
-  assert.match(taskView, /v-if="!form\.notifyOnFailureOnly" value="success"/)
+test('script notification preview remains failure-only when configured', () => {
+  assert.match(taskView, /form\.taskType === 'script' && form\.notifyOnFailureOnly/)
+  assert.match(taskView, /v-if="form\.taskType === 'script' && !form\.notifyOnFailureOnly" value="success"/)
   assert.match(taskView, /当前为“仅失败时通知”，发送预览只展示失败通知/)
   assert.match(opsApi, /\/ops\/schedule\/task\/notify-preview/)
+})
+
+test('HTTP probe exposes incident thresholds and recovery preview', () => {
+  assert.match(taskView, /v-model="form\.probeFailureThreshold"/)
+  assert.match(taskView, /v-model="form\.probeRecoveryThreshold"/)
+  assert.match(taskView, /v-model="form\.probeReminderMinutes"/)
+  assert.match(taskView, /v-if="form\.taskType === 'http'" value="recovered"/)
 })

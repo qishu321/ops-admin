@@ -71,7 +71,12 @@ const form = reactive({
   status: 1,
   notifyEnabled: false,
   notifyRuleId: undefined,
-  notifyOnFailureOnly: false
+  notifyOnFailureOnly: false,
+  scriptFailureThreshold: 2,
+  scriptReminderFailures: 0,
+  probeFailureThreshold: 2,
+  probeRecoveryThreshold: 2,
+  probeReminderMinutes: 0
 })
 
 const selectedScriptTimeout = computed(() => {
@@ -129,7 +134,12 @@ function resetForm() {
     status: 1,
     notifyEnabled: false,
     notifyRuleId: undefined,
-    notifyOnFailureOnly: false
+    notifyOnFailureOnly: false,
+    scriptFailureThreshold: 2,
+    scriptReminderFailures: 0,
+    probeFailureThreshold: 2,
+    probeRecoveryThreshold: 2,
+    probeReminderMinutes: 0
   })
 }
 
@@ -241,7 +251,12 @@ async function openEdit(row) {
     status: data.status || 1,
     notifyEnabled: !!data.notifyEnabled,
     notifyRuleId: data.notifyRuleId || undefined,
-    notifyOnFailureOnly: !!data.notifyOnFailureOnly
+    notifyOnFailureOnly: !!data.notifyOnFailureOnly,
+    scriptFailureThreshold: data.scriptFailureThreshold || 2,
+    scriptReminderFailures: data.scriptReminderFailures || 0,
+    probeFailureThreshold: data.probeFailureThreshold || 2,
+    probeRecoveryThreshold: data.probeRecoveryThreshold || 2,
+    probeReminderMinutes: data.probeReminderMinutes || 0
   })
   syncScriptVariables(data.variables || {})
   dialogVisible.value = true
@@ -276,7 +291,12 @@ async function handleCopy(row) {
     status: data.status || 1,
     notifyEnabled: !!data.notifyEnabled,
     notifyRuleId: data.notifyRuleId || undefined,
-    notifyOnFailureOnly: !!data.notifyOnFailureOnly
+    notifyOnFailureOnly: !!data.notifyOnFailureOnly,
+    scriptFailureThreshold: data.scriptFailureThreshold || 2,
+    scriptReminderFailures: data.scriptReminderFailures || 0,
+    probeFailureThreshold: data.probeFailureThreshold || 2,
+    probeRecoveryThreshold: data.probeRecoveryThreshold || 2,
+    probeReminderMinutes: data.probeReminderMinutes || 0
   })
   syncScriptVariables(data.variables || {})
   dialogVisible.value = true
@@ -330,12 +350,17 @@ function buildPayload() {
     status: form.status,
     notifyEnabled: form.notifyEnabled,
     notifyRuleId: form.notifyEnabled ? form.notifyRuleId : undefined,
-    notifyOnFailureOnly: form.notifyEnabled && form.notifyOnFailureOnly
+    notifyOnFailureOnly: form.notifyEnabled && (form.taskType === 'http' || form.notifyOnFailureOnly),
+    scriptFailureThreshold: form.scriptFailureThreshold,
+    scriptReminderFailures: form.scriptReminderFailures,
+    probeFailureThreshold: form.probeFailureThreshold,
+    probeRecoveryThreshold: form.probeRecoveryThreshold,
+    probeReminderMinutes: form.probeReminderMinutes
   }
 }
 
 async function loadNotifyPreview() {
-  if (form.notifyOnFailureOnly) previewStatus.value = 'failed'
+  if (form.taskType === 'script' && form.notifyOnFailureOnly) previewStatus.value = 'failed'
   previewLoading.value = true
   previewData.value = null
   try {
@@ -357,7 +382,7 @@ async function openNotifyPreview() {
     ElMessage.warning('请选择通知规则')
     return
   }
-  previewStatus.value = form.notifyOnFailureOnly ? 'failed' : previewStatus.value
+  previewStatus.value = form.taskType === 'http' || form.notifyOnFailureOnly ? 'failed' : previewStatus.value
   previewVisible.value = true
   await loadNotifyPreview()
 }
@@ -583,12 +608,21 @@ onMounted(async () => {
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col v-if="form.notifyEnabled" :span="24">
+          <el-col v-if="form.notifyEnabled && form.taskType === 'script'" :span="24">
             <el-form-item label="通知策略">
               <el-switch v-model="form.notifyOnFailureOnly" active-text="仅失败时通知" inactive-text="每次执行后通知" />
-              <span class="form-tip">开启后，只有执行失败或 HTTP 状态码不符合预期时才发送通知。</span>
+              <span class="form-tip">仅统计定时执行；成功后清零，手动执行不影响计数。</span>
             </el-form-item>
           </el-col>
+          <template v-if="form.notifyEnabled && form.taskType === 'script' && form.notifyOnFailureOnly">
+            <el-col :span="12"><el-form-item label="连续失败触发"><el-input-number v-model="form.scriptFailureThreshold" :min="1" :max="10" /><span class="form-tip">次执行后通知一次</span></el-form-item></el-col>
+            <el-col :span="12"><el-form-item label="持续失败提醒"><el-input-number v-model="form.scriptReminderFailures" :min="0" :max="1000" /><span class="form-tip">次失败；0 为不重复通知</span></el-form-item></el-col>
+          </template>
+          <template v-if="form.notifyEnabled && form.taskType === 'http'">
+          <el-col :span="12"><el-form-item label="连续失败触发"><el-input-number v-model="form.probeFailureThreshold" :min="1" :max="10" /><span class="form-tip">次执行</span></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="连续成功恢复"><el-input-number v-model="form.probeRecoveryThreshold" :min="1" :max="10" /><span class="form-tip">次执行</span></el-form-item></el-col>
+          <el-col :span="24"><el-form-item label="持续故障提醒"><el-input-number v-model="form.probeReminderMinutes" :min="0" :max="1440" /><span class="form-tip">分钟；0 为关闭</span></el-form-item></el-col>
+          </template>
 
           <template v-if="form.taskType === 'script'">
             <el-col :span="12">
@@ -733,13 +767,14 @@ onMounted(async () => {
     <el-dialog v-model="previewVisible" title="通知发送预览" width="min(760px, 90vw)" append-to-body>
       <div class="preview-toolbar">
         <span>预览场景</span>
-        <el-radio-group v-model="previewStatus" :disabled="form.notifyOnFailureOnly" @change="loadNotifyPreview">
+        <el-radio-group v-model="previewStatus" :disabled="form.taskType === 'script' && form.notifyOnFailureOnly" @change="loadNotifyPreview">
           <el-radio-button value="failed">失败通知</el-radio-button>
-          <el-radio-button v-if="!form.notifyOnFailureOnly" value="success">成功通知</el-radio-button>
+          <el-radio-button v-if="form.taskType === 'http'" value="recovered">恢复通知</el-radio-button>
+          <el-radio-button v-if="form.taskType === 'script' && !form.notifyOnFailureOnly" value="success">成功通知</el-radio-button>
         </el-radio-group>
       </div>
       <el-alert
-        v-if="form.notifyOnFailureOnly"
+        v-if="form.taskType === 'script' && form.notifyOnFailureOnly"
         title="当前为“仅失败时通知”，发送预览只展示失败通知。"
         type="warning"
         :closable="false"

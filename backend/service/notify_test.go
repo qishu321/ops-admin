@@ -14,6 +14,19 @@ func TestNormalizeNotifyEvents(t *testing.T) {
 	if got := normalizeNotifyEvents(nil, "monitor"); !reflect.DeepEqual(got, []string{"firing", "recovered"}) {
 		t.Fatalf("unexpected monitor defaults: %#v", got)
 	}
+	if got := normalizeNotifyEvents(nil, "schedule"); !reflect.DeepEqual(got, []string{"success", "failed", "recovered"}) {
+		t.Fatalf("unexpected schedule defaults: %#v", got)
+	}
+}
+
+func TestScheduleRecoveryMatchesLegacySuccessSubscription(t *testing.T) {
+	event := NotifyEvent{Scope: "schedule", Event: "recovered", Status: "recovered"}
+	if !notifyRuleAcceptsEvent([]string{"success", "failed"}, event) {
+		t.Fatal("legacy success subscription should receive probe recovery")
+	}
+	if notifyRuleAcceptsEvent([]string{"failed"}, event) {
+		t.Fatal("failure-only rule must not receive recovery")
+	}
 }
 
 func TestParseNotifyBusinessResponse(t *testing.T) {

@@ -159,6 +159,8 @@ func normalizeNotifyEvents(events []string, scope string) []string {
 	switch normalizeNotifyScope(scope) {
 	case "monitor":
 		return []string{"firing", "recovered"}
+	case "schedule":
+		return []string{"success", "failed", "recovered"}
 	case "job":
 		return []string{"failed", "waiting_approval", "rejected"}
 	case "pipeline":
@@ -564,7 +566,8 @@ func (s *Service) enqueueNotifyRule(ruleID uint, event NotifyEvent, allowDisable
 		return 0, nil
 	}
 	if event.Event != "notify" {
-		if !notifyEventMatch(decodeStringList(rule.EventsJSON), event.Event, event.Status) {
+		events := decodeStringList(rule.EventsJSON)
+		if !notifyRuleAcceptsEvent(events, event) {
 			return 0, nil
 		}
 	}
@@ -665,6 +668,16 @@ func notifyEventMatch(events []string, event, status string) bool {
 		}
 	}
 	return false
+}
+
+func notifyRuleAcceptsEvent(events []string, event NotifyEvent) bool {
+	if notifyEventMatch(events, event.Event, event.Status) {
+		return true
+	}
+	// Pre-existing schedule rules may subscribe to success instead of the
+	// newly introduced recovery event.
+	return normalizeNotifyScope(event.Scope) == "schedule" && event.Event == "recovered" &&
+		notifyEventMatch(events, "success", "success")
 }
 
 func newNotifyDeliveryID() string {
@@ -912,6 +925,8 @@ func scheduleNotifyStatusLabel(status string) string {
 		return "成功"
 	case "failed", "error":
 		return "失败"
+	case "recovered":
+		return "已恢复"
 	case "running":
 		return "执行中"
 	default:

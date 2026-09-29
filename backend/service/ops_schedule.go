@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,32 +37,37 @@ type OpsScheduleTemplatePayload struct {
 }
 
 type OpsScheduleTaskPayload struct {
-	ID                   uint              `json:"id"`
-	Name                 string            `json:"name"`
-	TaskType             string            `json:"taskType"`
-	TemplateID           uint              `json:"templateId"`
-	ScriptID             uint              `json:"scriptId"`
-	Variables            map[string]string `json:"variables"`
-	HostIDs              []uint            `json:"hostIds"`
-	GroupIDs             []uint            `json:"groupIds"`
-	Concurrency          int               `json:"concurrency"`
-	HTTPMethod           string            `json:"httpMethod"`
-	URL                  string            `json:"url"`
-	HeadersJSON          string            `json:"headersJson"`
-	Body                 string            `json:"body"`
-	ExpectedStatus       int               `json:"expectedStatus"`
-	TimeoutSeconds       int               `json:"timeoutSeconds"`
-	RetryEnabled         bool              `json:"retryEnabled"`
-	MaxRetries           int               `json:"maxRetries"`
-	RetryIntervalSeconds int               `json:"retryIntervalSeconds"`
-	RetryBackoff         string            `json:"retryBackoff"`
-	AllowUnsafeRetry     bool              `json:"allowUnsafeRetry"`
-	CronExpr             string            `json:"cronExpr"`
-	Description          string            `json:"description"`
-	Status               int               `json:"status"`
-	NotifyEnabled        bool              `json:"notifyEnabled"`
-	NotifyRuleID         uint              `json:"notifyRuleId"`
-	NotifyOnFailureOnly  bool              `json:"notifyOnFailureOnly"`
+	ID                     uint              `json:"id"`
+	Name                   string            `json:"name"`
+	TaskType               string            `json:"taskType"`
+	TemplateID             uint              `json:"templateId"`
+	ScriptID               uint              `json:"scriptId"`
+	Variables              map[string]string `json:"variables"`
+	HostIDs                []uint            `json:"hostIds"`
+	GroupIDs               []uint            `json:"groupIds"`
+	Concurrency            int               `json:"concurrency"`
+	HTTPMethod             string            `json:"httpMethod"`
+	URL                    string            `json:"url"`
+	HeadersJSON            string            `json:"headersJson"`
+	Body                   string            `json:"body"`
+	ExpectedStatus         int               `json:"expectedStatus"`
+	TimeoutSeconds         int               `json:"timeoutSeconds"`
+	RetryEnabled           bool              `json:"retryEnabled"`
+	MaxRetries             int               `json:"maxRetries"`
+	RetryIntervalSeconds   int               `json:"retryIntervalSeconds"`
+	RetryBackoff           string            `json:"retryBackoff"`
+	AllowUnsafeRetry       bool              `json:"allowUnsafeRetry"`
+	CronExpr               string            `json:"cronExpr"`
+	Description            string            `json:"description"`
+	Status                 int               `json:"status"`
+	NotifyEnabled          bool              `json:"notifyEnabled"`
+	NotifyRuleID           uint              `json:"notifyRuleId"`
+	NotifyOnFailureOnly    bool              `json:"notifyOnFailureOnly"`
+	ScriptFailureThreshold int               `json:"scriptFailureThreshold"`
+	ScriptReminderFailures int               `json:"scriptReminderFailures"`
+	ProbeFailureThreshold  int               `json:"probeFailureThreshold"`
+	ProbeRecoveryThreshold int               `json:"probeRecoveryThreshold"`
+	ProbeReminderMinutes   int               `json:"probeReminderMinutes"`
 }
 
 type OpsScheduleNotifyPreviewPayload struct {
@@ -87,6 +93,44 @@ func normalizeScheduleTaskType(value string) string {
 	default:
 		return "script"
 	}
+}
+
+func normalizeProbeThreshold(value int) int {
+	if value < 1 {
+		return 2
+	}
+	if value > 10 {
+		return 10
+	}
+	return value
+}
+
+func normalizeProbeReminderMinutes(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 1440 {
+		return 1440
+	}
+	return value
+}
+
+func resetProbeIncidentUpdates(updates map[string]any) {
+	updates["probe_failure_streak"] = 0
+	updates["probe_success_streak"] = 0
+	updates["probe_incident_open"] = false
+	updates["probe_incident_notified"] = false
+	updates["probe_incident_started_at"] = nil
+	updates["probe_last_notify_at"] = nil
+	updates["probe_state_epoch"] = gorm.Expr("probe_state_epoch + 1")
+	// Keep the last processed log ID so a late completion from an older run
+	// cannot reopen an incident after a task configuration change.
+}
+
+func resetScriptFailureUpdates(updates map[string]any) {
+	updates["script_failure_streak"] = 0
+	updates["script_notified_at_streak"] = 0
+	updates["script_state_epoch"] = gorm.Expr("script_state_epoch + 1")
 }
 
 func normalizeScheduleStatus(value int) int {
@@ -350,39 +394,48 @@ func (s *Service) removeOpsScheduleTask(taskID uint) {
 
 func mapScheduleTaskItem(item model.OpsScheduleTask) map[string]any {
 	return map[string]any{
-		"id":                   item.ID,
-		"name":                 item.Name,
-		"taskType":             item.TaskType,
-		"templateId":           item.TemplateID,
-		"scriptId":             item.ScriptID,
-		"scriptName":           item.ScriptName,
-		"parameters":           item.Parameters,
-		"hostIds":              decodeUintList(item.HostIDsJSON),
-		"groupIds":             decodeUintList(item.GroupIDsJSON),
-		"concurrency":          item.Concurrency,
-		"httpMethod":           item.HTTPMethod,
-		"url":                  item.URL,
-		"headersJson":          firstNonEmpty(item.HeadersJSON, "{}"),
-		"body":                 item.Body,
-		"expectedStatus":       item.ExpectedStatus,
-		"timeoutSeconds":       item.TimeoutSeconds,
-		"retryEnabled":         item.RetryEnabled,
-		"maxRetries":           item.MaxRetries,
-		"retryIntervalSeconds": item.RetryIntervalSeconds,
-		"retryBackoff":         firstNonEmpty(item.RetryBackoff, "exponential"),
-		"allowUnsafeRetry":     item.AllowUnsafeRetry,
-		"cronExpr":             item.CronExpr,
-		"description":          item.Description,
-		"status":               item.Status,
-		"notifyEnabled":        item.NotifyEnabled,
-		"notifyRuleId":         item.NotifyRuleID,
-		"notifyOnFailureOnly":  item.NotifyOnFailureOnly,
-		"lastStatus":           item.LastStatus,
-		"lastSummary":          item.LastSummary,
-		"lastRunAt":            item.LastRunAt,
-		"nextRunAt":            item.NextRunAt,
-		"createTime":           item.CreatedAt,
-		"updateTime":           item.UpdatedAt,
+		"id":                     item.ID,
+		"name":                   item.Name,
+		"taskType":               item.TaskType,
+		"templateId":             item.TemplateID,
+		"scriptId":               item.ScriptID,
+		"scriptName":             item.ScriptName,
+		"parameters":             item.Parameters,
+		"hostIds":                decodeUintList(item.HostIDsJSON),
+		"groupIds":               decodeUintList(item.GroupIDsJSON),
+		"concurrency":            item.Concurrency,
+		"httpMethod":             item.HTTPMethod,
+		"url":                    item.URL,
+		"headersJson":            firstNonEmpty(item.HeadersJSON, "{}"),
+		"body":                   item.Body,
+		"expectedStatus":         item.ExpectedStatus,
+		"timeoutSeconds":         item.TimeoutSeconds,
+		"retryEnabled":           item.RetryEnabled,
+		"maxRetries":             item.MaxRetries,
+		"retryIntervalSeconds":   item.RetryIntervalSeconds,
+		"retryBackoff":           firstNonEmpty(item.RetryBackoff, "exponential"),
+		"allowUnsafeRetry":       item.AllowUnsafeRetry,
+		"cronExpr":               item.CronExpr,
+		"description":            item.Description,
+		"status":                 item.Status,
+		"notifyEnabled":          item.NotifyEnabled,
+		"notifyRuleId":           item.NotifyRuleID,
+		"notifyOnFailureOnly":    item.NotifyOnFailureOnly,
+		"scriptFailureThreshold": item.ScriptFailureThreshold,
+		"scriptReminderFailures": item.ScriptReminderFailures,
+		"probeFailureThreshold":  item.ProbeFailureThreshold,
+		"probeRecoveryThreshold": item.ProbeRecoveryThreshold,
+		"probeReminderMinutes":   item.ProbeReminderMinutes,
+		"probeFailureStreak":     item.ProbeFailureStreak,
+		"probeSuccessStreak":     item.ProbeSuccessStreak,
+		"probeIncidentOpen":      item.ProbeIncidentOpen,
+		"probeIncidentStartedAt": item.ProbeIncidentStartedAt,
+		"lastStatus":             item.LastStatus,
+		"lastSummary":            item.LastSummary,
+		"lastRunAt":              item.LastRunAt,
+		"nextRunAt":              item.NextRunAt,
+		"createTime":             item.CreatedAt,
+		"updateTime":             item.UpdatedAt,
 	}
 }
 
@@ -487,31 +540,36 @@ func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, ex
 	}
 
 	updates := map[string]any{
-		"name":                   name,
-		"task_type":              taskType,
-		"template_id":            payload.TemplateID,
-		"parameters":             "",
-		"host_ids_json":          encodeUintList(payload.HostIDs),
-		"group_ids_json":         encodeUintList(payload.GroupIDs),
-		"concurrency":            normalizeOpsConcurrency(payload.Concurrency),
-		"http_method":            normalizeHTTPMethod(payload.HTTPMethod),
-		"url":                    strings.TrimSpace(payload.URL),
-		"headers_json":           headersJSON,
-		"body":                   payload.Body,
-		"expected_status":        normalizeExpectedStatus(payload.ExpectedStatus),
-		"timeout_seconds":        normalizeOpsTimeout(payload.TimeoutSeconds),
-		"retry_enabled":          payload.RetryEnabled,
-		"max_retries":            normalizeScheduleMaxRetries(payload.RetryEnabled, payload.MaxRetries),
-		"retry_interval_seconds": normalizeScheduleRetryInterval(payload.RetryIntervalSeconds),
-		"retry_backoff":          normalizeScheduleRetryBackoff(payload.RetryBackoff),
-		"allow_unsafe_retry":     payload.RetryEnabled && payload.AllowUnsafeRetry,
-		"cron_expr":              normalizeCronExpr(payload.CronExpr),
-		"description":            Trimmed(payload.Description),
-		"status":                 normalizeScheduleStatus(payload.Status),
-		"notify_enabled":         payload.NotifyEnabled,
-		"notify_rule_id":         payload.NotifyRuleID,
-		"notify_on_failure_only": payload.NotifyOnFailureOnly,
-		"next_run_at":            nil,
+		"name":                     name,
+		"task_type":                taskType,
+		"template_id":              payload.TemplateID,
+		"parameters":               "",
+		"host_ids_json":            encodeUintList(payload.HostIDs),
+		"group_ids_json":           encodeUintList(payload.GroupIDs),
+		"concurrency":              normalizeOpsConcurrency(payload.Concurrency),
+		"http_method":              normalizeHTTPMethod(payload.HTTPMethod),
+		"url":                      strings.TrimSpace(payload.URL),
+		"headers_json":             headersJSON,
+		"body":                     payload.Body,
+		"expected_status":          normalizeExpectedStatus(payload.ExpectedStatus),
+		"timeout_seconds":          normalizeOpsTimeout(payload.TimeoutSeconds),
+		"retry_enabled":            payload.RetryEnabled,
+		"max_retries":              normalizeScheduleMaxRetries(payload.RetryEnabled, payload.MaxRetries),
+		"retry_interval_seconds":   normalizeScheduleRetryInterval(payload.RetryIntervalSeconds),
+		"retry_backoff":            normalizeScheduleRetryBackoff(payload.RetryBackoff),
+		"allow_unsafe_retry":       payload.RetryEnabled && payload.AllowUnsafeRetry,
+		"cron_expr":                normalizeCronExpr(payload.CronExpr),
+		"description":              Trimmed(payload.Description),
+		"status":                   normalizeScheduleStatus(payload.Status),
+		"notify_enabled":           payload.NotifyEnabled,
+		"notify_rule_id":           payload.NotifyRuleID,
+		"notify_on_failure_only":   payload.NotifyOnFailureOnly,
+		"script_failure_threshold": normalizeProbeThreshold(payload.ScriptFailureThreshold),
+		"script_reminder_failures": normalizeScriptReminderFailures(payload.ScriptReminderFailures),
+		"probe_failure_threshold":  normalizeProbeThreshold(payload.ProbeFailureThreshold),
+		"probe_recovery_threshold": normalizeProbeThreshold(payload.ProbeRecoveryThreshold),
+		"probe_reminder_minutes":   normalizeProbeReminderMinutes(payload.ProbeReminderMinutes),
+		"next_run_at":              nil,
 	}
 
 	switch taskType {
@@ -574,6 +632,22 @@ func (s *Service) buildOpsScheduleTaskUpdates(payload OpsScheduleTaskPayload, ex
 		updates["last_status"] = existing.LastStatus
 		updates["last_summary"] = existing.LastSummary
 		updates["last_run_at"] = existing.LastRunAt
+		if existing.TaskType != taskType || existing.URL != strings.TrimSpace(payload.URL) ||
+			existing.HTTPMethod != normalizeHTTPMethod(payload.HTTPMethod) ||
+			existing.ExpectedStatus != normalizeExpectedStatus(payload.ExpectedStatus) ||
+			existing.NotifyEnabled != payload.NotifyEnabled || existing.NotifyRuleID != payload.NotifyRuleID ||
+			normalizeScheduleStatus(payload.Status) != 1 {
+			resetProbeIncidentUpdates(updates)
+		}
+		if existing.TaskType != taskType || existing.ScriptID != payload.ScriptID ||
+			existing.HostIDsJSON != encodeUintList(payload.HostIDs) || existing.GroupIDsJSON != encodeUintList(payload.GroupIDs) ||
+			existing.NotifyEnabled != payload.NotifyEnabled || existing.NotifyRuleID != payload.NotifyRuleID ||
+			existing.NotifyOnFailureOnly != payload.NotifyOnFailureOnly ||
+			existing.ScriptFailureThreshold != normalizeProbeThreshold(payload.ScriptFailureThreshold) ||
+			existing.ScriptReminderFailures != normalizeScriptReminderFailures(payload.ScriptReminderFailures) ||
+			normalizeScheduleStatus(payload.Status) != 1 {
+			resetScriptFailureUpdates(updates)
+		}
 	}
 	return updates, nil
 }
@@ -649,7 +723,12 @@ func (s *Service) UpdateOpsScheduleTaskStatus(payload OpsScheduleTaskStatusPaylo
 		return errors.New("请选择任务")
 	}
 	status := normalizeScheduleStatus(payload.Status)
-	if err := s.db.Model(&model.OpsScheduleTask{}).Where("id IN ?", payload.IDs).Update("status", status).Error; err != nil {
+	updates := map[string]any{"status": status}
+	if status != 1 {
+		resetProbeIncidentUpdates(updates)
+		resetScriptFailureUpdates(updates)
+	}
+	if err := s.db.Model(&model.OpsScheduleTask{}).Where("id IN ?", payload.IDs).Updates(updates).Error; err != nil {
 		return err
 	}
 	var tasks []model.OpsScheduleTask
@@ -942,21 +1021,59 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 		"duration_ms":     finishedAt.Sub(startedAt).Milliseconds(),
 		"attempt_count":   attemptCount,
 	}).Error
-	_ = s.db.Model(&model.OpsScheduleTask{}).Where("id = ?", task.ID).Updates(map[string]any{
-		"last_status":  status,
-		"last_summary": summary,
-		"last_run_at":  &finishedAt,
-		"next_run_at":  nextRunAt,
-	}).Error
-	if task.NotifyEnabled && task.NotifyRuleID > 0 && (!task.NotifyOnFailureOnly || !strings.EqualFold(status, "success")) {
+	if task.TaskType != "http" {
+		_ = s.db.Model(&model.OpsScheduleTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+			"last_status":  status,
+			"last_summary": summary,
+			"last_run_at":  &finishedAt,
+			"next_run_at":  nextRunAt,
+		}).Error
+	}
+	notifyStatus := status
+	notifySummary := summary
+	probeDecision := probeIncidentDecision{}
+	scriptDecision := scriptFailureDecision{}
+	shouldNotify := task.NotifyEnabled && task.NotifyRuleID > 0 && (!task.NotifyOnFailureOnly || !strings.EqualFold(status, "success"))
+	if task.TaskType == "script" && task.NotifyOnFailureOnly {
+		shouldNotify = false
+		if triggerType == "schedule" {
+			decision, err := s.recordScheduledScriptResult(task, logItem.ID, status)
+			if err != nil {
+				log.Printf("script task %d failure transition failed: %v", task.ID, err)
+			} else {
+				scriptDecision = decision
+				shouldNotify = decision.Notify
+				if shouldNotify {
+					notifySummary = scriptFailureSummary(task, decision, summary)
+				}
+			}
+		}
+	}
+	if task.TaskType == "http" {
+		// A manual run is diagnostic: it must not open, close, or remind an
+		// incident owned by the scheduled probe, nor overwrite its last status.
+		shouldNotify = false
+		if triggerType == "schedule" {
+			decision, err := s.recordScheduledProbeResult(task, logItem.ID, status, summary, finishedAt, nextRunAt)
+			if err != nil {
+				log.Printf("HTTP probe %d incident transition failed: %v", task.ID, err)
+			} else {
+				probeDecision = decision
+				notifyStatus = decision.Event
+				shouldNotify = decision.Event != ""
+				notifySummary = probeNotifySummary(task, decision, summary)
+			}
+		}
+	}
+	if shouldNotify {
 		duration := finishedAt.Sub(startedAt)
 		s.DispatchNotifyRule(task.NotifyRuleID, NotifyEvent{
 			Scope:      "schedule",
-			Event:      status,
+			Event:      notifyStatus,
 			TargetID:   task.ID,
 			TargetName: task.Name,
-			Status:     status,
-			Summary:    summary,
+			Status:     notifyStatus,
+			Summary:    notifySummary,
 			// The execution log keeps the complete response body. Notifications
 			// intentionally use a compact result, otherwise a successful HTTP
 			// probe can push an entire HTML page into chat.
@@ -964,18 +1081,20 @@ func (s *Service) executeScheduledTask(taskID uint, triggerType string) {
 			StartedAt:  &startedAt,
 			FinishedAt: &finishedAt,
 			Extra: map[string]string{
-				"taskName":       task.Name,
-				"taskType":       scheduleTaskTypeLabel(task.TaskType),
-				"triggerType":    scheduleTriggerTypeLabel(triggerType),
-				"cronExpr":       task.CronExpr,
-				"duration":       formatScheduleDuration(duration),
-				"durationMs":     fmt.Sprintf("%d", duration.Milliseconds()),
-				"httpStatus":     formatScheduleHTTPStatus(httpCode),
-				"expectedStatus": fmt.Sprintf("%d", normalizeExpectedStatus(task.ExpectedStatus)),
-				"attemptCount":   strconv.Itoa(attemptCount),
-				"retryCount":     strconv.Itoa(maxInt(attemptCount-1, 0)),
-				"alertName":      task.Name,
-				"severity":       "定时任务",
+				"taskName":             task.Name,
+				"taskType":             scheduleTaskTypeLabel(task.TaskType),
+				"triggerType":          scheduleTriggerTypeLabel(triggerType),
+				"cronExpr":             task.CronExpr,
+				"duration":             formatScheduleDuration(duration),
+				"durationMs":           fmt.Sprintf("%d", duration.Milliseconds()),
+				"httpStatus":           formatScheduleHTTPStatus(httpCode),
+				"expectedStatus":       fmt.Sprintf("%d", normalizeExpectedStatus(task.ExpectedStatus)),
+				"attemptCount":         strconv.Itoa(attemptCount),
+				"retryCount":           strconv.Itoa(maxInt(attemptCount-1, 0)),
+				"alertName":            task.Name,
+				"severity":             "定时任务",
+				"consecutiveFailures":  strconv.Itoa(maxInt(probeDecision.FailureStreak, scriptDecision.FailureStreak)),
+				"consecutiveSuccesses": strconv.Itoa(probeDecision.SuccessStreak),
 			},
 		})
 	}
@@ -1195,15 +1314,18 @@ func scheduleHTTPRetryDelay(task model.OpsScheduleTask, completedAttempt int) ti
 
 func buildOpsScheduleNotifyPreviewEvent(payload OpsScheduleTaskPayload, previewStatus string) (NotifyEvent, error) {
 	status := strings.ToLower(strings.TrimSpace(previewStatus))
-	if status != "success" && status != "failed" {
-		return NotifyEvent{}, errors.New("预览状态只能是成功或失败")
+	taskType := normalizeScheduleTaskType(payload.TaskType)
+	if taskType == "http" && status != "failed" && status != "recovered" {
+		return NotifyEvent{}, errors.New("HTTP 探针只能预览故障或恢复通知")
 	}
-	if payload.NotifyOnFailureOnly && status != "failed" {
+	if taskType == "script" && status != "success" && status != "failed" {
+		return NotifyEvent{}, errors.New("脚本任务只能预览成功或失败通知")
+	}
+	if taskType == "script" && payload.NotifyOnFailureOnly && status != "failed" {
 		return NotifyEvent{}, errors.New("当前通知策略为仅失败时通知，只能预览失败通知")
 	}
 
 	now := time.Now()
-	taskType := normalizeScheduleTaskType(payload.TaskType)
 	taskName := firstNonEmpty(strings.TrimSpace(payload.Name), "未命名定时任务")
 	attemptCount := 1
 	if taskType == "http" && payload.RetryEnabled {
@@ -1234,6 +1356,10 @@ func buildOpsScheduleNotifyPreviewEvent(payload OpsScheduleTaskPayload, previewS
 				lines = append(lines, fmt.Sprintf("第 %d 次：HTTP %d，未达到期望状态码 %d", attempt, actualStatus, expectedStatus))
 			}
 			detail = strings.Join(lines, "\n")
+		}
+		if status == "recovered" {
+			summary = fmt.Sprintf("%s 已恢复：连续 %d 次探针成功", taskName, normalizeProbeThreshold(payload.ProbeRecoveryThreshold))
+			detail = fmt.Sprintf("预览数据：HTTP 探针返回 %d，连续检查成功后关闭故障事件。", expectedStatus)
 		}
 	}
 
@@ -1272,7 +1398,8 @@ func (s *Service) PreviewOpsScheduleTaskNotification(payload OpsScheduleNotifyPr
 	if normalizeNotifyScope(rule.Scope) != "all" && normalizeNotifyScope(rule.Scope) != "schedule" {
 		return nil, errors.New("所选通知规则不适用于定时任务")
 	}
-	if !notifyEventMatch(decodeStringList(rule.EventsJSON), event.Event, event.Status) {
+	events := decodeStringList(rule.EventsJSON)
+	if !notifyRuleAcceptsEvent(events, event) {
 		return nil, fmt.Errorf("所选通知规则未订阅%s事件", scheduleNotifyStatusLabel(event.Status))
 	}
 

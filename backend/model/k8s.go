@@ -245,6 +245,7 @@ type K8sNamespaceItem struct {
 
 type K8sPodItem struct {
 	Name            string `json:"name"`
+	UID             string `json:"uid"`
 	Namespace       string `json:"namespace"`
 	WorkloadName    string `json:"workloadName"`
 	WorkloadType    string `json:"workloadType"`

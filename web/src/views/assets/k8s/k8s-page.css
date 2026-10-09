@@ -1278,6 +1278,40 @@
   gap: 16px;
 }
 
+.workload-detail-env-expanded {
+  padding: 12px 16px 18px 52px;
+  background: #f8fafc;
+}
+
+.workload-detail-env-heading {
+  margin-bottom: 8px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workload-detail-env-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.workload-detail-env-source,
+.workload-detail-env-pending {
+  color: #8492a7;
+  font-size: 12px;
+}
+
+.workload-detail-env-resolved {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.workload-detail-env-pod {
+  color: #64748b;
+}
+
 .ingress-detail-section-head {
   display: flex;
   align-items: baseline;

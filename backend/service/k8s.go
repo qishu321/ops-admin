@@ -146,6 +146,7 @@ type kubeEndpointListResponse struct {
 
 type kubeMetadata struct {
 	Name              string            `json:"name"`
+	UID               string            `json:"uid"`
 	Namespace         string            `json:"namespace"`
 	CreationTimestamp string            `json:"creationTimestamp"`
 	Labels            map[string]string `json:"labels"`
@@ -3736,7 +3737,7 @@ func buildPodItemsWithRefs(pods []kubePod, refs map[string]podWorkloadRef) []mod
 			}
 		}
 		items = append(items, model.K8sPodItem{
-			Name: pod.Metadata.Name, Namespace: pod.Metadata.Namespace, WorkloadName: workload.Name, WorkloadType: workload.Type,
+			Name: pod.Metadata.Name, UID: pod.Metadata.UID, Namespace: pod.Metadata.Namespace, WorkloadName: workload.Name, WorkloadType: workload.Type,
 			Status: fallbackText(pod.Status.Phase), ReadyContainers: readyContainers, TotalContainers: len(pod.Spec.Containers),
 			Node: fallbackText(pod.Spec.NodeName), NodeIP: fallbackText(pod.Status.HostIP), Restarts: restarts,
 			Age: humanizeAge(pod.Metadata.CreationTimestamp), IP: fallbackText(pod.Status.PodIP),
@@ -4002,6 +4003,9 @@ func formatK8sEnvSource(valueFrom map[string]any) string {
 		source, ok := raw.(map[string]any)
 		if !ok {
 			continue
+		}
+		if fieldPath, _ := source["fieldPath"].(string); fieldPath != "" {
+			return fmt.Sprintf("%s: %s", sourceType, fieldPath)
 		}
 		name, _ := source["name"].(string)
 		key, _ := source["key"].(string)

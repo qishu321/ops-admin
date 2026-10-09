@@ -2,6 +2,26 @@
 import PodMonitor from './PodMonitor.vue'
 import ServicePodMonitor from '../ServicePodMonitor.vue'
 
+function resolvedWorkloadFieldRefValues(env, detail) {
+  const fieldPath = env?.valueFrom?.fieldRef?.fieldPath
+  if (!fieldPath) return []
+  if (fieldPath === 'metadata.namespace') {
+    return detail?.namespace ? [{ value: detail.namespace }] : []
+  }
+
+  const podField = {
+    'metadata.name': 'name',
+    'metadata.uid': 'uid',
+    'spec.nodeName': 'node',
+    'status.podIP': 'ip',
+    'status.hostIP': 'nodeIP'
+  }[fieldPath]
+  if (!podField) return []
+  return (detail?.pods || [])
+    .filter((pod) => pod[podField] && pod[podField] !== '-')
+    .map((pod) => ({ pod: pod.name, value: pod[podField] }))
+}
+
 defineProps({
   page: {
     type: Object,
@@ -152,6 +172,32 @@ defineProps({
         <div class="drawer-section">
           <strong>{{ page.t('k8sContainers') }}</strong>
           <el-table :data="page.workloadDetail.containers || []" class="data-table">
+            <el-table-column type="expand" width="52">
+              <template #default="{ row: container }">
+                <div class="workload-detail-env-expanded">
+                  <div class="workload-detail-env-heading">{{ container.name }} · 环境变量</div>
+                  <el-table :data="container.env || []" empty-text="暂无环境变量">
+                    <el-table-column prop="name" label="变量名" min-width="210" />
+                    <el-table-column label="变量值 / 引用来源" min-width="300">
+                      <template #default="{ row: env }">
+                        <template v-if="env.valueFrom?.fieldRef">
+                          <span class="workload-detail-env-source">{{ env.source || 'Kubernetes 字段引用' }}</span>
+                          <div v-for="(resolved, index) in resolvedWorkloadFieldRefValues(env, page.workloadDetail)" :key="index" class="workload-detail-env-resolved">
+                            <span v-if="resolved.pod && page.workloadDetail.pods.length > 1" class="workload-detail-env-pod">{{ resolved.pod }}:</span>
+                            <span>{{ resolved.value }}</span>
+                          </div>
+                          <span v-if="!resolvedWorkloadFieldRefValues(env, page.workloadDetail).length" class="workload-detail-env-pending">Pod 创建时注入</span>
+                        </template>
+                        <span v-else class="workload-detail-env-value">{{ env.valueFrom ? (env.source || 'Kubernetes 引用变量') : env.value }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="类型" width="100">
+                      <template #default="{ row: env }">{{ env.valueFrom ? '引用变量' : '普通变量' }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="name" :label="page.t('k8sContainer')" min-width="180" />
             <el-table-column prop="image" :label="page.t('k8sImage')" min-width="280" />
             <el-table-column label="CPU Request / Limit" min-width="170">
@@ -159,6 +205,9 @@ defineProps({
             </el-table-column>
             <el-table-column label="内存 Request / Limit" min-width="190">
               <template #default="{ row }">{{ row.requestMemory || '-' }} / {{ row.limitMemory || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="环境变量" width="100">
+              <template #default="{ row }">{{ row.env?.length || 0 }} 项</template>
             </el-table-column>
           </el-table>
         </div>

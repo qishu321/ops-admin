@@ -1030,17 +1030,9 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 
 	var writeMu sync.Mutex
 	writePipe := func(reader io.Reader) {
-		buf := make([]byte, 4096)
-		for {
-			n, err := reader.Read(buf)
-			if n > 0 {
-				writeMu.Lock()
-				_ = conn.WriteMessage(websocket.TextMessage, buf[:n])
-				writeMu.Unlock()
-			}
-			if err != nil {
-				return
-			}
+		if err := writeAssetTerminalOutput(conn, &writeMu, reader); err != nil {
+			// Unblock the input reader so the handler releases the SSH session.
+			_ = conn.Close()
 		}
 	}
 	go writePipe(terminal.Stdout)

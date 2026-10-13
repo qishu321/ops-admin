@@ -556,7 +556,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-container class="layout-shell" :class="[`theme-${sidebarTheme}`]">
+  <el-container class="layout-shell" :class="[`theme-${sidebarTheme}`, { 'terminal-layout': route.path === '/assets/terminal' }]">
     <el-aside :width="collapsed ? '78px' : '200px'" class="layout-aside" :class="{ 'is-collapsed': collapsed }">
       <div class="brand-box">
         <div class="brand-row">
@@ -1305,6 +1305,24 @@ onBeforeUnmount(() => {
 
 .layout-main {
   padding: 20px;
+}
+
+.layout-shell.terminal-layout {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-layout .main-shell {
+  min-height: 0;
+}
+
+.terminal-layout .layout-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 8px !important;
 }
 
 :deep(.app-switcher-menu .el-dropdown-menu__item) {

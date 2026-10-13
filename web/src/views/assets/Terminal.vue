@@ -172,9 +172,14 @@ function connectSocket(id) {
   const token = encodeURIComponent(getToken())
   const url = `${protocol}://${window.location.host}/api/v1/asset/terminal/ws?hostId=${session.host.id}&rows=${runtime.term.rows || 34}&cols=${runtime.term.cols || 150}&token=${token}`
   const currentSocket = new WebSocket(url)
+  currentSocket.binaryType = 'arraybuffer'
+  // Keep decoder state across frames, but never across SSH connections.
+  const outputDecoder = new TextDecoder()
+  let socketOpened = false
   runtime.socket = currentSocket
   currentSocket.onopen = () => {
     if (runtime.socket !== currentSocket) return
+    socketOpened = true
     updateSession(id, { status: 'connected' })
     runtime.term.writeln(`\x1b[32m欢迎使用 SSH 终端，正在连接 ${session.host.sshIp || session.host.hostName} ...\x1b[0m`)
     if (activeSessionId.value === id) {
@@ -184,14 +189,20 @@ function connectSocket(id) {
   }
   currentSocket.onmessage = (event) => {
     if (runtime.socket === currentSocket) {
-      trackPromptDirectory(runtime, event.data)
-      runtime.term.write(event.data)
+      const output = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data
+      const promptText = typeof output === 'string' ? output : outputDecoder.decode(output, { stream: true })
+      trackPromptDirectory(runtime, promptText)
+      // xterm's streaming UTF-8 decoder preserves characters split across frames.
+      runtime.term.write(output)
     }
   }
   currentSocket.onerror = () => {
     if (runtime.socket !== currentSocket) return
     updateSession(id, { status: 'error' })
-    runtime.term.writeln('\r\n\x1b[31mSSH 连接异常，请检查主机、端口和认证凭据。\x1b[0m')
+    const message = socketOpened
+      ? '终端数据传输异常，请重新连接；若持续失败，请检查网络或服务端日志。'
+      : 'SSH 连接失败，请检查主机、端口、认证凭据或服务端日志。'
+    runtime.term.writeln(`\r\n\x1b[31m${message}\x1b[0m`)
   }
   currentSocket.onclose = () => {
     if (runtime.socket !== currentSocket) return
@@ -452,8 +463,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.terminal-page { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 12px; height: calc(100vh - 190px); min-height: 680px; }
-.asset-tree-card { padding: 28px 20px; border-radius: 4px; background: #142230; color: #00b96b; box-shadow: 0 18px 40px rgba(18, 33, 49, .18); }
+.terminal-page { display: grid; flex: 1; grid-template-columns: 300px minmax(0, 1fr); gap: 12px; min-height: 0; }
+.asset-tree-card { min-height: 0; overflow: auto; padding: 28px 20px; border-radius: 4px; background: #142230; color: #00b96b; box-shadow: 0 18px 40px rgba(18, 33, 49, .18); }
 .asset-tree-card h3 { margin: 0 0 18px; color: #00c875; font-size: 20px; }.tree-search { margin-bottom: 18px; }
 .asset-tree { --el-tree-node-hover-bg-color: rgba(0, 185, 107, .1); background: transparent; color: #00b96b; }
 .tree-node { display: inline-flex; align-items: center; gap: 8px; border-radius: 4px; font-weight: 700; }.tree-node.host { color: #a3b600; }.tree-node.host.active { color: #16d995; }

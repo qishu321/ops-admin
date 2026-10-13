@@ -101,6 +101,7 @@ function createTerminal(id) {
   const term = new Terminal({
     cursorBlink: true,
     convertEol: true,
+    scrollback: 5000,
     rows: 34,
     cols: 150,
     fontSize: 13,

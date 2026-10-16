@@ -61,12 +61,22 @@ function statusTagType(status) {
     case 'running':
       return 'warning'
     case 'waiting_approval':
+    case 'partial':
       return 'warning'
     case 'rejected':
+    case 'failed':
       return 'danger'
     default:
       return 'info'
   }
+}
+
+function statusLabel(status, overall = false) {
+  return { success: '成功', running: '运行中', failed: '失败', partial: overall ? '完成（存在失败步骤）' : '部分失败', waiting_approval: '待确认', rejected: '已拒绝', skipped: '已跳过' }[status] || status
+}
+
+function stepTypeLabel(type) {
+  return { script: '脚本执行', file: '文件分发', approval: '人工确认', notify: '消息通知', condition: '条件分支' }[type] || type
 }
 
 function formatDateTime(value) {
@@ -96,6 +106,7 @@ onMounted(loadData)
           <el-option label="运行中" value="running" />
           <el-option label="成功" value="success" />
           <el-option label="失败" value="failed" />
+          <el-option label="完成（存在失败步骤）" value="partial" />
           <el-option label="待确认" value="waiting_approval" />
           <el-option label="已拒绝" value="rejected" />
         </el-select>
@@ -107,9 +118,9 @@ onMounted(loadData)
     <el-table v-loading="loading" :data="rows" border class="job-history-table">
       <el-table-column prop="jobName" label="作业名称" min-width="220" />
       <el-table-column prop="triggerType" label="触发方式" width="100" />
-      <el-table-column label="状态" width="120" align="center">
+      <el-table-column label="状态" width="180" align="center">
         <template #default="{ row }">
-          <el-tag :type="statusTagType(row.status)" effect="light">{{ row.status }}</el-tag>
+          <el-tag :type="statusTagType(row.status)" effect="light">{{ statusLabel(row.status, true) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="summary" label="摘要" min-width="260" show-overflow-tooltip />
@@ -138,19 +149,20 @@ onMounted(loadData)
       <div v-loading="detailLoading" class="history-detail">
         <div v-if="detail.history" class="history-summary">
           <div class="summary-item"><span>作业</span><strong>{{ detail.history.jobName }}</strong></div>
-          <div class="summary-item"><span>状态</span><strong>{{ detail.history.status }}</strong></div>
+          <div class="summary-item"><span>状态</span><strong>{{ statusLabel(detail.history.status, true) }}</strong></div>
           <div class="summary-item"><span>摘要</span><strong>{{ detail.history.summary || '-' }}</strong></div>
         </div>
 
         <el-table :data="detail.steps" border class="job-history-detail-table">
           <el-table-column prop="stepName" label="步骤名称" min-width="180" />
-          <el-table-column prop="stepType" label="步骤类型" width="120" />
+          <el-table-column label="步骤类型" width="120"><template #default="{ row }">{{ stepTypeLabel(row.stepType) }}</template></el-table-column>
           <el-table-column label="状态" width="140" align="center">
             <template #default="{ row }">
-              <el-tag :type="statusTagType(row.status)" effect="light">{{ row.status }}</el-tag>
+              <el-tag :type="statusTagType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
+          <el-table-column label="分支路径" width="120"><template #default="{ row }"><el-tag v-if="row.stepType === 'condition' && typeof row.branchResult === 'boolean'" :type="row.branchResult ? 'success' : 'warning'" effect="plain">{{ row.branchResult ? '满足条件' : '不满足' }}</el-tag><span v-else>—</span></template></el-table-column>
           <el-table-column prop="durationMs" label="耗时(ms)" width="120" />
           <el-table-column prop="output" label="输出" min-width="280" show-overflow-tooltip />
           <el-table-column label="操作" width="120" fixed="right">

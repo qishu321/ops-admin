@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Graph, Shape } from '@antv/x6'
+import { Aim, Bell, Check, Connection, Delete, Document, FolderOpened, Grid, InfoFilled, Lock, Mouse, Plus, Setting, Upload, User, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { queryAssetHostGroupList, queryAssetHostList } from '../../api/asset'
 import {
   addOpsJob,
@@ -29,6 +30,15 @@ const importTemplateId = ref()
 const selectedNodeId = ref('')
 const selectedEdgeId = ref('')
 const selectedCellIds = ref([])
+const nodeCount = ref(0)
+const edgeCount = ref(0)
+const zoomPercent = ref(100)
+const stepLibrary = [
+  { type: 'script', label: '脚本执行', description: '在目标主机运行脚本', icon: Document, color: '#356ae6', soft: '#edf3ff' },
+  { type: 'file', label: '文件分发', description: '将文件同步到指定主机', icon: FolderOpened, color: '#138a78', soft: '#eaf7f3' },
+  { type: 'approval', label: '人工确认', description: '确认操作后继续执行', icon: User, color: '#b77b21', soft: '#fff6e5' },
+  { type: 'notify', label: '消息通知', description: '发送执行结果与通知', icon: Bell, color: '#7860bd', soft: '#f3eefb' }
+]
 
 const scriptOptions = ref([])
 const hostOptions = ref([])
@@ -54,11 +64,13 @@ const selectedNodeForm = reactive({
 })
 
 let graph
+let graphResizeObserver
 
 const isTemplateMode = computed(() => String(route.query.mode || '') === 'template')
 const editorTitle = computed(() => (isTemplateMode.value ? '作业模板编排' : '作业编排'))
 const saveButtonText = computed(() => (isTemplateMode.value ? '保存模板' : '保存作业'))
 const selectedCount = computed(() => selectedCellIds.value.length)
+const selectedStepType = computed(() => stepLibrary.find((item) => item.type === selectedNodeForm.type) || stepLibrary[0])
 const selectedScriptTimeout = computed(() => {
   const script = scriptOptions.value.find((item) => Number(item.id) === Number(selectedNodeForm.config?.scriptId))
   return script?.timeoutSeconds || 300
@@ -93,11 +105,7 @@ watch(
       config: cloneValue(selectedNodeForm.config || {})
     }
     node.setData(data)
-    node.setAttrs({
-      label: {
-        text: selectedNodeForm.label || defaultNodeLabel(selectedNodeForm.type)
-      }
-    })
+    updateNodePresentation(node)
   },
   { deep: true }
 )
@@ -219,29 +227,14 @@ function buildNodeData(type) {
 }
 
 function createGraphNode(data, position = {}) {
-  return graph.addNode({
+  const node = graph.addNode({
     id: data.id,
     shape: 'job-step-node',
     x: position.x ?? 80,
     y: position.y ?? 80,
-    width: position.width ?? 210,
-    height: position.height ?? 72,
+    width: Math.max(position.width || 0, 248),
+    height: Math.max(position.height || 0, 120),
     data: cloneValue(data),
-    attrs: {
-      body: {
-        fill: '#ffffff',
-        stroke: '#dbe4ff',
-        strokeWidth: 1.5,
-        rx: 12,
-        ry: 12
-      },
-      label: {
-        text: data.label,
-        fill: '#1f2a44',
-        fontSize: 14,
-        fontWeight: 600
-      }
-    },
     ports: {
       groups: {
         top: {
@@ -272,11 +265,56 @@ function createGraphNode(data, position = {}) {
       items: [{ group: 'top' }, { group: 'bottom' }]
     }
   })
+  updateNodePresentation(node)
+  return node
+}
+
+function updateNodePresentation(node) {
+  const data = node.getData() || {}
+  const type = stepLibrary.find((item) => item.type === data.type) || stepLibrary[0]
+  const config = data.config || {}
+  const script = scriptOptions.value.find((item) => Number(item.id) === Number(config.scriptId))
+  const rule = notifyRuleOptions.value.find((item) => Number(item.id) === Number(config.notifyRuleId))
+  const detail = data.type === 'script' ? (script?.name || '请选择执行脚本')
+    : data.type === 'file' ? (config.targetPath || '请配置源文件与目标路径')
+      : data.type === 'approval' ? (config.message || '等待人工确认后继续')
+        : (rule?.name || '请选择通知规则')
+  const target = config.hostIds?.length ? `${config.hostIds.length} 台主机`
+    : config.groupIds?.length ? `${config.groupIds.length} 个主机组` : '未选择目标'
+  const footer = ['script', 'file'].includes(data.type)
+    ? `${target}   ·   并发 ${config.concurrency || 5}`
+    : data.type === 'approval' ? '人工放行' : '通知步骤'
+  const active = selectedNodeId.value === node.id
+  node.setAttrs({
+    body: { fill: '#ffffff', stroke: active ? type.color : '#dce3ee', strokeWidth: active ? 2 : 1, rx: 12, ry: 12 },
+    accent: { fill: type.color },
+    kind: { text: type.label, fill: type.color },
+    label: { text: data.label || type.label },
+    detail: { text: detail },
+    footer: { text: footer }
+  })
+}
+
+function syncGraphSummary() {
+  nodeCount.value = graph?.getNodes().length || 0
+  edgeCount.value = graph?.getEdges().length || 0
+}
+
+function changeZoom(delta) {
+  if (!graph) return
+  graph.zoom(Math.min(1.5, Math.max(0.4, graph.zoom() + delta)), { absolute: true })
+}
+
+function fitCanvas() {
+  if (!graph) return
+  if (graph.getNodes().length) graph.zoomToFit({ padding: 56, maxScale: 1 })
+  else graph.zoom(1, { absolute: true })
 }
 
 function loadSelectedNode(nodeId) {
   selectedNodeId.value = nodeId || ''
   selectedEdgeId.value = ''
+  graph?.getNodes().forEach(updateNodePresentation)
   if (!graph || !nodeId) {
     Object.assign(selectedNodeForm, { id: '', type: 'script', label: '', config: {} })
     return
@@ -295,6 +333,7 @@ function loadSelectedNode(nodeId) {
 function loadSelectedEdge(edgeId) {
   selectedNodeId.value = ''
   selectedEdgeId.value = edgeId || ''
+  graph?.getNodes().forEach(updateNodePresentation)
 }
 
 function showEdgeTools(edge) {
@@ -347,7 +386,24 @@ function initGraph() {
   Graph.registerNode(
     'job-step-node',
     {
-      inherit: 'rect'
+      inherit: 'rect',
+      markup: [
+        { tagName: 'rect', selector: 'body' },
+        { tagName: 'rect', selector: 'accent' },
+        { tagName: 'text', selector: 'kind' },
+        { tagName: 'text', selector: 'label' },
+        { tagName: 'text', selector: 'detail' },
+        { tagName: 'rect', selector: 'divider' },
+        { tagName: 'text', selector: 'footer' }
+      ],
+      attrs: {
+        accent: { x: 16, y: 17, width: 3, height: 12, rx: 1.5, stroke: 'none' },
+        kind: { refX: 26, refY: 23, fontSize: 10, fontWeight: 600, textAnchor: 'start', textVerticalAnchor: 'middle' },
+        label: { refX: 16, refY: 46, fontSize: 14, fontWeight: 600, fill: '#1d2d49', textAnchor: 'start', textVerticalAnchor: 'middle', textWrap: { width: -32, height: 22, ellipsis: true } },
+        detail: { refX: 16, refY: 69, fontSize: 11, fill: '#748399', textAnchor: 'start', textVerticalAnchor: 'middle', textWrap: { width: -32, height: 18, ellipsis: true } },
+        divider: { x: 16, y: 87, width: 216, height: 1, fill: '#edf0f5', stroke: 'none' },
+        footer: { refX: 16, refY: 104, fontSize: 10, fill: '#8591a5', textAnchor: 'start', textVerticalAnchor: 'middle' }
+      }
     },
     true
   )
@@ -358,7 +414,7 @@ function initGraph() {
       visible: true
     },
     background: {
-      color: '#f8fbff'
+      color: '#f7f9fc'
     },
     panning: true,
     mousewheel: {
@@ -400,6 +456,14 @@ function initGraph() {
       }
     }
   })
+  for (const eventName of ['node:added', 'node:removed', 'edge:added', 'edge:removed']) graph.on(eventName, syncGraphSummary)
+  graph.on('scale', ({ sx }) => { zoomPercent.value = Math.round(sx * 100) })
+  graph.on('node:change:data', ({ node }) => updateNodePresentation(node))
+  graphResizeObserver = new ResizeObserver(([entry]) => {
+    const { width, height } = entry.contentRect
+    if (width && height) graph?.resize(width, height)
+  })
+  graphResizeObserver.observe(graphContainer.value)
   graph.on('cell:click', ({ cell }) => {
     if (cell.isNode()) {
       graph.cleanSelection()
@@ -512,8 +576,8 @@ function loadDefinition(definition, graphJson = '') {
     const cell = createGraphNode(node, {
       x: positionMap[node.id]?.x ?? metaPosition.x ?? 80 + (row % 3) * 260,
       y: positionMap[node.id]?.y ?? metaPosition.y ?? 80 + Math.floor(row / 3) * 140,
-      width: positionMap[node.id]?.width ?? metaPosition.width ?? 210,
-      height: positionMap[node.id]?.height ?? metaPosition.height ?? 72
+      width: positionMap[node.id]?.width ?? metaPosition.width ?? 248,
+      height: positionMap[node.id]?.height ?? metaPosition.height ?? 120
     })
     cell.setData({
       id: node.id,
@@ -544,16 +608,21 @@ function loadDefinition(definition, graphJson = '') {
     })
   }
   loadSelectedNode('')
+  fitCanvas()
 }
 
 function addStep(type) {
   if (!graph) return
   const nodeData = buildNodeData(type)
+  const columns = graphContainer.value.clientWidth >= 650 ? 2 : 1
   createGraphNode(nodeData, {
-    x: 100 + graph.getNodes().length * 24,
-    y: 100 + graph.getNodes().length * 18
+    x: 64 + (graph.getNodes().length % columns) * 280,
+    y: 56 + Math.floor(graph.getNodes().length / columns) * 168
   })
-  loadSelectedNode(nodeData.id)
+  graph.cleanSelection()
+  graph.select(graph.getCellById(nodeData.id))
+  setActiveNode(graph.getCellById(nodeData.id))
+  fitCanvas()
 }
 
 function removeSelectedNode() {
@@ -622,6 +691,7 @@ async function loadBaseOptions() {
   groupOptions.value = groups.tree || []
   templateOptions.value = templates || []
   notifyRuleOptions.value = notifyRules || []
+  graph?.getNodes().forEach(updateNodePresentation)
 }
 
 async function loadCurrentRecord() {
@@ -723,6 +793,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleCanvasKeydown)
+  graphResizeObserver?.disconnect()
   if (graph) {
     graph.dispose()
     graph = null
@@ -731,79 +802,97 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="ops-job-page">
-    <div class="page-card page-head">
-      <div>
+  <div class="ops-job-page job-designer">
+    <header class="designer-header">
+      <div class="designer-heading">
+        <span class="designer-heading-icon"><el-icon><Connection /></el-icon></span>
+        <div>
         <h2 class="page-title">{{ editorTitle }}</h2>
-        <p class="page-desc">参考流程编排台风格，支持将脚本执行、文件分发和人工确认组合成可复用作业。</p>
+        <p class="page-desc">连接每个操作，让运维流程有序执行。</p>
+        </div>
+        <span class="editing-badge">{{ form.id ? '编辑中' : '新建' }}</span>
       </div>
       <div class="head-actions">
-        <el-button @click="importDialogVisible = true">导入作业模板</el-button>
-        <el-button @click="selectedEdgeId ? removeSelectedEdge() : removeSelectedNode()" :disabled="!selectedCount && !selectedNodeId && !selectedEdgeId">
-          {{ selectedEdgeId ? '删除选中连线' : (selectedCount > 1 ? `删除选中项（${selectedCount}）` : '删除选中步骤') }}
-        </el-button>
-        <el-button @click="clearCanvas" :disabled="!graphReady">清空画布</el-button>
-        <el-button type="primary" :loading="saving" @click="save">{{ saveButtonText }}</el-button>
+        <el-button :icon="Upload" @click="importDialogVisible = true">导入模板</el-button>
+        <el-button type="primary" :icon="Check" :loading="saving" @click="save">{{ saveButtonText }}</el-button>
       </div>
-    </div>
+    </header>
 
     <div class="page-card record-form">
-      <el-form label-width="100px">
-        <el-row :gutter="16">
-          <el-col :span="8">
+      <div class="record-heading"><span><el-icon><Setting /></el-icon>基本信息</span><small>为这次编排定义名称与用途</small></div>
+      <el-form label-position="top">
+        <div class="record-fields">
+          <div class="record-name">
             <el-form-item :label="isTemplateMode ? '模板名称' : '作业名称'" required>
-              <el-input v-model="form.name" :placeholder="isTemplateMode ? '请输入模板名称' : '请输入作业名称'" />
+              <el-input v-model="form.name" :placeholder="isTemplateMode ? '例如：标准发布模板' : '例如：生产环境应用发布'" />
             </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="状态">
-              <el-radio-group v-model="form.status">
-                <el-radio :value="1">启用</el-radio>
-                <el-radio :value="2">禁用</el-radio>
-              </el-radio-group>
+          </div>
+          <div class="record-description">
+            <el-form-item label="描述">
+              <el-input v-model="form.description" placeholder="说明作业用途、执行顺序或注意事项" />
             </el-form-item>
-          </el-col>
-          <el-col :span="8" v-if="!isTemplateMode">
+          </div>
+          <div v-if="!isTemplateMode">
             <el-form-item label="来源模板">
-              <el-select v-model="form.templateId" clearable filterable placeholder="可选">
+              <el-select v-model="form.templateId" clearable filterable placeholder="不使用模板">
                 <el-option v-for="item in templateOptions" :key="item.id" :label="item.name" :value="item.id" />
               </el-select>
             </el-form-item>
-          </el-col>
-          <el-col :span="24">
-            <el-form-item label="描述">
-              <el-input v-model="form.description" type="textarea" :rows="2" placeholder="用于说明作业用途、执行顺序与风险提示" />
+          </div>
+          <div class="record-status">
+            <el-form-item label="状态">
+              <div class="status-switch"><el-switch v-model="form.status" :active-value="1" :inactive-value="2" /><span>{{ form.status === 1 ? '已启用' : '已禁用' }}</span></div>
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
       </el-form>
     </div>
 
     <div class="designer-layout">
-      <div class="page-card left-palette">
-        <div class="panel-title">步骤库</div>
-        <el-button class="palette-btn" @click="addStep('script')">脚本执行</el-button>
-        <el-button class="palette-btn" @click="addStep('file')">文件分发</el-button>
-        <el-button class="palette-btn" @click="addStep('approval')">人工确认</el-button>
-        <el-button class="palette-btn" @click="addStep('notify')">&#x6d88;&#x606f;&#x901a;&#x77e5;</el-button>
-        <div class="panel-tip">拖动节点可调整位置，连线决定执行顺序。</div>
-      </div>
+      <aside class="page-card left-palette">
+        <div class="panel-header"><div class="panel-title">步骤库</div><span class="count-badge">4</span></div>
+        <p class="panel-description">点击添加到画布</p>
+        <div class="step-library">
+          <button v-for="step in stepLibrary" :key="step.type" type="button" class="step-card" :style="{ '--step-color': step.color, '--step-soft': step.soft }" @click="addStep(step.type)">
+            <span class="step-card-icon"><el-icon><component :is="step.icon" /></el-icon></span>
+            <span class="step-card-copy"><strong>{{ step.label }}</strong><small>{{ step.description }}</small></span>
+            <el-icon class="step-add"><Plus /></el-icon>
+          </button>
+        </div>
+        <div class="palette-guide"><el-icon><InfoFilled /></el-icon><div><strong>连接，即是执行顺序</strong><p>从步骤底部的连接点拖动到下一个步骤顶部，即可创建执行关系。</p></div></div>
+        <div class="palette-footer"><el-icon><Mouse /></el-icon><span>拖动节点调整位置<br />Ctrl / ⌘ + 滚轮缩放</span></div>
+      </aside>
 
       <div class="page-card canvas-panel">
-        <div class="panel-title">编排画布</div>
-        <div ref="graphContainer" v-loading="loading" class="graph-container" />
+        <div class="canvas-header">
+          <div class="panel-title"><el-icon><Grid /></el-icon>编排画布<span class="canvas-count">{{ nodeCount }} 步骤<span>·</span>{{ edgeCount }} 连线</span></div>
+          <div class="canvas-actions">
+            <el-tooltip :content="selectedEdgeId ? '删除选中连线' : '删除选中步骤'" placement="top"><button type="button" class="canvas-icon-button danger-action" aria-label="删除选中项" @click="selectedEdgeId ? removeSelectedEdge() : removeSelectedNode()" :disabled="!selectedCount && !selectedNodeId && !selectedEdgeId"><el-icon><Delete /></el-icon></button></el-tooltip>
+            <span class="toolbar-divider" />
+            <el-button text size="small" @click="clearCanvas" :disabled="!graphReady || !nodeCount">清空画布</el-button>
+          </div>
+        </div>
+        <div class="canvas-workspace">
+          <div ref="graphContainer" v-loading="loading" class="graph-container" />
+          <div v-if="!nodeCount && !loading" class="canvas-empty"><span class="canvas-empty-icon"><el-icon><Connection /></el-icon></span><h3>从第一个步骤开始</h3><p>从左侧步骤库添加操作，再连接它们的执行顺序。</p><el-button :icon="Plus" @click="addStep('script')">添加脚本步骤</el-button></div>
+          <div class="canvas-legend"><span v-for="step in stepLibrary" :key="step.type"><i :style="{ background: step.color }" />{{ step.label }}</span></div>
+          <div class="canvas-zoom"><button type="button" class="canvas-icon-button" aria-label="缩小画布" :disabled="zoomPercent <= 40" @click="changeZoom(-0.1)"><el-icon><ZoomOut /></el-icon></button><span>{{ zoomPercent }}%</span><button type="button" class="canvas-icon-button" aria-label="放大画布" :disabled="zoomPercent >= 150" @click="changeZoom(0.1)"><el-icon><ZoomIn /></el-icon></button><span class="toolbar-divider" /><button type="button" class="canvas-icon-button" aria-label="适应画布" title="适应画布" @click="fitCanvas"><el-icon><Aim /></el-icon></button></div>
+        </div>
+        <div class="canvas-footer"><span><el-icon><Connection /></el-icon>连接点决定步骤执行顺序</span><span v-if="selectedCount">已选择 {{ selectedCount }} 项 · Delete 删除</span><span v-else>点击步骤配置参数</span></div>
       </div>
 
-      <div class="page-card config-panel">
-        <div class="panel-title">{{ selectedEdgeId ? '连线操作' : '步骤配置' }}</div>
-        <el-empty v-if="!selectedNodeId && !selectedEdgeId" :image-size="68" description="点击步骤节点编辑参数，或点击连线修改执行关系" />
-        <el-empty v-else-if="selectedEdgeId" :image-size="68" description="拖动连线两端的手柄，即可重新连接步骤" />
-        <el-form v-else-if="selectedNodeId" label-position="top">
+      <aside class="page-card config-panel">
+        <div class="panel-header inspector-header"><div class="panel-title"><el-icon><Setting /></el-icon>{{ selectedEdgeId ? '连线操作' : '步骤配置' }}</div><span v-if="selectedNodeId" class="type-badge" :style="{ color: selectedStepType.color, background: selectedStepType.soft }">{{ selectedStepType.label }}</span></div>
+        <div v-if="!selectedNodeId && !selectedEdgeId" class="inspector-empty"><span><el-icon><Mouse /></el-icon></span><h3>选择一个步骤</h3><p>点击画布中的步骤卡片，<br />在这里配置执行内容与目标。</p></div>
+        <div v-else-if="selectedEdgeId" class="inspector-empty"><span><el-icon><Connection /></el-icon></span><h3>调整执行关系</h3><p>拖动连线两端的手柄，<br />即可重新连接步骤。</p><el-button type="danger" plain :icon="Delete" @click="removeSelectedEdge">删除此连线</el-button></div>
+        <el-form v-else-if="selectedNodeId" label-position="top" class="inspector-form">
+          <div class="config-section-heading">基础信息</div>
           <el-form-item label="步骤名称">
-            <el-input v-model="selectedNodeForm.label" />
+            <el-input v-model="selectedNodeForm.label" placeholder="为步骤命名" />
           </el-form-item>
 
           <template v-if="selectedNodeForm.type === 'script'">
+            <div class="config-section-heading">执行内容</div>
             <el-form-item label="脚本">
               <el-select v-model="selectedNodeForm.config.scriptId" filterable placeholder="选择脚本" @change="handleSelectedScriptChange">
                 <el-option v-for="item in scriptOptions" :key="item.id" :label="item.name" :value="item.id" />
@@ -821,14 +910,18 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <el-form-item label="并发数">
-              <el-input-number v-model="selectedNodeForm.config.concurrency" :min="1" :max="10" style="width: 100%" />
-            </el-form-item>
-            <el-form-item label="脚本超时">
-              <el-input :model-value="selectedScriptTimeout" disabled>
-                <template #append>s</template>
-              </el-input>
-            </el-form-item>
+            <div class="config-section-heading">执行参数</div>
+            <div class="config-field-pair">
+              <el-form-item label="并发数">
+                <el-input-number v-model="selectedNodeForm.config.concurrency" :min="1" :max="10" style="width: 100%" />
+              </el-form-item>
+              <el-form-item label="脚本超时">
+                <el-input :model-value="selectedScriptTimeout" disabled>
+                  <template #append>s</template>
+                </el-input>
+              </el-form-item>
+            </div>
+            <div class="config-section-heading">目标范围</div>
             <OpsTargetScope
               :host-options="hostOptions"
               :group-options="groupOptions"
@@ -840,6 +933,7 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="selectedNodeForm.type === 'file'">
+            <div class="config-section-heading">分发内容</div>
             <el-form-item label="源主机">
               <el-select v-model="selectedNodeForm.config.sourceHostId" filterable placeholder="选择源主机">
                 <el-option v-for="item in hostOptions" :key="item.id" :label="item.hostName" :value="item.id" />
@@ -851,15 +945,19 @@ onBeforeUnmount(() => {
             <el-form-item label="目标路径">
               <el-input v-model="selectedNodeForm.config.targetPath" placeholder="/opt/app/config.yml" />
             </el-form-item>
-            <el-form-item label="并发数">
-              <el-input-number v-model="selectedNodeForm.config.concurrency" :min="1" :max="10" style="width: 100%" />
-            </el-form-item>
-            <el-form-item label="超时秒数">
-              <el-input-number v-model="selectedNodeForm.config.timeoutSeconds" :min="10" :max="3600" style="width: 100%" />
-            </el-form-item>
+            <div class="config-section-heading">执行参数</div>
+            <div class="config-field-pair">
+              <el-form-item label="并发数">
+                <el-input-number v-model="selectedNodeForm.config.concurrency" :min="1" :max="10" style="width: 100%" />
+              </el-form-item>
+              <el-form-item label="超时秒数">
+                <el-input-number v-model="selectedNodeForm.config.timeoutSeconds" :min="10" :max="3600" style="width: 100%" />
+              </el-form-item>
+            </div>
             <el-form-item label="覆盖目标文件">
               <el-switch v-model="selectedNodeForm.config.overwrite" />
             </el-form-item>
+            <div class="config-section-heading">目标范围</div>
             <OpsTargetScope
               :host-options="hostOptions"
               :group-options="groupOptions"
@@ -870,6 +968,7 @@ onBeforeUnmount(() => {
             />
           </template>
           <template v-else-if="selectedNodeForm.type === 'notify'">
+            <div class="config-section-heading">通知设置</div>
             <el-form-item label="&#x901a;&#x77e5;&#x89c4;&#x5219;" required>
               <el-select v-model="selectedNodeForm.config.notifyRuleId" filterable placeholder="&#x9009;&#x62e9;&#x901a;&#x77e5;&#x89c4;&#x5219;">
                 <el-option v-for="item in notifyRuleOptions" :key="item.id" :label="`${item.name} · 作业编排`" :value="item.id" />
@@ -885,6 +984,7 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else>
+            <div class="config-section-heading">确认设置</div>
             <el-form-item label="确认提示">
               <el-input v-model="selectedNodeForm.config.message" placeholder="例如：请确认窗口维护已完成" />
             </el-form-item>
@@ -893,7 +993,8 @@ onBeforeUnmount(() => {
             </el-form-item>
           </template>
         </el-form>
-      </div>
+        <div v-if="selectedNodeId" class="inspector-footer"><el-icon><Lock /></el-icon>参数随作业一同保存</div>
+      </aside>
     </div>
 
     <el-dialog v-model="importDialogVisible" title="导入作业模板" width="520px">
@@ -912,97 +1013,4 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
-.ops-job-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.page-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.page-title {
-  margin: 0 0 8px;
-  font-size: 28px;
-  font-weight: 700;
-  color: #14213d;
-}
-
-.page-desc {
-  margin: 0;
-  color: #7485a7;
-}
-
-.head-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.designer-layout {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 380px;
-  gap: 16px;
-  min-height: 720px;
-}
-
-.left-palette,
-.canvas-panel,
-.config-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.panel-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #14213d;
-}
-
-.palette-btn {
-  justify-content: flex-start;
-  height: 44px;
-  border-radius: 10px;
-}
-
-.panel-tip {
-  font-size: 12px;
-  line-height: 1.7;
-  color: #7d8cad;
-}
-
-.form-tip {
-  margin-top: 6px;
-  color: #8491a9;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.job-variable-panel { padding: 13px; border: 1px solid #d9e6ff; border-radius: 10px; background: linear-gradient(135deg, #f8fbff, #fff); }
-.job-variable-panel__title { color: #172744; font-size: 14px; font-weight: 700; }
-.job-variable-panel__hint, .job-variable-field__desc { margin-top: 4px; color: #7282a0; font-size: 12px; line-height: 1.55; }
-.job-variable-panel code, .job-variable-field__label code { color: #3869d9; }
-.job-variable-panel__empty { margin-top: 12px; padding: 9px; color: #8190aa; border: 1px dashed #cbdcff; border-radius: 7px; font-size: 12px; }
-.job-variable-list { display: grid; gap: 12px; margin-top: 12px; }
-.job-variable-field__label { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
-
-.graph-container {
-  width: 100%;
-  min-height: 640px;
-  border: 1px solid #dbe4ff;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #fbfdff 0%, #f6f9ff 100%);
-}
-
-@media (max-width: 1440px) {
-  .designer-layout {
-    grid-template-columns: 200px minmax(0, 1fr) 340px;
-  }
-}
-</style>
+<style scoped src="./ops-job-designer.css"></style>

@@ -545,26 +545,6 @@ a {
 .ops-page .el-button--success { --el-button-bg-color: #23976a; --el-button-border-color: #23976a; }
 .ops-page .el-button--warning { --el-button-bg-color: #d97706; --el-button-border-color: #d97706; color: #fff; }
 
-/* The job designer remains a three-column workbench, not a collection of
-   unrelated forms. */
-.ops-job-page .page-card {
-  border-color: #dce5f6 !important;
-  border-radius: 12px !important;
-  box-shadow: 0 6px 18px rgba(49, 54, 130, .05) !important;
-}
-.ops-job-page .page-head {
-  position: relative;
-  overflow: hidden;
-  border-top: 3px solid #6d5ce8 !important;
-  background: linear-gradient(120deg, #fff, #f4f6ff) !important;
-}
-.ops-job-page .record-form { border-left: 3px solid #3569e8 !important; }
-.ops-job-page .left-palette { border-top: 3px solid #7c6ce7 !important; background: #fafaff !important; }
-.ops-job-page .canvas-panel { border-top: 3px solid #3569e8 !important; }
-.ops-job-page .config-panel { border-top: 3px solid #d97706 !important; background: #fffcf6 !important; }
-.ops-job-page .panel-title { color: #26385f !important; font-weight: 700 !important; }
-.ops-job-page .palette-btn { justify-content: flex-start; border-color: #e0e6f8 !important; background: #fff !important; }
-
 /* Specialized script source panels retain terminal contrast without turning
    surrounding admin screens dark. */
 .ops-page .script-editor-shell { border-color: #203655 !important; border-radius: 10px !important; overflow: hidden; }

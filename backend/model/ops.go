@@ -343,6 +343,7 @@ type OpsJobHistoryStep struct {
 	Summary          string     `json:"summary" gorm:"type:text"`
 	Output           string     `json:"output" gorm:"type:longtext"`
 	ExecTaskID       uint       `json:"execTaskId" gorm:"index"`
+	BranchResult     *bool      `json:"branchResult"`
 	ApprovalDecision string     `json:"approvalDecision" gorm:"size:32"`
 	ApprovalNote     string     `json:"approvalNote" gorm:"type:text"`
 	StartedAt        *time.Time `json:"startedAt"`

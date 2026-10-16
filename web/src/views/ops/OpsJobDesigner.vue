@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Graph, Shape } from '@antv/x6'
-import { Aim, Bell, Check, Connection, Delete, Document, FolderOpened, Grid, InfoFilled, Lock, Mouse, Plus, Setting, Upload, User, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Aim, Bell, Check, Connection, Delete, Document, FolderOpened, Grid, InfoFilled, Lock, Mouse, Plus, Setting, Share, Upload, User, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { queryAssetHostGroupList, queryAssetHostList } from '../../api/asset'
 import {
   addOpsJob,
@@ -17,6 +17,7 @@ import {
   updateOpsJobTemplate
 } from '../../api/ops'
 import OpsTargetScope from './components/OpsTargetScope.vue'
+import { conditionFields, conditionStatuses, conditionOperators, conditionSummary, validateJobBranches } from './job-conditions'
 
 const router = useRouter()
 const route = useRoute()
@@ -33,11 +34,13 @@ const selectedCellIds = ref([])
 const nodeCount = ref(0)
 const edgeCount = ref(0)
 const zoomPercent = ref(100)
+const graphRevision = ref(0)
 const stepLibrary = [
   { type: 'script', label: '脚本执行', description: '在目标主机运行脚本', icon: Document, color: '#356ae6', soft: '#edf3ff' },
   { type: 'file', label: '文件分发', description: '将文件同步到指定主机', icon: FolderOpened, color: '#138a78', soft: '#eaf7f3' },
   { type: 'approval', label: '人工确认', description: '确认操作后继续执行', icon: User, color: '#b77b21', soft: '#fff6e5' },
-  { type: 'notify', label: '消息通知', description: '发送执行结果与通知', icon: Bell, color: '#7860bd', soft: '#f3eefb' }
+  { type: 'notify', label: '消息通知', description: '发送执行结果与通知', icon: Bell, color: '#7860bd', soft: '#f3eefb' },
+  { type: 'condition', label: '条件分支', description: '根据执行结果选择后续流程', icon: Share, color: '#c07826', soft: '#fff4e4' }
 ]
 
 const scriptOptions = ref([])
@@ -71,6 +74,22 @@ const editorTitle = computed(() => (isTemplateMode.value ? '作业模板编排' 
 const saveButtonText = computed(() => (isTemplateMode.value ? '保存模板' : '保存作业'))
 const selectedCount = computed(() => selectedCellIds.value.length)
 const selectedStepType = computed(() => stepLibrary.find((item) => item.type === selectedNodeForm.type) || stepLibrary[0])
+const selectedConditionOperators = computed(() => conditionOperators.filter((item) => selectedNodeForm.config.field !== 'status' || ['eq', 'ne'].includes(item.value)))
+const conditionSourceOptions = computed(() => {
+  void graphRevision.value
+  if (!graph || !selectedNodeId.value) return []
+  return (graph.getIncomingEdges(selectedNodeId.value) || []).map((edge) => edge.getSourceNode()?.getData()).filter((node) => ['script', 'file'].includes(node?.type))
+})
+
+function handleConditionFieldChange() {
+  selectedNodeForm.config.operator = 'eq'
+  selectedNodeForm.config.value = selectedNodeForm.config.field === 'status' ? 'success' : 0
+}
+
+function selectedBranchLabel() {
+  const edge = graph?.getCellById(selectedEdgeId.value)
+  return edge?.getSourceNode()?.getData()?.type === 'condition' ? (edge.getSourcePortId() === 'true' ? '满足条件' : '不满足') : ''
+}
 const selectedScriptTimeout = computed(() => {
   const script = scriptOptions.value.find((item) => Number(item.id) === Number(selectedNodeForm.config?.scriptId))
   return script?.timeoutSeconds || 300
@@ -170,6 +189,8 @@ function updateSelectedGroupIds(groupIds) {
 
 function defaultNodeLabel(type) {
   switch (type) {
+    case 'condition':
+      return '条件分支'
     case 'file':
       return '\u6587\u4ef6\u5206\u53d1'
     case 'approval':
@@ -183,6 +204,8 @@ function defaultNodeLabel(type) {
 
 function createDefaultConfig(type) {
   switch (type) {
+    case 'condition':
+      return { sourceStepId: '', field: 'status', operator: 'eq', value: 'success' }
     case 'file':
       return {
         sourceHostId: undefined,
@@ -233,7 +256,7 @@ function createGraphNode(data, position = {}) {
     x: position.x ?? 80,
     y: position.y ?? 80,
     width: Math.max(position.width || 0, 248),
-    height: Math.max(position.height || 0, 120),
+    height: Math.max(position.height || 0, data.type === 'condition' ? 148 : 120),
     data: cloneValue(data),
     ports: {
       groups: {
@@ -260,9 +283,11 @@ function createGraphNode(data, position = {}) {
               fill: '#fff'
             }
           }
-        }
+        },
+        true: { position: { name: 'bottom', args: { dx: -60 } }, attrs: { circle: { r: 5, magnet: true, stroke: '#138a78', strokeWidth: 2, fill: '#fff' } } },
+        false: { position: { name: 'bottom', args: { dx: 60 } }, attrs: { circle: { r: 5, magnet: true, stroke: '#c07826', strokeWidth: 2, fill: '#fff' } } }
       },
-      items: [{ group: 'top' }, { group: 'bottom' }]
+      items: data.type === 'condition' ? [{ id: 'in', group: 'top' }, { id: 'true', group: 'true' }, { id: 'false', group: 'false' }] : [{ id: 'in', group: 'top' }, { id: 'out', group: 'bottom' }]
     }
   })
   updateNodePresentation(node)
@@ -278,12 +303,12 @@ function updateNodePresentation(node) {
   const detail = data.type === 'script' ? (script?.name || '请选择执行脚本')
     : data.type === 'file' ? (config.targetPath || '请配置源文件与目标路径')
       : data.type === 'approval' ? (config.message || '等待人工确认后继续')
-        : (rule?.name || '请选择通知规则')
+        : data.type === 'condition' ? conditionSummary(config) : (rule?.name || '请选择通知规则')
   const target = config.hostIds?.length ? `${config.hostIds.length} 台主机`
     : config.groupIds?.length ? `${config.groupIds.length} 个主机组` : '未选择目标'
   const footer = ['script', 'file'].includes(data.type)
     ? `${target}   ·   并发 ${config.concurrency || 5}`
-    : data.type === 'approval' ? '人工放行' : '通知步骤'
+    : data.type === 'condition' ? '仅执行匹配的路径' : data.type === 'approval' ? '人工放行' : '通知步骤'
   const active = selectedNodeId.value === node.id
   node.setAttrs({
     body: { fill: '#ffffff', stroke: active ? type.color : '#dce3ee', strokeWidth: active ? 2 : 1, rx: 12, ry: 12 },
@@ -291,11 +316,14 @@ function updateNodePresentation(node) {
     kind: { text: type.label, fill: type.color },
     label: { text: data.label || type.label },
     detail: { text: detail },
-    footer: { text: footer }
+    footer: { text: footer },
+    branchTrue: { text: '满足条件', display: data.type === 'condition' ? 'block' : 'none' },
+    branchFalse: { text: '不满足', display: data.type === 'condition' ? 'block' : 'none' }
   })
 }
 
 function syncGraphSummary() {
+  graphRevision.value++
   nodeCount.value = graph?.getNodes().length || 0
   edgeCount.value = graph?.getEdges().length || 0
 }
@@ -394,7 +422,9 @@ function initGraph() {
         { tagName: 'text', selector: 'label' },
         { tagName: 'text', selector: 'detail' },
         { tagName: 'rect', selector: 'divider' },
-        { tagName: 'text', selector: 'footer' }
+        { tagName: 'text', selector: 'footer' },
+        { tagName: 'text', selector: 'branchTrue' },
+        { tagName: 'text', selector: 'branchFalse' }
       ],
       attrs: {
         accent: { x: 16, y: 17, width: 3, height: 12, rx: 1.5, stroke: 'none' },
@@ -402,7 +432,9 @@ function initGraph() {
         label: { refX: 16, refY: 46, fontSize: 14, fontWeight: 600, fill: '#1d2d49', textAnchor: 'start', textVerticalAnchor: 'middle', textWrap: { width: -32, height: 22, ellipsis: true } },
         detail: { refX: 16, refY: 69, fontSize: 11, fill: '#748399', textAnchor: 'start', textVerticalAnchor: 'middle', textWrap: { width: -32, height: 18, ellipsis: true } },
         divider: { x: 16, y: 87, width: 216, height: 1, fill: '#edf0f5', stroke: 'none' },
-        footer: { refX: 16, refY: 104, fontSize: 10, fill: '#8591a5', textAnchor: 'start', textVerticalAnchor: 'middle' }
+        footer: { refX: 16, refY: 104, fontSize: 10, fill: '#8591a5', textAnchor: 'start', textVerticalAnchor: 'middle' },
+        branchTrue: { refX: 64, refY: 130, fontSize: 10, fill: '#138a78', textAnchor: 'middle', textVerticalAnchor: 'middle' },
+        branchFalse: { refX: 184, refY: 130, fontSize: 10, fill: '#ad6c20', textAnchor: 'middle', textVerticalAnchor: 'middle' }
       }
     },
     true
@@ -433,6 +465,14 @@ function initGraph() {
       snap: true,
       allowBlank: false,
       allowLoop: false,
+      validateConnection({ sourceCell, targetCell, sourcePort, targetPort, edge }) {
+        if (!sourceCell || !targetCell || sourceCell.id === targetCell.id || sourcePort === 'in' || targetPort !== 'in') return false
+        if (targetCell.getData()?.type === 'condition') {
+          if (!['script', 'file'].includes(sourceCell.getData()?.type) || (graph.getIncomingEdges(targetCell) || []).some((item) => item.id !== edge?.id)) return false
+        }
+        if (sourceCell.getData()?.type === 'condition' && (graph.getOutgoingEdges(sourceCell) || []).some((item) => item.id !== edge?.id && item.getSourcePortId() === sourcePort)) return false
+        return true
+      },
       highlight: true,
       connector: 'rounded',
       router: {
@@ -502,12 +542,13 @@ function initGraph() {
   })
   graph.on('selection:changed', () => syncSelectionState())
   graph.on('edge:connected', ({ edge }) => {
-    edge.setAttrs({
-      line: {
-        stroke: '#4f73ff',
-        strokeWidth: 2
-      }
-    })
+    updateEdgePresentation(edge)
+    const target = edge.getTargetNode()
+    if (target?.getData()?.type === 'condition') {
+      const data = target.getData()
+      target.setData({ ...data, config: { ...data.config, sourceStepId: edge.getSourceCellId() } })
+    }
+    syncGraphSummary()
     graph.cleanSelection()
     graph.select(edge)
     selectedCellIds.value = [edge.id]
@@ -516,6 +557,15 @@ function initGraph() {
     if (selectedEdgeId.value === edge.id) loadSelectedEdge(edge.id)
   })
   graphReady.value = true
+}
+
+function updateEdgePresentation(edge) {
+  const isCondition = edge.getSourceNode()?.getData()?.type === 'condition'
+  const branch = isCondition ? edge.getSourcePortId() : ''
+  const color = isCondition ? (branch === 'true' ? '#138a78' : '#c07826') : '#4f73ff'
+  edge.setData({ branch })
+  edge.setAttrs({ line: { stroke: color, strokeWidth: 2 } })
+  edge.setLabels(isCondition ? [{ attrs: { label: { text: branch === 'true' ? '满足条件' : '不满足', fill: color, fontSize: 11 }, body: { fill: '#fff', stroke: '#e4e9f1', rx: 4, ry: 4 } }, position: 0.35 }] : [])
 }
 
 function serializeDefinition() {
@@ -542,7 +592,8 @@ function serializeDefinition() {
   const edges = graph.getEdges()
     .map((edge) => ({
       source: edge.getSourceCellId(),
-      target: edge.getTargetCellId()
+      target: edge.getTargetCellId(),
+      ...(edge.getSourceNode()?.getData()?.type === 'condition' ? { branch: edge.getSourcePortId() } : {})
     }))
     .filter((item) => item.source && item.target)
   return { nodes, edges }
@@ -590,9 +641,11 @@ function loadDefinition(definition, graphJson = '') {
   for (const edge of definition.edges || []) {
     if (!edge.source || !edge.target) continue
     if (!graph.getCellById(edge.source) || !graph.getCellById(edge.target)) continue
-    graph.addEdge({
-      source: { cell: edge.source },
-      target: { cell: edge.target },
+    const cell = graph.addEdge({
+      source: { cell: edge.source, port: graph.getCellById(edge.source).getData()?.type === 'condition' ? edge.branch : 'out' },
+      target: { cell: edge.target, port: 'in' },
+      router: { name: 'manhattan' },
+      connector: 'rounded',
       attrs: {
         line: {
           stroke: '#4f73ff',
@@ -606,6 +659,7 @@ function loadDefinition(definition, graphJson = '') {
         }
       }
     })
+    updateEdgePresentation(cell)
   }
   loadSelectedNode('')
   fitCanvas()
@@ -743,6 +797,8 @@ async function save() {
     ElMessage.warning('请至少添加一个步骤')
     return
   }
+  const branchError = validateJobBranches(definition)
+  if (branchError) return ElMessage.warning(branchError)
   const invalidNotifyNode = definition.nodes.find((node) => node.type === 'notify' && !node.config?.notifyRuleId)
   if (invalidNotifyNode) {
     ElMessage.warning('\u8bf7\u4e3a\u6d88\u606f\u901a\u77e5\u6b65\u9aa4\u9009\u62e9\u901a\u77e5\u89c4\u5219')
@@ -850,7 +906,7 @@ onBeforeUnmount(() => {
 
     <div class="designer-layout">
       <aside class="page-card left-palette">
-        <div class="panel-header"><div class="panel-title">步骤库</div><span class="count-badge">4</span></div>
+        <div class="panel-header"><div class="panel-title">步骤库</div><span class="count-badge">{{ stepLibrary.length }}</span></div>
         <p class="panel-description">点击添加到画布</p>
         <div class="step-library">
           <button v-for="step in stepLibrary" :key="step.type" type="button" class="step-card" :style="{ '--step-color': step.color, '--step-soft': step.soft }" @click="addStep(step.type)">
@@ -884,7 +940,7 @@ onBeforeUnmount(() => {
       <aside class="page-card config-panel">
         <div class="panel-header inspector-header"><div class="panel-title"><el-icon><Setting /></el-icon>{{ selectedEdgeId ? '连线操作' : '步骤配置' }}</div><span v-if="selectedNodeId" class="type-badge" :style="{ color: selectedStepType.color, background: selectedStepType.soft }">{{ selectedStepType.label }}</span></div>
         <div v-if="!selectedNodeId && !selectedEdgeId" class="inspector-empty"><span><el-icon><Mouse /></el-icon></span><h3>选择一个步骤</h3><p>点击画布中的步骤卡片，<br />在这里配置执行内容与目标。</p></div>
-        <div v-else-if="selectedEdgeId" class="inspector-empty"><span><el-icon><Connection /></el-icon></span><h3>调整执行关系</h3><p>拖动连线两端的手柄，<br />即可重新连接步骤。</p><el-button type="danger" plain :icon="Delete" @click="removeSelectedEdge">删除此连线</el-button></div>
+        <div v-else-if="selectedEdgeId" class="inspector-empty"><span><el-icon><Connection /></el-icon></span><h3>{{ selectedBranchLabel() || '调整执行关系' }}</h3><p>拖动连线两端的手柄，<br />即可重新连接步骤。</p><el-button type="danger" plain :icon="Delete" @click="removeSelectedEdge">删除此连线</el-button></div>
         <el-form v-else-if="selectedNodeId" label-position="top" class="inspector-form">
           <div class="config-section-heading">基础信息</div>
           <el-form-item label="步骤名称">
@@ -921,6 +977,13 @@ onBeforeUnmount(() => {
                 </el-input>
               </el-form-item>
             </div>
+            <el-form-item label="失败时">
+              <el-select v-model="selectedNodeForm.config.failurePolicy" placeholder="停止作业">
+                <el-option label="停止作业（默认）" value="stop" />
+                <el-option label="进入后续条件分支" value="branch" />
+              </el-select>
+              <div v-if="selectedNodeForm.config.failurePolicy === 'branch'" class="form-tip">所有后续步骤必须为判断此步骤的条件分支；失败结果会保留在执行历史中。</div>
+            </el-form-item>
             <div class="config-section-heading">目标范围</div>
             <OpsTargetScope
               :host-options="hostOptions"
@@ -957,6 +1020,13 @@ onBeforeUnmount(() => {
             <el-form-item label="覆盖目标文件">
               <el-switch v-model="selectedNodeForm.config.overwrite" />
             </el-form-item>
+            <el-form-item label="失败时">
+              <el-select v-model="selectedNodeForm.config.failurePolicy" placeholder="停止作业">
+                <el-option label="停止作业（默认）" value="stop" />
+                <el-option label="进入后续条件分支" value="branch" />
+              </el-select>
+              <div v-if="selectedNodeForm.config.failurePolicy === 'branch'" class="form-tip">所有后续步骤必须为判断此步骤的条件分支；失败结果会保留在执行历史中。</div>
+            </el-form-item>
             <div class="config-section-heading">目标范围</div>
             <OpsTargetScope
               :host-options="hostOptions"
@@ -966,6 +1036,27 @@ onBeforeUnmount(() => {
               @update:host-ids="updateSelectedHostIds"
               @update:group-ids="updateSelectedGroupIds"
             />
+          </template>
+          <template v-else-if="selectedNodeForm.type === 'condition'">
+            <div class="config-section-heading">判断条件</div>
+            <el-form-item label="判断哪个步骤" required>
+              <el-select v-model="selectedNodeForm.config.sourceStepId" placeholder="先连接一个脚本或文件步骤">
+                <el-option v-for="item in conditionSourceOptions" :key="item.id" :label="item.label" :value="item.id" />
+              </el-select>
+              <div class="form-tip">判断直接连接到此分支的前置步骤。</div>
+            </el-form-item>
+            <el-form-item label="判断什么">
+              <el-select v-model="selectedNodeForm.config.field" @change="handleConditionFieldChange"><el-option v-for="item in conditionFields" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+            </el-form-item>
+            <el-form-item label="比较方式">
+              <el-select v-model="selectedNodeForm.config.operator"><el-option v-for="item in selectedConditionOperators" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+            </el-form-item>
+            <el-form-item label="比较值">
+              <el-select v-if="selectedNodeForm.config.field === 'status'" v-model="selectedNodeForm.config.value"><el-option v-for="item in conditionStatuses" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+              <el-input-number v-else v-model="selectedNodeForm.config.value" :min="0" :max="2147483647" :precision="0" style="width: 100%" />
+            </el-form-item>
+            <div class="condition-preview"><strong>{{ conditionSummary(selectedNodeForm.config) }}</strong><p>满足条件时走绿色出口，不满足时走橙色出口。两个出口都需连接后续步骤。</p></div>
+            <div class="form-tip">如需处理前置步骤失败的结果，请在该步骤的“失败时”中选择“进入后续条件分支”。</div>
           </template>
           <template v-else-if="selectedNodeForm.type === 'notify'">
             <div class="config-section-heading">通知设置</div>

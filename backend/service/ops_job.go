@@ -60,6 +60,7 @@ type OpsJobNode struct {
 type OpsJobEdge struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
+	Branch string `json:"branch,omitempty"`
 }
 
 func normalizeJobStatus(value int) int {
@@ -77,6 +78,8 @@ func normalizeJobNodeType(value string) string {
 		return "approval"
 	case "notify":
 		return "notify"
+	case "condition":
+		return "condition"
 	default:
 		return "script"
 	}
@@ -105,6 +108,9 @@ func parseOpsJobDefinition(raw string) (*OpsJobDefinition, error) {
 		if definition.Nodes[index].Config == nil {
 			definition.Nodes[index].Config = map[string]any{}
 		}
+	}
+	if err := validateOpsJobBranches(definition); err != nil {
+		return nil, err
 	}
 	return &definition, nil
 }
@@ -478,74 +484,17 @@ func (s *Service) RunOpsJob(id uint) error {
 }
 
 func (s *Service) ApproveOpsJobHistoryStep(payload OpsJobHistoryApprovalPayload) error {
-	var history model.OpsJobHistory
-	if err := s.db.First(&history, payload.HistoryID).Error; err != nil {
+	definition, err := s.decideOpsJobApproval(payload, true)
+	if err != nil {
 		return err
 	}
-	if history.Status != "waiting_approval" {
-		return errors.New("当前作业不处于待确认状态")
-	}
-	var step model.OpsJobHistoryStep
-	if err := s.db.Where("history_id = ? AND step_id = ?", payload.HistoryID, payload.StepID).First(&step).Error; err != nil {
-		return err
-	}
-	if step.Status != "waiting_approval" {
-		return errors.New("当前步骤不处于待确认状态")
-	}
-	finishedAt := time.Now()
-	duration := int64(0)
-	if step.StartedAt != nil {
-		duration = finishedAt.Sub(*step.StartedAt).Milliseconds()
-	}
-	if err := s.db.Model(&model.OpsJobHistoryStep{}).Where("id = ?", step.ID).Updates(map[string]any{
-		"status":            "success",
-		"summary":           firstNonEmpty(step.Summary, "人工确认已通过"),
-		"approval_decision": "approved",
-		"approval_note":     strings.TrimSpace(payload.Note),
-		"finished_at":       &finishedAt,
-		"duration_ms":       duration,
-	}).Error; err != nil {
-		return err
-	}
-	var definition OpsJobDefinition
-	if err := json.Unmarshal([]byte(history.DefinitionJSON), &definition); err != nil {
-		return errors.New("作业定义已损坏，无法继续执行")
-	}
-	go s.resumeOpsJobDefinition(payload.HistoryID, definition, payload.StepID)
+	go s.resumeOpsJobDefinition(payload.HistoryID, *definition, payload.StepID)
 	return nil
 }
 
 func (s *Service) RejectOpsJobHistoryStep(payload OpsJobHistoryApprovalPayload) error {
-	var history model.OpsJobHistory
-	if err := s.db.First(&history, payload.HistoryID).Error; err != nil {
-		return err
-	}
-	var step model.OpsJobHistoryStep
-	if err := s.db.Where("history_id = ? AND step_id = ?", payload.HistoryID, payload.StepID).First(&step).Error; err != nil {
-		return err
-	}
-	finishedAt := time.Now()
-	duration := int64(0)
-	if step.StartedAt != nil {
-		duration = finishedAt.Sub(*step.StartedAt).Milliseconds()
-	}
-	if err := s.db.Model(&model.OpsJobHistoryStep{}).Where("id = ?", step.ID).Updates(map[string]any{
-		"status":            "rejected",
-		"summary":           "人工确认已拒绝",
-		"approval_decision": "rejected",
-		"approval_note":     strings.TrimSpace(payload.Note),
-		"finished_at":       &finishedAt,
-		"duration_ms":       duration,
-	}).Error; err != nil {
-		return err
-	}
-	return s.db.Model(&model.OpsJobHistory{}).Where("id = ?", payload.HistoryID).Updates(map[string]any{
-		"status":            "rejected",
-		"summary":           "作业被人工确认步骤拒绝",
-		"current_step_id":   step.StepID,
-		"current_step_name": step.StepName,
-		"finished_at":       &finishedAt,
-	}).Error
+	_, err := s.decideOpsJobApproval(payload, false)
+	return err
 }
 
 func buildOpsJobNodeOrder(definition OpsJobDefinition) ([]OpsJobNode, error) {
@@ -594,40 +543,11 @@ func buildOpsJobNodeOrder(definition OpsJobDefinition) ([]OpsJobNode, error) {
 }
 
 func (s *Service) runOpsJobDefinition(historyID uint, definition OpsJobDefinition) {
-	order, err := buildOpsJobNodeOrder(definition)
-	if err != nil {
-		s.finishOpsJobHistory(historyID, "failed", err.Error(), "", "")
-		return
-	}
-	for _, node := range order {
-		paused, failed := s.runSingleOpsJobNode(historyID, node)
-		if paused || failed {
-			return
-		}
-	}
-	s.finishOpsJobHistory(historyID, "success", "作业执行完成", "", "")
+	s.continueOpsJobDefinition(historyID, definition)
 }
 
 func (s *Service) resumeOpsJobDefinition(historyID uint, definition OpsJobDefinition, approvedStepID string) {
-	order, err := buildOpsJobNodeOrder(definition)
-	if err != nil {
-		s.finishOpsJobHistory(historyID, "failed", err.Error(), "", "")
-		return
-	}
-	afterApproved := false
-	for _, node := range order {
-		if !afterApproved {
-			if node.ID == approvedStepID {
-				afterApproved = true
-			}
-			continue
-		}
-		paused, failed := s.runSingleOpsJobNode(historyID, node)
-		if paused || failed {
-			return
-		}
-	}
-	s.finishOpsJobHistory(historyID, "success", "作业执行完成", "", "")
+	s.continueOpsJobDefinition(historyID, definition)
 }
 
 func (s *Service) runSingleOpsJobNode(historyID uint, node OpsJobNode) (paused bool, failed bool) {
@@ -654,6 +574,27 @@ func (s *Service) runSingleOpsJobNode(historyID uint, node OpsJobNode) (paused b
 	}).Error
 
 	switch node.Type {
+	case "condition":
+		result, output, err := s.evaluateOpsJobCondition(historyID, node)
+		finishedAt := time.Now()
+		status, summary := "success", "不满足条件，进入不满足路径"
+		if result {
+			summary = "满足条件，进入满足条件路径"
+		}
+		if err != nil {
+			status, summary = "failed", err.Error()
+		}
+		updates := map[string]any{"status": status, "summary": summary, "output": output, "finished_at": &finishedAt, "duration_ms": finishedAt.Sub(now).Milliseconds()}
+		if err == nil {
+			updates["branch_result"] = result
+		}
+		if updateErr := s.db.Model(&model.OpsJobHistoryStep{}).Where("id = ?", step.ID).Updates(updates).Error; updateErr != nil {
+			err = updateErr
+		}
+		if err != nil {
+			s.finishOpsJobHistory(historyID, "failed", err.Error(), node.ID, stepName)
+			return false, true
+		}
 	case "notify":
 		status, summary, output, err := s.executeOpsJobNotifyNode(historyID, stepName, node)
 		finishedAt := time.Now()
@@ -695,7 +636,7 @@ func (s *Service) runSingleOpsJobNode(historyID uint, node OpsJobNode) (paused b
 			"duration_ms":  duration,
 		}
 		_ = s.db.Model(&model.OpsJobHistoryStep{}).Where("id = ?", step.ID).Updates(updates).Error
-		if err != nil || status == "failed" {
+		if (err != nil || status == "failed") && stringConfig(node.Config, "failurePolicy") != "branch" {
 			s.finishOpsJobHistory(historyID, "failed", firstNonEmpty(summary, errString(err)), node.ID, stepName)
 			return false, true
 		}
@@ -712,7 +653,7 @@ func (s *Service) runSingleOpsJobNode(historyID uint, node OpsJobNode) (paused b
 			"duration_ms":  duration,
 		}
 		_ = s.db.Model(&model.OpsJobHistoryStep{}).Where("id = ?", step.ID).Updates(updates).Error
-		if err != nil || status == "failed" {
+		if (err != nil || status == "failed") && stringConfig(node.Config, "failurePolicy") != "branch" {
 			s.finishOpsJobHistory(historyID, "failed", firstNonEmpty(summary, errString(err)), node.ID, stepName)
 			return false, true
 		}

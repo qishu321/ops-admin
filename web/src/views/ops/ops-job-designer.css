@@ -166,6 +166,9 @@
 
 .left-palette {
   padding: 19px 14px 16px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d9e1ee transparent;
 }
 
 .panel-header {
@@ -652,6 +655,22 @@
   color: #92a0b5;
   font-size: 11px;
   line-height: 1.7;
+}
+
+.condition-preview {
+  padding: 13px;
+  border: 1px solid #f0dfc6;
+  border-radius: 8px;
+  background: #fffbf5;
+  color: #926021;
+  font-size: 12px;
+}
+
+.condition-preview p {
+  margin: 8px 0 0;
+  color: #827260;
+  font-size: 11px;
+  line-height: 1.8;
 }
 
 .job-variable-panel {

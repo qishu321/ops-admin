@@ -281,7 +281,7 @@ async function handleBatchSync() {
 	batchSyncSubmitting.value = true
 	try {
 		const data = await batchSyncAssetHosts(ids)
-		ElMessage.success(`批量采集完成：成功 ${data.success} 台，失败 ${data.fail} 台`)
+		ElMessage.success(`批量同步完成：成功 ${data.success} 台，失败 ${data.fail} 台`)
 		await loadData()
 	} finally {
 		batchSyncSubmitting.value = false
@@ -447,7 +447,7 @@ watch(
       </div>
       <div class="host-page-summary">
         <span>资源工作台</span>
-        <small>支持批量信息采集与凭据替换</small>
+        <small>支持批量同步与凭据替换</small>
       </div>
     </header>
     <section class="query-panel">
@@ -504,7 +504,7 @@ watch(
             <el-dropdown-menu>
 			  <el-dropdown-item command="batch-sync" :disabled="batchSyncSubmitting">
 				<el-icon v-if="batchSyncSubmitting" class="is-loading"><Loading /></el-icon>
-				{{ batchSyncSubmitting ? '采集中' : '采集信息' }}
+				{{ batchSyncSubmitting ? '同步中' : '批量同步' }}
 			  </el-dropdown-item>
               <el-dropdown-item command="batch-delete">{{ isGroupView ? '批量移出当前组' : '批量删除' }}</el-dropdown-item>
               <el-dropdown-item command="batch-credential">批量替换认证凭据</el-dropdown-item>
@@ -584,7 +584,7 @@ watch(
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="primary" @click="openCopy(row)">复制</el-button>
-          <el-button link type="success" :loading="syncingId === row.id" @click="handleSync(row)">采集信息</el-button>
+          <el-button link type="success" :loading="syncingId === row.id" @click="handleSync(row)">同步</el-button>
           <el-button link type="danger" @click="handleDelete(row)">{{ isGroupView ? '移出组' : '删除' }}</el-button>
         </template>
       </el-table-column>

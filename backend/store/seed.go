@@ -476,6 +476,7 @@ func seedApplicationMenus(db *gorm.DB) error {
 				{"主机组管理", "/assets/server/groups", "assets:hostgroup:list", "FolderOpened"},
 				{"凭据管理", "/assets/server/credentials", "assets:credential:list", "Key"},
 				{"云账号管理", "/assets/server/cloud-accounts", "assets:cloudaccount:list", "Cloudy"},
+				{"资产同步", "/assets/server/sync", "assets:sync:list", "Refresh"},
 				{"数据库列表", "/assets/databases", "assets:database:list", "List"},
 				{"DBMS 工作台", "/assets/databases/workbench", "assets:database:workbench", "EditPen"},
 				{"数据导入", "/assets/databases/import", "assets:database:import", "Upload"},

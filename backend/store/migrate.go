@@ -37,6 +37,11 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.AssetHostGroupRelation{},
 		&model.AssetCredential{},
 		&model.AssetCloudAccount{},
+		&model.AssetSyncSource{},
+		&model.AssetSyncMutex{},
+		&model.AssetSyncNodeLink{},
+		&model.AssetSyncHostLink{},
+		&model.AssetSyncRun{},
 		&model.AssetGateway{},
 		&model.AssetHost{},
 		&model.AssetService{},
@@ -107,6 +112,14 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.IntegrationFinOpsSyncLog{},
 	); err != nil {
 		return err
+	}
+
+	// Multiple external sources may refer to one local host. Identity remains
+	// unique within each source; remove the legacy single-source host constraint.
+	if db.Migrator().HasIndex(&model.AssetSyncHostLink{}, "idx_asset_sync_host_links_host_id") {
+		if err := db.Migrator().DropIndex(&model.AssetSyncHostLink{}, "idx_asset_sync_host_links_host_id"); err != nil {
+			return err
+		}
 	}
 
 	// Structured script variables supersede the legacy command-line defaults.

@@ -17,6 +17,7 @@ import Host from '../views/assets/Host.vue'
 import HostGroup from '../views/assets/HostGroup.vue'
 import Credential from '../views/assets/Credential.vue'
 import CloudAccount from '../views/assets/CloudAccount.vue'
+import AssetSync from '../views/assets/AssetSync.vue'
 import AssetOverview from '../views/assets/AssetOverview.vue'
 import AssetDetail from '../views/assets/AssetDetail.vue'
 import Database from '../views/assets/Database.vue'
@@ -216,6 +217,11 @@ const routes = [
           app: 'assets',
           summary: '维护云厂商访问账号，为云资产同步提供凭证来源。'
         }
+      },
+      {
+        path: '/assets/server/sync',
+        component: AssetSync,
+        meta: { title: '资产同步', app: 'assets', summary: '统一接入 JumpServer、阿里云与腾讯云资产，自动分组并采集主机信息。' }
       },
       {
         path: '/assets/databases',

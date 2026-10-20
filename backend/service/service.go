@@ -2020,7 +2020,7 @@ func (s *Service) ListAssetCredentials(pageNum, pageSize int, keyword string, au
 
 func (s *Service) ListAssetCredentialOptions() ([]model.AssetCredential, error) {
 	var list []model.AssetCredential
-	err := s.db.Where("status = ?", 1).Order("id desc").Find(&list).Error
+	err := s.db.Where("status = ? AND auth_type IN ?", 1, []string{"password", "key"}).Order("id desc").Find(&list).Error
 	for i := range list {
 		maskCredential(&list[i])
 	}
@@ -2029,10 +2029,15 @@ func (s *Service) ListAssetCredentialOptions() ([]model.AssetCredential, error) 
 
 func (s *Service) GetAssetCredential(id uint) (*model.AssetCredential, error) {
 	var item model.AssetCredential
-	return &item, s.db.First(&item, id).Error
+	err := s.db.First(&item, id).Error
+	maskCredential(&item)
+	return &item, err
 }
 
 func (s *Service) CreateAssetCredential(payload AssetCredentialPayload) error {
+	if err := validateSyncCredentialPayload(payload, false); err != nil {
+		return err
+	}
 	item := model.AssetCredential{
 		Name:        Trimmed(payload.Name),
 		AuthType:    normalizedAuthType(payload.AuthType),
@@ -2050,6 +2055,9 @@ func (s *Service) CreateAssetCredential(payload AssetCredentialPayload) error {
 }
 
 func (s *Service) UpdateAssetCredential(payload AssetCredentialPayload) error {
+	if err := s.validateCredentialTypeChange(payload); err != nil {
+		return err
+	}
 	updates := map[string]any{
 		"name":        Trimmed(payload.Name),
 		"auth_type":   normalizedAuthType(payload.AuthType),
@@ -2070,6 +2078,9 @@ func (s *Service) UpdateAssetCredential(payload AssetCredentialPayload) error {
 }
 
 func (s *Service) DeleteAssetCredential(id uint) error {
+	if err := s.checkSyncCredentialReferences(id); err != nil {
+		return err
+	}
 	var count int64
 	s.db.Model(&model.AssetHost{}).Where("credential_id = ?", id).Count(&count)
 	if count > 0 {
@@ -2209,6 +2220,12 @@ func (s *Service) UpdateAssetCloudAccount(payload AssetCloudAccountPayload) erro
 
 func (s *Service) DeleteAssetCloudAccount(id uint) error {
 	var count int64
+	if err := s.db.Model(&model.AssetSyncSource{}).Where("cloud_account_id = ?", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return errors.New("云账号被资产同步源引用，请先删除或调整同步源")
+	}
 	s.db.Model(&model.AssetHost{}).Where("cloud_account_id = ?", id).Count(&count)
 	if count > 0 {
 		return errors.New("云账号已被主机关联，不能删除")
@@ -2661,6 +2678,8 @@ func ensureHostGroupFallbackList(list []model.AssetHost) {
 
 func normalizedAuthType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "jumpserver_key":
+		return "jumpserver_key"
 	case "key", "private_key", "密钥认证":
 		return "key"
 	default:
@@ -2744,6 +2763,8 @@ func (s *Service) newSSHClientWithTimeout(host model.AssetHost, timeout time.Dur
 
 func credentialAuthMethod(credential model.AssetCredential) (ssh.AuthMethod, error) {
 	switch normalizedAuthType(credential.AuthType) {
+	case "jumpserver_key":
+		return nil, errors.New("JumpServer API 凭据不能用于 SSH 登录")
 	case "key":
 		var signer ssh.Signer
 		var err error
@@ -2861,17 +2882,17 @@ func formatConfig(host model.AssetHost) string {
 }
 
 type cloudInstance struct {
-	InstanceID string
-	HostName   string
-	PrivateIP  string
-	PublicIP   string
-	CPU        string
-	Memory     string
-	Disk       string
-	OS         string
-	Region     string
-	SSHUser    string
-	SSHPort    int
+	InstanceID string `json:"instanceId"`
+	HostName   string `json:"hostName"`
+	PrivateIP  string `json:"privateIp"`
+	PublicIP   string `json:"publicIp"`
+	CPU        string `json:"cpu"`
+	Memory     string `json:"memory"`
+	Disk       string `json:"disk"`
+	OS         string `json:"os"`
+	Region     string `json:"region"`
+	SSHUser    string `json:"sshUser"`
+	SSHPort    int    `json:"sshPort"`
 }
 
 func fetchCloudInstances(provider, accessKey, secretKey, region string) ([]cloudInstance, error) {
@@ -2890,7 +2911,7 @@ func fetchCloudInstances(provider, accessKey, secretKey, region string) ([]cloud
 				PrivateIP:  item.PrivateIP,
 				PublicIP:   item.PublicIP,
 				CPU:        fmt.Sprintf("%d核", item.CPU),
-				Memory:     fmt.Sprintf("%dGB", item.Memory/1024),
+				Memory:     fmt.Sprintf("%dGB", item.Memory),
 				Disk:       fmt.Sprintf("%dGB", item.Disk),
 				OS:         item.OS,
 				Region:     item.Region,

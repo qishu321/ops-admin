@@ -13,6 +13,10 @@ func TestGlobalReadOnlyRequestAllowed(t *testing.T) {
 		{"POST", "/api/v1/monitor/inspection/run", false},
 		{"PUT", "/api/v1/asset/host/update", false},
 		{"GET", "/api/v1/asset/credential/list", false},
+		{"GET", "/api/v1/asset/sync/data", false},
+		{"GET", "/api/v1/asset/sync/test", false},
+		{"POST", "/api/v1/asset/sync/preview", false},
+		{"POST", "/api/v1/asset/sync/apply", false},
 		{"GET", "/api/v1/asset/service/diagnosis/run", false},
 	} {
 		if got := globalReadOnlyRequestAllowed(test.method, test.path); got != test.want {

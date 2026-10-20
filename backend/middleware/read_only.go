@@ -58,6 +58,7 @@ func globalReadOnlyRequestAllowed(method, path string) bool {
 	for _, prefix := range []string{
 		"/api/v1/admin/", "/api/v1/role/", "/api/v1/menu/", "/api/v1/dept/", "/api/v1/post/",
 		"/api/v1/systemConfig", "/api/v1/system/", "/api/v1/asset/credential", "/api/v1/asset/cloudAccount",
+		"/api/v1/asset/sync/",
 		"/api/v1/asset/gateway", "/api/v1/asset/database", "/api/v1/dbms/", "/api/v1/ops/script/info",
 		"/api/v1/ops/script/versions", "/api/v1/domain/public/accounts", "/api/v1/integration/navigation",
 		"/api/v1/integration/ai/", "/api/v1/integration/finops/account",

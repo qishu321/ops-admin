@@ -78,6 +78,9 @@ type aliyunECSInstance struct {
 func fetchAliyunCloudInstances(accessKey, secretKey, region string) ([]cloudInstance, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
+	return fetchAliyunCloudInstancesWithContext(ctx, accessKey, secretKey, region)
+}
+func fetchAliyunCloudInstancesWithContext(ctx context.Context, accessKey, secretKey, region string) ([]cloudInstance, error) {
 	regions := normalizeCloudRegions(nil, region)
 	if len(regions) == 0 {
 		var response aliyunDescribeRegionsResponse
@@ -97,6 +100,7 @@ func fetchAliyunCloudInstances(accessKey, secretKey, region string) ([]cloudInst
 
 	result := make([]cloudInstance, 0)
 	for _, regionID := range regions {
+		regionCount := 0
 		for page := 1; page <= 100; page++ {
 			params := url.Values{}
 			params.Set("PageNumber", strconv.Itoa(page))
@@ -106,8 +110,12 @@ func fetchAliyunCloudInstances(accessKey, secretKey, region string) ([]cloudInst
 				return nil, fmt.Errorf("AliCloud ECS instance query failed for %s: %w", regionID, err)
 			}
 			result = append(result, aliyunCloudInstances(response.Instances.Instance, regionID)...)
-			if len(response.Instances.Instance) == 0 || page*100 >= response.TotalCount {
+			regionCount += len(response.Instances.Instance)
+			if regionCount == response.TotalCount {
 				break
+			}
+			if len(response.Instances.Instance) == 0 || regionCount > response.TotalCount || page == 100 {
+				return nil, fmt.Errorf("AliCloud ECS pagination incomplete in %s; retry with a smaller scope", regionID)
 			}
 		}
 	}

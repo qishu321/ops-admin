@@ -147,21 +147,26 @@ type AssetHost struct {
 	Disk           string            `json:"disk" gorm:"size:64"`
 	Environment    string            `json:"environment" gorm:"size:64;index"`
 	// Kept only for backwards-compatible database reads; host management no longer exposes tags.
-	Tags          []string   `json:"-" gorm:"serializer:json;type:text"`
-	Provider      string     `json:"provider" gorm:"size:64"`
-	Region        string     `json:"region" gorm:"size:128"`
-	InstanceID    string     `json:"instanceId" gorm:"size:128;index"`
-	Status        int        `json:"status" gorm:"default:1;not null"`
-	AliveStatus   int        `json:"aliveStatus" gorm:"default:2;not null"`
-	AuthStatus    int        `json:"authStatus" gorm:"default:2;not null"`
-	Description   string     `json:"description" gorm:"size:255"`
-	LastCheckTime *time.Time `json:"lastCheckTime"`
-	CPUUsage      string     `json:"cpuUsage" gorm:"-"`
-	MemoryUsage   string     `json:"memoryUsage" gorm:"-"`
-	DiskUsage     string     `json:"diskUsage" gorm:"-"`
-	MetricsStatus string     `json:"metricsStatus" gorm:"-"`
-	CreatedAt     time.Time  `json:"createTime"`
-	UpdatedAt     time.Time  `json:"updateTime"`
+	Tags           []string   `json:"-" gorm:"serializer:json;type:text"`
+	Provider       string     `json:"provider" gorm:"size:64"`
+	Region         string     `json:"region" gorm:"size:128"`
+	InstanceID     string     `json:"instanceId" gorm:"size:128;index"`
+	SyncSourceID   *uint      `json:"syncSourceId" gorm:"index"`
+	SyncSourceName string     `json:"syncSourceName" gorm:"size:128"`
+	SyncProvider   string     `json:"syncProvider" gorm:"size:32"`
+	SyncMissing    bool       `json:"syncMissing" gorm:"default:false"`
+	LastSyncedAt   *time.Time `json:"lastSyncedAt"`
+	Status         int        `json:"status" gorm:"default:1;not null"`
+	AliveStatus    int        `json:"aliveStatus" gorm:"default:2;not null"`
+	AuthStatus     int        `json:"authStatus" gorm:"default:2;not null"`
+	Description    string     `json:"description" gorm:"size:255"`
+	LastCheckTime  *time.Time `json:"lastCheckTime"`
+	CPUUsage       string     `json:"cpuUsage" gorm:"-"`
+	MemoryUsage    string     `json:"memoryUsage" gorm:"-"`
+	DiskUsage      string     `json:"diskUsage" gorm:"-"`
+	MetricsStatus  string     `json:"metricsStatus" gorm:"-"`
+	CreatedAt      time.Time  `json:"createTime"`
+	UpdatedAt      time.Time  `json:"updateTime"`
 }
 
 func (AssetHost) TableName() string {

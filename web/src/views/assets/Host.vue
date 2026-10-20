@@ -13,14 +13,12 @@ import {
   deleteAssetHost,
   downloadAssetHostTemplate,
   importAssetHosts,
-  queryAssetCloudAccountOptions,
   queryAssetCredentialOptions,
   queryAssetGatewayOptions,
   queryAssetHostGroupList,
   queryAssetHostList,
   removeAssetHostsFromGroup,
   syncAssetHost,
-  syncAssetHostsFromCloud,
   updateAssetHost
 } from '../../api/asset'
 
@@ -31,10 +29,8 @@ const loading = ref(false)
 const syncingId = ref()
 const dialogVisible = ref(false)
 const importDialogVisible = ref(false)
-const cloudSyncDialogVisible = ref(false)
 const batchCredentialDialogVisible = ref(false)
 const importSubmitting = ref(false)
-const cloudSyncSubmitting = ref(false)
 const batchCredentialSubmitting = ref(false)
 const batchSyncSubmitting = ref(false)
 const isEdit = ref(false)
@@ -44,7 +40,6 @@ const selectedRows = ref([])
 const groupOptions = ref([])
 const credentialOptions = ref([])
 const gatewayOptions = ref([])
-const cloudAccountOptions = ref([])
 const total = ref(0)
 const query = reactive({ pageNum: 1, pageSize: 10, keyword: '', ipKeyword: '', status: '', groupId: undefined, environment: '' })
 const form = reactive({
@@ -66,27 +61,10 @@ const importForm = reactive({
   groupId: undefined,
   file: null
 })
-const cloudSyncForm = reactive({
-  groupId: undefined,
-  provider: 'tencent',
-  useExistingAccount: true,
-  cloudAccountId: undefined,
-	credentialId: undefined,
-	connectionMode: 'direct',
-	gatewayId: undefined,
-	environment: '',
-  accessKey: '',
-  secretKey: '',
-  saveAccount: false,
-  accountName: ''
-})
 const batchCredentialForm = reactive({
   credentialId: undefined
 })
 
-const filteredCloudAccounts = computed(() =>
-  cloudAccountOptions.value.filter((item) => (item.provider || '').toLowerCase() === cloudSyncForm.provider)
-)
 const isGroupView = computed(() => Number(query.groupId || 0) > 0)
 
 function resetForm() {
@@ -114,37 +92,18 @@ function resetImportForm() {
   })
 }
 
-function resetCloudSyncForm() {
-  Object.assign(cloudSyncForm, {
-    groupId: undefined,
-    provider: 'tencent',
-    useExistingAccount: true,
-    cloudAccountId: undefined,
-	credentialId: undefined,
-	connectionMode: 'direct',
-	gatewayId: undefined,
-	environment: '',
-    accessKey: '',
-    secretKey: '',
-    saveAccount: false,
-    accountName: ''
-  })
-}
-
 function resetBatchCredentialForm() {
   batchCredentialForm.credentialId = undefined
 }
 
 async function loadOptions() {
-  const [groups, credentials, cloudAccounts, gateways] = await Promise.all([
+  const [groups, credentials, gateways] = await Promise.all([
     queryAssetHostGroupList(),
     queryAssetCredentialOptions(),
-    queryAssetCloudAccountOptions(),
     queryAssetGatewayOptions()
   ])
   groupOptions.value = groups.list || []
   credentialOptions.value = credentials || []
-  cloudAccountOptions.value = cloudAccounts || []
   gatewayOptions.value = gateways || []
 }
 
@@ -195,10 +154,7 @@ function openImportDialog() {
   importDialogVisible.value = true
 }
 
-function openCloudSyncDialog() {
-  resetCloudSyncForm()
-  cloudSyncDialogVisible.value = true
-}
+function openCloudSyncDialog() { router.push({ path: '/assets/server/sync', query: { type: 'cloud' } }) }
 
 function openBatchCredentialDialog() {
   if (!selectedRows.value.length) {
@@ -325,7 +281,7 @@ async function handleBatchSync() {
 	batchSyncSubmitting.value = true
 	try {
 		const data = await batchSyncAssetHosts(ids)
-		ElMessage.success(`批量同步完成：成功 ${data.success} 台，失败 ${data.fail} 台`)
+		ElMessage.success(`批量采集完成：成功 ${data.success} 台，失败 ${data.fail} 台`)
 		await loadData()
 	} finally {
 		batchSyncSubmitting.value = false
@@ -416,49 +372,6 @@ async function submitImport() {
   }
 }
 
-async function submitCloudSync() {
-  if (!cloudSyncForm.groupId || !cloudSyncForm.provider) {
-    ElMessage.warning('请选择分组和云厂商')
-    return
-  }
-  if (cloudSyncForm.useExistingAccount && !cloudSyncForm.cloudAccountId) {
-    ElMessage.warning('请选择已有云账号')
-    return
-  }
-	if (!cloudSyncForm.credentialId) {
-		ElMessage.warning('请选择认证凭据')
-		return
-	}
-  if (!cloudSyncForm.environment) {
-		ElMessage.warning('请选择所属环境')
-		return
-	}
-	if (cloudSyncForm.connectionMode === 'gateway' && !cloudSyncForm.gatewayId) {
-		ElMessage.warning('请选择访问网关')
-		return
-	}
-  if (!cloudSyncForm.useExistingAccount && (!cloudSyncForm.accessKey || !cloudSyncForm.secretKey)) {
-    ElMessage.warning('请填写 AccessKey 和 SecretKey')
-    return
-  }
-  cloudSyncSubmitting.value = true
-  try {
-    const data = await syncAssetHostsFromCloud(cloudSyncForm)
-    const addedNames = (data.addedHosts || []).slice(0, 3).join('、')
-    const updatedNames = (data.updatedHosts || []).slice(0, 3).join('、')
-    const details = [
-      addedNames ? `新增：${addedNames}` : '',
-      updatedNames ? `更新：${updatedNames}` : '',
-      Object.keys(data.regionCounts || {}).length ? `地域：${Object.entries(data.regionCounts).map(([region, count]) => `${region} ${count} 台`).join('，')}` : ''
-    ].filter(Boolean).join('；')
-    ElMessage.success(`云端发现 ${data.total || 0} 台：新增 ${data.added} 台，更新 ${data.updated} 台，跳过 ${data.skipped} 台${details ? `（${details}）` : ''}`)
-    cloudSyncDialogVisible.value = false
-    await loadData()
-  } finally {
-    cloudSyncSubmitting.value = false
-  }
-}
-
 function groupName(row) {
   const groups = row.hostGroups || []
   if (groups.length) {
@@ -497,6 +410,7 @@ function goDetail(row) {
 }
 
 function handleCreateCommand(command) {
+	if (command === 'jumpserver') router.push('/assets/server/sync')
   if (command === 'create') openCreate()
   if (command === 'excel') openImportDialog()
   if (command === 'cloud') openCloudSyncDialog()
@@ -533,7 +447,7 @@ watch(
       </div>
       <div class="host-page-summary">
         <span>资源工作台</span>
-        <small>支持批量同步与凭据替换</small>
+        <small>支持批量信息采集与凭据替换</small>
       </div>
     </header>
     <section class="query-panel">
@@ -571,6 +485,7 @@ watch(
               <el-dropdown-item command="create">导入主机</el-dropdown-item>
               <el-dropdown-item command="excel">Excel导入</el-dropdown-item>
               <el-dropdown-item command="cloud">云主机同步</el-dropdown-item>
+              <el-dropdown-item command="jumpserver">从 JumpServer 同步</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -589,7 +504,7 @@ watch(
             <el-dropdown-menu>
 			  <el-dropdown-item command="batch-sync" :disabled="batchSyncSubmitting">
 				<el-icon v-if="batchSyncSubmitting" class="is-loading"><Loading /></el-icon>
-				{{ batchSyncSubmitting ? '同步中' : '批量同步' }}
+				{{ batchSyncSubmitting ? '采集中' : '采集信息' }}
 			  </el-dropdown-item>
               <el-dropdown-item command="batch-delete">{{ isGroupView ? '批量移出当前组' : '批量删除' }}</el-dropdown-item>
               <el-dropdown-item command="batch-credential">批量替换认证凭据</el-dropdown-item>
@@ -607,6 +522,7 @@ watch(
             <span class="linux-icon">L</span>
             <el-button link type="primary" @click="goDetail(row)">{{ row.hostName }}</el-button>
           </div>
+          <el-tag v-if="row.syncSourceId" size="small" :type="row.syncMissing ? 'warning' : 'info'" effect="plain" :title="row.syncSourceName" style="margin:6px 0 0 34px">{{ row.syncMissing ? '源端未发现' : ({ aliyun: '阿里云', tencent: '腾讯云' }[row.syncProvider] || 'JumpServer') }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="IP地址" min-width="170">
@@ -668,7 +584,7 @@ watch(
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="primary" @click="openCopy(row)">复制</el-button>
-          <el-button link type="success" :loading="syncingId === row.id" @click="handleSync(row)">同步</el-button>
+          <el-button link type="success" :loading="syncingId === row.id" @click="handleSync(row)">采集信息</el-button>
           <el-button link type="danger" @click="handleDelete(row)">{{ isGroupView ? '移出组' : '删除' }}</el-button>
         </template>
       </el-table-column>
@@ -786,60 +702,7 @@ watch(
       </template>
     </el-dialog>
 
-    <el-dialog v-model="cloudSyncDialogVisible" title="云主机同步" width="620px">
-      <el-form label-width="108px">
-        <el-form-item label="目标分组">
-          <el-select v-model="cloudSyncForm.groupId" filterable placeholder="请选择同步分组" style="width: 100%">
-            <el-option v-for="item in groupOptions" :key="item.id" :value="item.id" :label="item.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="云厂商">
-          <el-select v-model="cloudSyncForm.provider" placeholder="请选择云厂商" style="width: 100%">
-            <el-option label="腾讯云" value="tencent" />
-            <el-option label="阿里云" value="aliyun" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="云账号">
-          <el-select v-model="cloudSyncForm.cloudAccountId" filterable clearable placeholder="请选择云账号" style="width: 100%">
-            <el-option
-              v-for="item in filteredCloudAccounts"
-              :key="item.id"
-              :value="item.id"
-              :label="`${item.name}（${(item.regions?.length ? item.regions : (item.region ? item.region.split(/[,，;；\s]+/).filter(Boolean) : [])).join('、')}）`"
-            />
-          </el-select>
-        </el-form-item>
-		<el-form-item label="认证凭据" required>
-		  <div class="credential-line">
-			<el-select v-model="cloudSyncForm.credentialId" clearable filterable placeholder="请选择认证凭据">
-			  <el-option v-for="item in credentialOptions" :key="item.id" :value="item.id" :label="item.name" />
-			</el-select>
-			<el-button color="#f59e0b" @click="goCredential">+ 创建凭据</el-button>
-		  </div>
-		</el-form-item>
-        <el-form-item label="连接方式">
-		  <el-radio-group v-model="cloudSyncForm.connectionMode">
-			<el-radio value="direct">直连</el-radio>
-			<el-radio value="gateway">通过网关</el-radio>
-		  </el-radio-group>
-		</el-form-item>
-		<el-form-item v-if="cloudSyncForm.connectionMode === 'gateway'" label="访问网关">
-		  <el-select v-model="cloudSyncForm.gatewayId" filterable placeholder="请选择网关" style="width: 100%">
-			<el-option v-for="item in gatewayOptions" :key="item.id" :value="item.id" :label="item.name" />
-		  </el-select>
-		</el-form-item>
-		<el-form-item label="所属环境">
-		  <el-select v-model="cloudSyncForm.environment" filterable placeholder="请选择所属环境" :loading="environmentLoading" style="width: 100%">
-			<el-option v-for="item in environmentOptions" :key="item.code" :label="`${item.name} / ${item.code}`" :value="item.code" />
-		  </el-select>
-		</el-form-item>
-        <div class="dialog-tip">同步将严格使用云账号管理中配置的地域；请先在云账号管理维护至少一个地域。阿里云和腾讯云均支持多地域云主机同步。</div>
-      </el-form>
-      <template #footer>
-        <el-button @click="cloudSyncDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="cloudSyncSubmitting" @click="submitCloudSync">开始同步</el-button>
-      </template>
-    </el-dialog>
+
 
     <el-dialog v-model="batchCredentialDialogVisible" title="批量替换认证凭据" width="480px">
       <el-form label-width="96px">

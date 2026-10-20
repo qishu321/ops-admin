@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   addAssetCloudAccount,
@@ -9,6 +10,7 @@ import {
   updateAssetCloudAccount
 } from '../../api/asset'
 
+const router = useRouter()
 const loading = ref(false)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
@@ -101,7 +103,7 @@ onMounted(loadData)
         <el-button @click="loadData">查询</el-button>
       </div>
       <div class="toolbar-right">
-        <el-button type="primary" @click="openCreate">新增云账号</el-button>
+        <el-button @click="router.push('/assets/server/sync')">资产同步</el-button><el-button type="primary" @click="openCreate">新增云账号</el-button>
       </div>
     </div>
 
@@ -124,9 +126,9 @@ onMounted(loadData)
         </template>
       </el-table-column>
       <el-table-column prop="description" label="备注" min-width="220" />
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="['aliyun', 'alicloud', 'tencent', 'tencentcloud'].includes(row.provider)" link type="primary" :disabled="row.status !== 1" @click="router.push({ path: '/assets/server/sync', query: { cloudAccountId: row.id } })">同步资产</el-button><el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>

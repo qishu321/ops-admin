@@ -189,7 +189,7 @@ func (s *Service) DeleteAssetGateway(id uint) error {
 	if id == 0 {
 		return errors.New("网关 ID 不能为空")
 	}
-	var hostCount, databaseCount, clusterCount int64
+	var hostCount, databaseCount, clusterCount, syncCount int64
 	if err := s.db.Model(&model.AssetHost{}).Where("gateway_id = ?", id).Count(&hostCount).Error; err != nil {
 		return err
 	}
@@ -199,7 +199,10 @@ func (s *Service) DeleteAssetGateway(id uint) error {
 	if err := s.db.Model(&model.K8sCluster{}).Where("gateway_id = ?", id).Count(&clusterCount).Error; err != nil {
 		return err
 	}
-	if hostCount+databaseCount+clusterCount > 0 {
+	if err := s.db.Model(&model.AssetSyncSource{}).Where("gateway_id = ?", id).Count(&syncCount).Error; err != nil {
+		return err
+	}
+	if hostCount+databaseCount+clusterCount+syncCount > 0 {
 		return errors.New("该网关正在被资产使用，无法删除")
 	}
 	return s.db.Delete(&model.AssetGateway{}, id).Error

@@ -69,6 +69,12 @@ export const appDefinitions = [
             path: '/assets/server/cloud-accounts',
             icon: 'Cloudy',
             children: []
+          },
+          {
+            title: '资产同步',
+            path: '/assets/server/sync',
+            icon: 'Refresh',
+            children: []
           }
         ]
       },

@@ -977,6 +977,7 @@ const routeTitleMap = {
   '/assets/server': 'serverManagement',
   '/assets/server/hosts': 'hostManagement',
   '/assets/server/groups': 'hostGroupManagement',
+  '/assets/credentials': 'credentialManagement',
   '/assets/server/credentials': 'credentialManagement',
   '/assets/server/credentials/password': 'passwordAuth',
   '/assets/server/credentials/key': 'keyAuth',

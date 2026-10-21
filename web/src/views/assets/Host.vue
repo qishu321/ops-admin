@@ -428,7 +428,7 @@ function configText(row) {
 }
 
 function goCredential() {
-  router.push('/assets/server/credentials')
+  router.push('/assets/credentials')
 }
 
 function goTerminal() {

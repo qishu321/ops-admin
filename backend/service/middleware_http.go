@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -96,6 +98,13 @@ func (h *middlewareHTTP) request(method, path string, q url.Values, body any, fo
 func runMiddlewareHTTP(ctx context.Context, d model.MiddlewareDatasource, c model.AssetCredential, r MiddlewareOperation) (any, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	defer transport.CloseIdleConnections()
+	if c.AuthType == "tls" {
+		cfg, err := middlewareTLSConfig(c)
+		if err != nil {
+			return nil, err
+		}
+		transport.TLSClientConfig = cfg
+	}
 	h := &middlewareHTTP{ctx: ctx, base: d.Endpoints[0], credential: c, client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	switch d.Type {
 	case "rabbitmq":
@@ -104,9 +113,37 @@ func runMiddlewareHTTP(ctx context.Context, d model.MiddlewareDatasource, c mode
 	case "nacos":
 		return h.nacos(d.Version, r)
 	case "etcd":
+		h.basic = d.AuthType == "basic"
 		return h.etcd(r)
 	}
 	return nil, errors.New("不支持的 HTTP 中间件")
+}
+
+// middlewareTLSConfig builds the client side of a TLS / mTLS connection from a
+// certificate credential. A missing CA falls back to the system trust store.
+func middlewareTLSConfig(c model.AssetCredential) (*tls.Config, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}
+	if ca := strings.TrimSpace(c.CACert); ca != "" {
+		if !pool.AppendCertsFromPEM([]byte(ca)) {
+			return nil, errors.New("CA 证书无法解析，请确认上传的是 PEM 格式证书")
+		}
+	}
+	cert, key := strings.TrimSpace(c.ClientCert), strings.TrimSpace(c.PrivateKey)
+	if cert != "" || key != "" {
+		if cert == "" || key == "" {
+			return nil, errors.New("TLS 凭据需要同时提供客户端证书与私钥")
+		}
+		pair, err := tls.X509KeyPair([]byte(cert), []byte(key))
+		if err != nil {
+			return nil, errors.New("客户端证书与私钥不匹配，或不是 PEM 格式")
+		}
+		cfg.Certificates = []tls.Certificate{pair}
+	}
+	return cfg, nil
 }
 func requiredMiddleware(p map[string]string, keys ...string) error {
 	for _, k := range keys {
@@ -317,7 +354,7 @@ func prefixEnd(b []byte) []byte {
 }
 func (h *middlewareHTTP) etcd(r MiddlewareOperation) (any, error) {
 	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	if h.credential.ID > 0 {
+	if h.basic {
 		v, e := h.request("POST", "/v3/auth/authenticate", nil, map[string]string{"name": h.credential.Username, "password": h.credential.Password}, false)
 		if e != nil {
 			return nil, e

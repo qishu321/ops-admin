@@ -13,3 +13,4 @@ deploy/config.yaml
 .gopath/
 .gomodcache/
 .tmp/
+.workbuddy/

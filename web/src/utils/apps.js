@@ -57,13 +57,6 @@ export const appDefinitions = [
             children: []
           },
           {
-            title: '凭据管理',
-            titleKey: 'credentialManagement',
-            path: '/assets/server/credentials',
-            icon: 'Key',
-            children: []
-          },
-          {
             title: '云账号管理',
             titleKey: 'cloudAccountManagement',
             path: '/assets/server/cloud-accounts',
@@ -124,6 +117,13 @@ export const appDefinitions = [
           { title: 'ZooKeeper', path: '/assets/middleware/zookeeper', icon: 'Share', children: [] },
           { title: 'Kafka', path: '/assets/middleware/kafka', icon: 'Promotion', children: [] }
         ]
+      },
+      {
+        title: '凭据管理',
+        titleKey: 'credentialManagement',
+        path: '/assets/credentials',
+        icon: 'Key',
+        children: []
       },
       {
         title: '网关管理',

@@ -12,8 +12,10 @@ import (
 	"net"
 	"ops-admin/backend/model"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -162,6 +164,56 @@ func runMiddlewareKafka(ctx context.Context, d model.MiddlewareDatasource, c mod
 type quietZKLogger struct{}
 
 func (quietZKLogger) Printf(string, ...interface{}) {}
+
+// 子节点摘要只读取 Stat，不传输节点数据；单次最多枚举 500 个子节点，避免大目录拖慢浏览。
+const zkChildSummaryLimit = 500
+
+type zkChildSummary struct {
+	Name           string `json:"name"`
+	Path           string `json:"path"`
+	HasChildren    bool   `json:"hasChildren"`
+	NumChildren    int32  `json:"numChildren"`
+	DataLength     int32  `json:"dataLength"`
+	EphemeralOwner int64  `json:"ephemeralOwner"`
+	Mtime          int64  `json:"mtime"`
+}
+
+func zkChildPath(parent, name string) string {
+	if parent == "/" {
+		return "/" + name
+	}
+	return parent + "/" + name
+}
+
+func zkChildSummaries(conn *zk.Conn, parent string, children []string) ([]zkChildSummary, bool) {
+	list, truncated := children, false
+	if len(list) > zkChildSummaryLimit {
+		list, truncated = list[:zkChildSummaryLimit], true
+	}
+	out := make([]zkChildSummary, len(list))
+	sem := make(chan struct{}, 12)
+	var wg sync.WaitGroup
+	for i, name := range list {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			item := zkChildSummary{Name: name, Path: zkChildPath(parent, name)}
+			if ok, stat, err := conn.Exists(item.Path); err == nil && ok && stat != nil {
+				item.HasChildren = stat.NumChildren > 0
+				item.NumChildren = stat.NumChildren
+				item.DataLength = stat.DataLength
+				item.EphemeralOwner = stat.EphemeralOwner
+				item.Mtime = stat.Mtime
+			}
+			out[i] = item
+		}(i, name)
+	}
+	wg.Wait()
+	return out, truncated
+}
+
 func runMiddlewareZK(ctx context.Context, d model.MiddlewareDatasource, c model.AssetCredential, r MiddlewareOperation) (any, error) {
 	conn, events, e := zk.Connect(d.Endpoints, 8*time.Second, zk.WithLogger(quietZKLogger{}))
 	if e != nil {
@@ -211,7 +263,18 @@ func runMiddlewareZK(ctx context.Context, d model.MiddlewareDatasource, c model.
 	switch r.Operation {
 	case "children":
 		children, stat, e := conn.Children(node)
-		return map[string]any{"children": children, "stat": stat, "path": node}, e
+		if e != nil {
+			return nil, e
+		}
+		slices.Sort(children)
+		payload := map[string]any{"children": children, "stat": stat, "path": node}
+		// detail=1 附带子节点摘要，供树形目录区分叶子与可展开节点；未展开的节点不额外请求。
+		if p["detail"] == "1" {
+			items, truncated := zkChildSummaries(conn, node, children)
+			payload["items"] = items
+			payload["truncated"] = truncated
+		}
+		return payload, nil
 	case "node.get":
 		data, stat, e := conn.Get(node)
 		if e != nil {

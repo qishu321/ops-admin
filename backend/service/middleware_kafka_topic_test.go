@@ -6,21 +6,24 @@ import (
 	"errors"
 	kafka "github.com/segmentio/kafka-go"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
 
 type topicFake struct {
 	kafkaTopicAPI
-	metadata  func(*kafka.MetadataRequest) (*kafka.MetadataResponse, error)
-	offsets   func(*kafka.ListOffsetsRequest) (*kafka.ListOffsetsResponse, error)
-	fetch     func(*kafka.FetchRequest) (*kafka.FetchResponse, error)
-	produce   func(*kafka.ProduceRequest) (*kafka.ProduceResponse, error)
-	configs   func(*kafka.DescribeConfigsRequest) (*kafka.DescribeConfigsResponse, error)
-	alter     func(*kafka.IncrementalAlterConfigsRequest) (*kafka.IncrementalAlterConfigsResponse, error)
-	create    func(*kafka.CreatePartitionsRequest) (*kafka.CreatePartitionsResponse, error)
-	describe  func(*kafka.DescribeGroupsRequest) (*kafka.DescribeGroupsResponse, error)
-	committed func(*kafka.OffsetFetchRequest) (*kafka.OffsetFetchResponse, error)
+	metadata    func(*kafka.MetadataRequest) (*kafka.MetadataResponse, error)
+	offsets     func(*kafka.ListOffsetsRequest) (*kafka.ListOffsetsResponse, error)
+	fetch       func(*kafka.FetchRequest) (*kafka.FetchResponse, error)
+	produce     func(*kafka.ProduceRequest) (*kafka.ProduceResponse, error)
+	configs     func(*kafka.DescribeConfigsRequest) (*kafka.DescribeConfigsResponse, error)
+	alter       func(*kafka.IncrementalAlterConfigsRequest) (*kafka.IncrementalAlterConfigsResponse, error)
+	create      func(*kafka.CreatePartitionsRequest) (*kafka.CreatePartitionsResponse, error)
+	createTopic func(*kafka.CreateTopicsRequest) (*kafka.CreateTopicsResponse, error)
+	deleteTopic func(*kafka.DeleteTopicsRequest) (*kafka.DeleteTopicsResponse, error)
+	describe    func(*kafka.DescribeGroupsRequest) (*kafka.DescribeGroupsResponse, error)
+	committed   func(*kafka.OffsetFetchRequest) (*kafka.OffsetFetchResponse, error)
 }
 
 func (f topicFake) Metadata(_ context.Context, r *kafka.MetadataRequest) (*kafka.MetadataResponse, error) {
@@ -43,6 +46,18 @@ func (f topicFake) IncrementalAlterConfigs(_ context.Context, r *kafka.Increment
 }
 func (f topicFake) CreatePartitions(_ context.Context, r *kafka.CreatePartitionsRequest) (*kafka.CreatePartitionsResponse, error) {
 	return f.create(r)
+}
+func (f topicFake) CreateTopics(_ context.Context, r *kafka.CreateTopicsRequest) (*kafka.CreateTopicsResponse, error) {
+	if f.createTopic == nil {
+		return nil, errors.New("unexpected CreateTopics call")
+	}
+	return f.createTopic(r)
+}
+func (f topicFake) DeleteTopics(_ context.Context, r *kafka.DeleteTopicsRequest) (*kafka.DeleteTopicsResponse, error) {
+	if f.deleteTopic == nil {
+		return nil, errors.New("unexpected DeleteTopics call")
+	}
+	return f.deleteTopic(r)
 }
 func (f topicFake) DescribeGroups(_ context.Context, r *kafka.DescribeGroupsRequest) (*kafka.DescribeGroupsResponse, error) {
 	return f.describe(r)
@@ -236,5 +251,90 @@ func TestKafkaTopicTimeSeekUsesTimestampOffset(t *testing.T) {
 	v, e := kafkaMessages(context.Background(), f, "orders", map[string]string{"mode": "time", "timestamp": at.Format(time.RFC3339)})
 	if e != nil || v.(map[string]any)["nextOffset"] != "9007199254741010" {
 		t.Fatal(v, e)
+	}
+}
+
+func TestKafkaClearTopicRebuildsShapeAndConfig(t *testing.T) {
+	f := basicTopicFake()
+	reads := 0
+	f.metadata = func(*kafka.MetadataRequest) (*kafka.MetadataResponse, error) {
+		reads++
+		if reads == 1 {
+			return &kafka.MetadataResponse{Topics: []kafka.Topic{{Name: "orders", Partitions: []kafka.Partition{
+				{ID: 0, Leader: kafka.Broker{ID: 1}, Replicas: []kafka.Broker{{ID: 1}, {ID: 2}}},
+				{ID: 1, Leader: kafka.Broker{ID: 2}, Replicas: []kafka.Broker{{ID: 2}, {ID: 1}}},
+				{ID: 2, Leader: kafka.Broker{ID: 1}, Replicas: []kafka.Broker{{ID: 1}, {ID: 2}}},
+			}}}}, nil
+		}
+		return &kafka.MetadataResponse{Topics: []kafka.Topic{{Name: "orders", Error: kafka.UnknownTopicOrPartition}}}, nil
+	}
+	f.configs = func(*kafka.DescribeConfigsRequest) (*kafka.DescribeConfigsResponse, error) {
+		return &kafka.DescribeConfigsResponse{Resources: []kafka.DescribeConfigResponseResource{{ConfigEntries: []kafka.DescribeConfigResponseConfigEntry{
+			{ConfigName: "retention.ms", ConfigValue: "3600000", ConfigSource: 1},
+			{ConfigName: "cleanup.policy", ConfigValue: "delete", ConfigSource: 5},
+			{ConfigName: "secret", ConfigValue: "do-not-return", ConfigSource: 1, IsSensitive: true},
+		}}}}, nil
+	}
+	deleted, created := false, false
+	f.deleteTopic = func(r *kafka.DeleteTopicsRequest) (*kafka.DeleteTopicsResponse, error) {
+		if len(r.Topics) != 1 || r.Topics[0] != "orders" {
+			t.Fatal("wrong delete target", r.Topics)
+		}
+		deleted = true
+		return &kafka.DeleteTopicsResponse{Errors: map[string]error{"orders": nil}}, nil
+	}
+	f.createTopic = func(r *kafka.CreateTopicsRequest) (*kafka.CreateTopicsResponse, error) {
+		if len(r.Topics) != 1 {
+			t.Fatal("wrong create payload", r.Topics)
+		}
+		cfg := r.Topics[0]
+		if cfg.Topic != "orders" || cfg.NumPartitions != 3 || cfg.ReplicationFactor != 2 {
+			t.Fatalf("wrong shape %+v", cfg)
+		}
+		created = true
+		return &kafka.CreateTopicsResponse{Errors: map[string]error{"orders": nil}}, nil
+	}
+	alters := []string{}
+	f.alter = func(r *kafka.IncrementalAlterConfigsRequest) (*kafka.IncrementalAlterConfigsResponse, error) {
+		alters = append(alters, r.Resources[0].Configs[0].Name)
+		return &kafka.IncrementalAlterConfigsResponse{Resources: []kafka.IncrementalAlterConfigsResponseResource{{}}}, nil
+	}
+	v, e := kafkaClearTopic(context.Background(), f, "orders")
+	if e != nil || !deleted || !created {
+		t.Fatal(v, e)
+	}
+	result, ok := v.(kafkaClearResult)
+	if !ok || result.Partitions != 3 || result.ReplicationFactor != 2 || result.RestoredConfigs != 1 || len(alters) != 1 || alters[0] != "retention.ms" {
+		t.Fatalf("bad clear result %+v %v", v, alters)
+	}
+}
+
+func TestKafkaClearTopicRejectsInternalAndReportsRebuildFailure(t *testing.T) {
+	f := basicTopicFake()
+	f.metadata = func(*kafka.MetadataRequest) (*kafka.MetadataResponse, error) {
+		return &kafka.MetadataResponse{Topics: []kafka.Topic{{Name: "__consumer_offsets", Internal: true, Partitions: []kafka.Partition{{ID: 0, Replicas: []kafka.Broker{{ID: 1}}}}}}}, nil
+	}
+	if _, e := kafkaClearTopic(context.Background(), f, "__consumer_offsets"); e == nil {
+		t.Fatal("internal topic cleared")
+	}
+	reads := 0
+	f.metadata = func(*kafka.MetadataRequest) (*kafka.MetadataResponse, error) {
+		reads++
+		if reads == 1 {
+			return &kafka.MetadataResponse{Topics: []kafka.Topic{{Name: "orders", Partitions: []kafka.Partition{{ID: 0, Replicas: []kafka.Broker{{ID: 1}}}}}}}, nil
+		}
+		return &kafka.MetadataResponse{Topics: []kafka.Topic{{Name: "orders", Error: kafka.UnknownTopicOrPartition}}}, nil
+	}
+	f.configs = func(*kafka.DescribeConfigsRequest) (*kafka.DescribeConfigsResponse, error) {
+		return &kafka.DescribeConfigsResponse{Resources: []kafka.DescribeConfigResponseResource{{}}}, nil
+	}
+	f.deleteTopic = func(*kafka.DeleteTopicsRequest) (*kafka.DeleteTopicsResponse, error) {
+		return &kafka.DeleteTopicsResponse{Errors: map[string]error{"orders": nil}}, nil
+	}
+	f.createTopic = func(*kafka.CreateTopicsRequest) (*kafka.CreateTopicsResponse, error) {
+		return &kafka.CreateTopicsResponse{Errors: map[string]error{"orders": kafka.TopicAuthorizationFailed}}, nil
+	}
+	if _, e := kafkaClearTopic(context.Background(), f, "orders"); e == nil || !strings.Contains(e.Error(), "重建失败") {
+		t.Fatal("rebuild failure hidden", e)
 	}
 }

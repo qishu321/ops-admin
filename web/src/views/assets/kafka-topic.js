@@ -10,3 +10,15 @@ export function kafkaPayload(value, pretty = false) {
  return value.text ?? ''
 }
 export const kafkaConfigSource = source => ({0:'未知',1:'Topic 配置',2:'动态 Broker 配置',3:'动态默认 Broker 配置',4:'Broker 配置',5:'默认配置',6:'动态 Broker Logger 配置'})[source] || '未知'
+// 消息面板展示用：编码名称、字节数、行标识。
+export const kafkaEncodingLabel = encoding => encoding === 'base64' ? 'Base64' : encoding === 'utf8' || !encoding ? 'UTF-8' : String(encoding)
+export function kafkaByteSize(value) {
+ if (value === null || value === undefined || value === '') return '—'
+ const n = Number(value)
+ if (!Number.isFinite(n) || n < 0) return '—'
+ if (n < 1024) return `${n} B`
+ if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+ return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+export const kafkaMessageId = message => `${message?.partition ?? 0}:${message?.offset ?? ''}`
+

@@ -1066,7 +1066,7 @@ func (ctl *Controller) GetAssetCredentialList(c *gin.Context) {
 }
 
 func (ctl *Controller) GetAssetCredentialOptions(c *gin.Context) {
-	data, err := ctl.service.ListAssetCredentialOptions()
+	data, err := ctl.service.ListAssetCredentialOptions(c.Query("authType"))
 	if err != nil {
 		httpx.Failed(c, 500, err.Error())
 		return

@@ -26,6 +26,8 @@ type kafkaTopicAPI interface {
 	DescribeConfigs(context.Context, *kafka.DescribeConfigsRequest) (*kafka.DescribeConfigsResponse, error)
 	IncrementalAlterConfigs(context.Context, *kafka.IncrementalAlterConfigsRequest) (*kafka.IncrementalAlterConfigsResponse, error)
 	CreatePartitions(context.Context, *kafka.CreatePartitionsRequest) (*kafka.CreatePartitionsResponse, error)
+	CreateTopics(context.Context, *kafka.CreateTopicsRequest) (*kafka.CreateTopicsResponse, error)
+	DeleteTopics(context.Context, *kafka.DeleteTopicsRequest) (*kafka.DeleteTopicsResponse, error)
 	ListGroups(context.Context, *kafka.ListGroupsRequest) (*kafka.ListGroupsResponse, error)
 	DescribeGroups(context.Context, *kafka.DescribeGroupsRequest) (*kafka.DescribeGroupsResponse, error)
 	OffsetFetch(context.Context, *kafka.OffsetFetchRequest) (*kafka.OffsetFetchResponse, error)
@@ -184,6 +186,8 @@ func runKafkaTopic(ctx context.Context, c kafkaTopicAPI, r MiddlewareOperation) 
 			}
 		}
 		return true, nil
+	case "topic.clear":
+		return kafkaClearTopic(ctx, c, name)
 	case "topic.partitions":
 		n, e := middlewareInt(p, "partitions", 0, 1, 10000)
 		if e != nil {
@@ -245,6 +249,106 @@ func kafkaConfigs(ctx context.Context, c kafkaTopicAPI, name string) ([]kafkaTop
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	return rows, nil
+}
+
+type kafkaClearResult struct {
+	Partitions        int      `json:"partitions"`
+	ReplicationFactor int      `json:"replicationFactor"`
+	RestoredConfigs   int      `json:"restoredConfigs"`
+	Warnings          []string `json:"warnings"`
+}
+
+// Kafka 没有清空 Topic 的原子接口：这里用「删除 + 按原分区数与副本因子重建」实现，
+// 重建后重新写入原有的 Topic 级配置覆盖值。消息与消费位点都会随之失效。
+func kafkaClearTopic(ctx context.Context, c kafkaTopicAPI, name string) (any, error) {
+	topic, e := kafkaTopicMetadata(ctx, c, name)
+	if e != nil {
+		return nil, e
+	}
+	if topic.Internal {
+		return nil, errors.New("内部 Topic 由集群自身维护，不能清空")
+	}
+	if len(topic.Partitions) == 0 {
+		return nil, errors.New("Topic 没有可读取的分区，无法清空")
+	}
+	partitions := len(topic.Partitions)
+	replication := len(topic.Partitions[0].Replicas)
+	if replication < 1 {
+		replication = 1
+	}
+	configs, e := kafkaConfigs(ctx, c, name)
+	if e != nil {
+		return nil, e
+	}
+	overrides := []kafkaTopicConfig{}
+	for _, cfg := range configs {
+		// ConfigSource 1 表示 Topic 级覆盖值；只读、敏感项不写回。
+		if cfg.Source == 1 && !cfg.ReadOnly && !cfg.Sensitive && strings.TrimSpace(cfg.Value) != "" {
+			overrides = append(overrides, cfg)
+		}
+	}
+
+	deleted, e := c.DeleteTopics(ctx, &kafka.DeleteTopicsRequest{Topics: []string{name}})
+	if e != nil {
+		return nil, fmt.Errorf("提交 Topic 删除失败：%w", e)
+	}
+	if err := deleted.Errors[name]; err != nil {
+		return nil, fmt.Errorf("删除 Topic 失败：%w", err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		md, err := c.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{name}})
+		gone := err != nil
+		if err == nil {
+			gone = true
+			for _, t := range md.Topics {
+				if t.Name == name && t.Error == nil {
+					gone = false
+				}
+			}
+		}
+		if gone {
+			break
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("Topic 已提交删除，但 30 秒内 Broker 仍未完成，请稍后检查 Topic 状态")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	created, e := c.CreateTopics(ctx, &kafka.CreateTopicsRequest{Topics: []kafka.TopicConfig{{Topic: name, NumPartitions: partitions, ReplicationFactor: replication}}})
+	if e != nil {
+		return nil, fmt.Errorf("Topic 已删除，但重建失败：%w", e)
+	}
+	if err := created.Errors[name]; err != nil {
+		return nil, fmt.Errorf("Topic 已删除，但重建失败：%w", err)
+	}
+
+	result := kafkaClearResult{Partitions: partitions, ReplicationFactor: replication, Warnings: []string{}}
+	for _, cfg := range overrides {
+		v, err := c.IncrementalAlterConfigs(ctx, &kafka.IncrementalAlterConfigsRequest{Resources: []kafka.IncrementalAlterConfigsRequestResource{{ResourceType: kafka.ResourceTypeTopic, ResourceName: name, Configs: []kafka.IncrementalAlterConfigsRequestConfig{{Name: cfg.Name, Value: cfg.Value, ConfigOperation: kafka.ConfigOperationSet}}}}})
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("恢复配置 %s 失败：%v", cfg.Name, err))
+			continue
+		}
+		restored := false
+		for _, res := range v.Resources {
+			if res.Error != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("恢复配置 %s 失败：%v", cfg.Name, res.Error))
+				continue
+			}
+			restored = true
+		}
+		if restored {
+			result.RestoredConfigs++
+		}
+	}
+	return result, nil
 }
 
 type kafkaMessageBytes struct {

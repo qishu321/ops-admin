@@ -48,7 +48,7 @@ export const updateAssetHostGroup = (data) => http.put('/api/v1/asset/hostGroup/
 export const deleteAssetHostGroup = (id) => http.delete('/api/v1/asset/hostGroup/delete', { data: { id } })
 
 export const queryAssetCredentialList = (params) => http.get('/api/v1/asset/credential/list', { params })
-export const queryAssetCredentialOptions = () => http.get('/api/v1/asset/credential/options')
+export const queryAssetCredentialOptions = (authType = '') => http.get('/api/v1/asset/credential/options', { params: authType ? { authType } : {} })
 export const queryAssetSyncData = () => http.get('/api/v1/asset/sync/data')
 export const queryAssetSyncHostOptions = (keyword) => http.get('/api/v1/asset/sync/hosts', { params: { keyword } })
 export const saveAssetSyncSource = (data) => http.post('/api/v1/asset/sync/source', data)

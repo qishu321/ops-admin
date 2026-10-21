@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"ops-admin/backend/internal/access"
 	"ops-admin/backend/model"
 
 	"golang.org/x/crypto/ssh"
@@ -732,6 +733,9 @@ func (s *Service) RetryFailedOpsExecTask(payload OpsExecRetryPayload) (map[strin
 	if err := s.db.First(&task, payload.TaskID).Error; err != nil {
 		return nil, err
 	}
+	if p := s.resourcePolicy(); p != nil && !p.Has("ops:quickexec:"+task.TaskType+":execute") {
+		return nil, access.ErrDenied
+	}
 	if task.Status == "running" {
 		return nil, errors.New("任务仍在执行中，暂不能重试")
 	}
@@ -772,6 +776,9 @@ func opsTaskTitle(title string, fallback string) string {
 }
 
 func (s *Service) resolveOpsTargetHosts(hostIDs []uint, groupIDs []uint) ([]model.AssetHost, error) {
+	if err := s.authorizeOpsTargets(hostIDs, groupIDs); err != nil {
+		return nil, err
+	}
 	if len(hostIDs) > 0 && len(groupIDs) > 0 {
 		return nil, errors.New("目标主机和主机组只能二选一")
 	}
@@ -1189,6 +1196,10 @@ func (s *Service) readRemoteFile(hostID uint, sourcePath string) (*model.AssetHo
 // storage once, so a one-to-many dispatch never retains the whole payload in
 // memory or re-reads it once per target.
 func (s *Service) stageRemoteFile(hostID uint, sourcePath string) (*model.AssetHost, string, error) {
+	s = s.withResourceOperation("host", "download")
+	if err := s.requireResource("host", hostID, "", "download"); err != nil {
+		return nil, "", err
+	}
 	var host model.AssetHost
 	if err := s.db.Preload("Credential").Preload("Gateway").Preload("Gateway.Credential").First(&host, hostID).Error; err != nil {
 		return nil, "", err

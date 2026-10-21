@@ -20,7 +20,7 @@ func IsGlobalReadOnlyMenu(menu Menu) bool {
 		return false
 	}
 	switch menu.Value {
-	case "system", "logs",
+	case "system", "logs", "system:usergroup:list", "system:resourcegrant:list",
 		"assets:terminal", "assets:credential:list", "assets:cloudaccount:list", "assets:gateway:list", "assets:sync:list",
 		"assets:database:workbench", "assets:database:import", "assets:database:backup",
 		"ops:quickexec:command", "ops:quickexec:script", "ops:quickexec:file", "ops:job:approval",

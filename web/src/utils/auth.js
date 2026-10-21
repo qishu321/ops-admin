@@ -1,3 +1,5 @@
+import { PERMISSIONS_CHANGED_EVENT } from './permission-directive'
+
 const TOKEN_KEY = 'ops-admin-token'
 const USER_KEY = 'ops-admin-user'
 const MENU_KEY = 'ops-admin-menus'
@@ -136,7 +138,12 @@ export function clearMenus() {
 }
 
 export function setPermissions(permissions) {
-  writeSessionItem(PERMISSION_KEY, JSON.stringify(permissions || []))
+  const previous = JSON.stringify([...getPermissions()].sort())
+  const next = [...(permissions || [])]
+  writeSessionItem(PERMISSION_KEY, JSON.stringify(next))
+  if (previous !== JSON.stringify([...next].sort()) && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PERMISSIONS_CHANGED_EVENT))
+  }
 }
 
 export function getPermissions() {

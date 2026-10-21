@@ -18,9 +18,8 @@ type LDAPConfig struct {
 	DisplayAttribute   string    `json:"displayAttribute" gorm:"size:64;default:'displayName'"`
 	EmailAttribute     string    `json:"emailAttribute" gorm:"size:64;default:'mail'"`
 	PhoneAttribute     string    `json:"phoneAttribute" gorm:"size:64;default:'mobile'"`
+	DefaultGroupIDs    []uint    `json:"defaultGroupIds" gorm:"serializer:json;type:text"`
 	DefaultRoleID      uint      `json:"defaultRoleId"`
-	DefaultDeptID      uint      `json:"defaultDeptId"`
-	DefaultPostID      uint      `json:"defaultPostId"`
 	CreatedAt          time.Time `json:"createTime"`
 	UpdatedAt          time.Time `json:"updateTime"`
 }

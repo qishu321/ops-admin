@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useAccessRefresh } from '../../composables/useAccessRefresh'
 import { useRoute, useRouter } from 'vue-router'
 import { Connection, Grid, Histogram, Monitor, Promotion, SetUp } from '@element-plus/icons-vue'
 import K8sConsoleLayout from './k8s/K8sConsoleLayout.vue'
@@ -1126,46 +1127,55 @@ function supportsRestart(row) {
   return ['Deployment', 'StatefulSet', 'DaemonSet'].includes(row.type)
 }
 
+let clusterListVersion = 0
+let clusterDataVersion = 0
+
+function clearClusterData() {
+  cluster.value = null
+  overview.value = null
+  for (const data of [nodes, namespaces, pods, workloads, services, ingresses, ingressClasses, gatewayApiGateways, httpRoutes, configMaps, secrets, storages, selectedWorkloads]) data.value = []
+  Object.keys(workloadImageMap).forEach(key => delete workloadImageMap[key])
+}
+
 async function loadClusters(preferId) {
-  clusterOptions.value = await queryK8sClusterList()
+  const version = ++clusterListVersion
+  ++clusterDataVersion
+  loading.value = true
+  let options
+  try {
+    options = await queryK8sClusterList()
+  } catch (error) {
+    if (version === clusterListVersion) { clusterOptions.value = []; clearClusterData(); loading.value = false }
+    throw error
+  }
+  if (version !== clusterListVersion) return
+  clusterOptions.value = options || []
   if (!clusterOptions.value.length) {
-    cluster.value = null
-    overview.value = null
-    nodes.value = []
-    namespaces.value = []
-    pods.value = []
-    workloads.value = []
-      services.value = []
-      ingresses.value = []
-	  ingressClasses.value = []
-      gatewayApiGateways.value = []
-      httpRoutes.value = []
-      configMaps.value = []
-    secrets.value = []
-    storages.value = []
+    clearClusterData()
+    loading.value = false
     namespaceFilter.value = '__all__'
     localStorage.removeItem(CLUSTER_KEY)
     localStorage.removeItem(NAMESPACE_FILTER_KEY)
     return
   }
-
   const storedId = Number(localStorage.getItem(CLUSTER_KEY))
-  const target =
-    clusterOptions.value.find((item) => item.id === preferId) ||
-    clusterOptions.value.find((item) => item.id === storedId) ||
-    clusterOptions.value[0]
-
-  if (target) {
-    await loadClusterData(target.id)
+  const target = clusterOptions.value.find(item => item.id === Number(preferId)) ||
+    clusterOptions.value.find(item => item.id === storedId) || clusterOptions.value[0]
+  try {
+    if (target) await loadClusterData(target.id)
+  } finally {
+    if (version === clusterListVersion) loading.value = false
   }
 }
 
 async function loadClusterData(clusterId, fresh = false) {
+  const version = ++clusterDataVersion
   loading.value = true
   try {
-    Object.keys(workloadImageMap).forEach((key) => delete workloadImageMap[key])
+    Object.keys(workloadImageMap).forEach(key => delete workloadImageMap[key])
     selectedWorkloads.value = []
     const data = await queryK8sClusterOverview(clusterId, fresh)
+    if (version !== clusterDataVersion) return
     cluster.value = data.cluster
     overview.value = data.overview
     nodes.value = data.nodes || []
@@ -1174,7 +1184,7 @@ async function loadClusterData(clusterId, fresh = false) {
     workloads.value = data.workloads || []
     services.value = data.network?.services || []
     ingresses.value = data.network?.ingresses || []
-	  ingressClasses.value = data.network?.ingressClasses || []
+    ingressClasses.value = data.network?.ingressClasses || []
     gatewayApiGateways.value = data.advancedNetwork?.gatewayApiGateways || []
     httpRoutes.value = data.advancedNetwork?.httpRoutes || []
     configMaps.value = data.configStorage?.configMaps || []
@@ -1183,8 +1193,11 @@ async function loadClusterData(clusterId, fresh = false) {
     restoreNamespaceFilter()
     localStorage.setItem(CLUSTER_KEY, String(clusterId))
     void hydrateWorkloadImages()
+  } catch (error) {
+    if (version === clusterDataVersion) clearClusterData()
+    throw error
   } finally {
-    loading.value = false
+    if (version === clusterDataVersion) loading.value = false
   }
 }
 
@@ -3643,8 +3656,19 @@ const page = reactive({
 })
 
 onMounted(async () => {
-  await loadClusters()
+  await loadClusters(Number(route.query.clusterId))
 })
+useAccessRefresh(async () => {
+  const preferred = cluster.value?.id || Number(route.query.clusterId)
+  ++clusterDataVersion
+  clearClusterData()
+  monitorLoadSequence++
+  monitorCache.clear()
+  monitorCharts.value = []
+  for (const visible of [nodeDrawerVisible, namespaceDrawerVisible, workloadDrawerVisible, podDrawerVisible, podLogDrawerVisible, serviceDrawerVisible, ingressDrawerVisible, istioDrawerVisible, configMapDrawerVisible, secretDrawerVisible, storageDrawerVisible, monitorNodeDrawerVisible]) visible.value = false
+  await loadClusters(preferred)
+})
+watch(() => route.query.clusterId, id => { if (Number(id)>0) void loadClusters(Number(id)) })
 
 watch(
   () => [currentTab.value, namespaceFilter.value, resourceKeyword.value, workloadTypeFilter.value, workloads.value.length],

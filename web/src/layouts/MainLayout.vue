@@ -5,6 +5,7 @@ import { ArrowDown, Check, Expand, Fold, Grid, House, Search } from '@element-pl
 import { logoutSession, profile } from '../api/system'
 import {
   getMenus,
+  getToken,
   getSidebarCollapsed,
   getUser,
   logout,
@@ -13,6 +14,7 @@ import {
   setSidebarCollapsed,
   setUser
 } from '../utils/auth'
+import { ACCESS_CHANGED_EVENT, createAccessSynchronizer } from '../utils/access-sync'
 import { appDefinitions, getAppByRoute, setCurrentApp } from '../utils/apps'
 import { locale, setLocale, t, translateRoute } from '../utils/i18n'
 import { applySystemTheme, getSystemConfig, resolveSystemAsset, setSystemConfig } from '../utils/system-config'
@@ -494,36 +496,36 @@ function switchApp(key) {
   }
 }
 
-async function syncProfile() {
-  try {
-    const data = await profile()
-    if (data?.user) {
-      setUser(data.user)
-      user.value = data.user
-    }
-    if (data?.leftMenuList) {
-      setMenus(data.leftMenuList)
-      rawMenus.value = data.leftMenuList
-    }
-    if (data?.permissionList) {
-      setPermissions(data.permissionList)
-    }
+const profileSync = createAccessSynchronizer({
+  getIdentity: getToken,
+  loadProfile: () => profile({ silent: true }),
+  applyProfile(data) {
+    if (data?.user) { setUser(data.user); user.value = data.user }
+    if (data?.leftMenuList) { setMenus(data.leftMenuList); rawMenus.value = data.leftMenuList }
+    if (data?.permissionList) setPermissions(data.permissionList)
     if (data?.systemConfig) {
       setSystemConfig(data.systemConfig)
       layoutConfig.value = data.systemConfig
       applySystemTheme(data.systemConfig)
     }
-  } catch {
+  },
+  onChanged(detail) { window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT, { detail })) }
+})
+let profileSyncTimer
+async function syncProfile() {
+  try { await profileSync.sync() } catch {
     rawMenus.value = getMenus()
     user.value = getUser()
-    layoutConfig.value = getSystemConfig()
-    applySystemTheme(layoutConfig.value)
   }
+}
+function syncVisibleProfile() {
+  if (document.visibilityState === 'visible') syncProfile()
 }
 
 watch(
   () => route.fullPath,
   () => {
+    syncProfile()
     closeTagContextMenu()
     setCurrentApp(currentApp.value.key)
     ensureTag(route.path, currentTitle.value, route.fullPath)
@@ -545,11 +547,18 @@ watch(
 onMounted(() => {
   applySystemTheme(layoutConfig.value)
   syncProfile()
+  profileSyncTimer = window.setInterval(syncVisibleProfile, 15000)
+  window.addEventListener('focus', syncVisibleProfile)
+  document.addEventListener('visibilitychange', syncVisibleProfile)
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('ops-admin:close-tab-request', closeRequestedTag)
 })
 
 onBeforeUnmount(() => {
+  profileSync.dispose()
+  window.clearInterval(profileSyncTimer)
+  window.removeEventListener('focus', syncVisibleProfile)
+  document.removeEventListener('visibilitychange', syncVisibleProfile)
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('ops-admin:close-tab-request', closeRequestedTag)
 })

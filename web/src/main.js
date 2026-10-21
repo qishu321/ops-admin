@@ -7,6 +7,7 @@ import App from './App.vue'
 import router from './router'
 import './style.css'
 import { getPermissions } from './utils/auth'
+import { createPermissionDirective } from './utils/permission-directive'
 import { applySystemTheme, getSystemConfig } from './utils/system-config'
 
 const app = createApp(App)
@@ -17,17 +18,7 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
 
-app.directive('permission', {
-  mounted(el, binding) {
-    const permissions = getPermissions()
-    const value = binding.value
-    const required = Array.isArray(value) ? value : [value]
-    const hasPermission = required.some((item) => permissions.includes(item))
-    if (!hasPermission) {
-      el.parentNode?.removeChild(el)
-    }
-  }
-})
+app.directive('permission', createPermissionDirective(getPermissions))
 
 app.use(router)
 app.use(ElementPlus)

@@ -829,6 +829,11 @@ func (s *Service) ExecuteDatabaseSQL(payload DBMSSQLExecutePayload) (map[string]
 	if err != nil {
 		return nil, err
 	}
+	if analysis.WriteOperation {
+		if err := s.requireResource("database", payload.DatabaseID, "", "write"); err != nil {
+			return nil, err
+		}
+	}
 	if analysis.WriteOperation && analysis.AccessMode == "readonly" {
 		return nil, errors.New("当前数据库为只读模式，禁止执行写入或结构变更 SQL")
 	}
@@ -859,7 +864,8 @@ func (s *Service) ExecuteDatabaseSQL(payload DBMSSQLExecutePayload) (map[string]
 	}
 
 	if isQuerySQL(sqlType) {
-		rows, err := db.Query(trimmedSQL)
+		rows, releaseQuery, err := s.queryDatabaseSQLRows(db, payload.DatabaseID, trimmedSQL)
+		defer releaseQuery()
 		durationMs := time.Since(start).Milliseconds()
 		if err != nil {
 			history.Status = 2
@@ -1271,7 +1277,7 @@ func (s *Service) ImportDatabaseTable(payload DBMSImportPayload) (map[string]any
 	if strings.TrimSpace(payload.SourceTable) == "" {
 		return nil, errors.New("请选择源表")
 	}
-	sourceAsset, sourceDB, sourceCleanup, err := s.openDatabaseByID(payload.SourceDatabaseID, payload.SourceSchema)
+	sourceAsset, sourceDB, sourceCleanup, err := s.withResourceOperation("database", "export").openDatabaseByID(payload.SourceDatabaseID, payload.SourceSchema)
 	if err != nil {
 		return nil, err
 	}
@@ -1450,7 +1456,7 @@ func (s *Service) CreateImportTask(payload DBMSImportPayload) (map[string]any, e
 	if !precheck.Ready {
 		return nil, errors.New("导入预检查未通过，请处理风险项后重试")
 	}
-	sourceAsset, err := s.getAssetDatabase(payload.SourceDatabaseID)
+	sourceAsset, err := s.withResourceOperation("database", "export").getAssetDatabase(payload.SourceDatabaseID)
 	if err != nil {
 		return nil, err
 	}
@@ -1488,7 +1494,7 @@ func (s *Service) PrecheckImportTask(payload DBMSImportPayload) (*DBMSImportPrec
 	if payload.SourceDatabaseID == 0 || payload.TargetDatabaseID == 0 || strings.TrimSpace(payload.SourceTable) == "" {
 		return nil, errors.New("请选择源数据库、源表和目标数据库")
 	}
-	sourceAsset, sourceDB, sourceCleanup, err := s.openDatabaseByID(payload.SourceDatabaseID, payload.SourceSchema)
+	sourceAsset, sourceDB, sourceCleanup, err := s.withResourceOperation("database", "export").openDatabaseByID(payload.SourceDatabaseID, payload.SourceSchema)
 	if err != nil {
 		return nil, err
 	}
@@ -1770,6 +1776,9 @@ func (s *Service) GetTransferTaskFile(taskID uint) ([]byte, string, error) {
 }
 
 func (s *Service) getAssetDatabase(id uint) (*model.AssetDatabase, error) {
+	if err := s.requireResource("database", id, "", s.resourceAction("database", "query")); err != nil {
+		return nil, err
+	}
 	var item model.AssetDatabase
 	if err := s.db.Preload("Gateway").Preload("Gateway.Credential").First(&item, id).Error; err != nil {
 		return nil, err

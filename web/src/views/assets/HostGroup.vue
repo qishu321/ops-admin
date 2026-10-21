@@ -1,4 +1,5 @@
 <script setup>
+import { useAccessRefresh } from '../../composables/useAccessRefresh'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -70,13 +71,18 @@ function filterTree(nodes = [], excludeId) {
     }))
 }
 
+let treeVersion = 0
 async function loadData() {
+  const version = ++treeVersion
   loading.value = true
   try {
     const data = await queryAssetHostGroupList(query)
-    treeData.value = data.tree || []
+    if (version === treeVersion) treeData.value = data.tree || []
+  } catch (error) {
+    if (version === treeVersion) treeData.value = []
+    throw error
   } finally {
-    loading.value = false
+    if (version === treeVersion) loading.value = false
   }
 }
 
@@ -143,6 +149,7 @@ function openGroupHosts(row) {
 }
 
 onMounted(loadData)
+useAccessRefresh(async () => { treeData.value = []; await loadData() })
 </script>
 
 <template>

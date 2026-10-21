@@ -109,8 +109,6 @@ onMounted(loadProfile)
         <p>@{{ currentUser.username || 'admin' }}</p>
         <div class="profile-tags">
           <span>{{ translateEntity(currentUser.roleName, t('superAdmin')) }}</span>
-          <span>{{ translateEntity(currentUser.deptName, t('noDept')) }}</span>
-          <span>{{ translateEntity(currentUser.postName, t('noPost')) }}</span>
         </div>
       </div>
       <div class="profile-actions">
@@ -127,8 +125,6 @@ onMounted(loadProfile)
           <el-descriptions-item :label="t('nickname')">{{ currentUser.nickname || '-' }}</el-descriptions-item>
           <el-descriptions-item :label="t('email')">{{ currentUser.email || '-' }}</el-descriptions-item>
           <el-descriptions-item :label="t('phone')">{{ currentUser.phone || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="部门">{{ translateEntity(currentUser.deptName, '-') }}</el-descriptions-item>
-          <el-descriptions-item label="岗位">{{ translateEntity(currentUser.postName, '-') }}</el-descriptions-item>
           <el-descriptions-item label="角色">{{ translateEntity(currentUser.roleName, '-') }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ currentUser.status === 1 ? '启用' : '停用' }}</el-descriptions-item>
         </el-descriptions>

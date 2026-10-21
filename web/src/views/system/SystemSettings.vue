@@ -1,15 +1,18 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import BasicConfig from './BasicConfig.vue'
-import { getLDAPConfig, queryDeptList, querySysPostVoList, querySysRoleVoList, saveLDAPConfig, testLDAPConfig } from '../../api/system'
+import Menu from './Menu.vue'
+import { useRoute, useRouter } from 'vue-router'
+import { getResourceAccessData } from '../../api/resource-access'
+const route = useRoute(), router = useRouter()
+const activeTab = computed({ get: () => ['general', 'ldap', 'advanced'].includes(route.query.tab) ? route.query.tab : 'general', set: tab => router.replace({ query: { ...route.query, tab } }) })
+import { getLDAPConfig, saveLDAPConfig, testLDAPConfig } from '../../api/system'
 
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
-const roles = ref([])
-const depts = ref([])
-const posts = ref([])
+const groups = ref([])
 const passwordConfigured = ref(false)
 
 const form = reactive({
@@ -26,21 +29,18 @@ const form = reactive({
   emailAttribute: 'mail',
   phoneAttribute: 'mobile',
   defaultRoleId: undefined,
-  defaultDeptId: undefined,
-  defaultPostId: undefined
+  defaultGroupIds: []
 })
 
 async function loadData() {
   loading.value = true
   try {
-    const [config, roleData, deptData, postData] = await Promise.all([
-      getLDAPConfig(), querySysRoleVoList(), queryDeptList(), querySysPostVoList()
+    const [config, accessData] = await Promise.all([
+      getLDAPConfig(), getResourceAccessData()
     ])
     Object.assign(form, config || {}, { bindPassword: '' })
     passwordConfigured.value = Boolean(config?.bindPasswordSet)
-    roles.value = roleData || []
-    depts.value = deptData || []
-    posts.value = postData || []
+    groups.value = accessData.groups || []
   } finally {
     loading.value = false
   }
@@ -80,11 +80,11 @@ onMounted(loadData)
       </div>
     </div>
 
-    <el-tabs class="settings-tabs">
-      <el-tab-pane label="通用设置">
+    <el-tabs v-model="activeTab" class="settings-tabs">
+      <el-tab-pane label="通用设置" name="general" lazy>
         <BasicConfig />
       </el-tab-pane>
-      <el-tab-pane label="LDAP 认证集成">
+      <el-tab-pane label="LDAP 认证集成" name="ldap" lazy>
         <section class="ldap-card">
           <div class="section-head">
             <div>
@@ -134,21 +134,10 @@ onMounted(loadData)
 
             <el-divider content-position="left">同步默认归属</el-divider>
             <div class="form-grid">
-              <el-form-item label="默认角色" required>
-                <el-select v-model="form.defaultRoleId" clearable placeholder="新增 LDAP 用户时必选" style="width:100%">
-                  <el-option v-for="item in roles" :key="item.id" :label="item.roleName" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="默认部门">
-                <el-select v-model="form.defaultDeptId" clearable placeholder="可选" style="width:100%">
-                  <el-option v-for="item in depts" :key="item.id" :label="item.deptName" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="默认岗位">
-                <el-select v-model="form.defaultPostId" clearable placeholder="可选" style="width:100%">
-                  <el-option v-for="item in posts" :key="item.id" :label="item.postName" :value="item.id" />
-                </el-select>
-              </el-form-item>
+              <el-form-item label="默认用户组">
+ <el-select v-model="form.defaultGroupIds" multiple filterable placeholder="可选：新增用户自动加入所选组" style="width:100%"><el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" /></el-select>
+ </el-form-item>
+ <p class="ldap-default-note">新账号按普通成员创建，并继承所选用户组的访问策略。已有 LDAP 默认角色配置和已同步账号的权限会保留。</p>
               <el-form-item label="证书校验">
                 <el-switch v-model="form.insecureSkipVerify" active-text="跳过校验" inactive-text="校验证书" />
               </el-form-item>
@@ -161,12 +150,13 @@ onMounted(loadData)
           </div>
         </section>
       </el-tab-pane>
+      <el-tab-pane label="高级设置" name="advanced" lazy><div class="advanced-note"><h3>菜单维护</h3><p>维护页面路由、菜单层级与权限标识，仅平台管理员可操作。日常资源授权请使用访问策略。</p></div><Menu /></el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <style scoped>
-.settings-page { min-height: 100%; }
+.advanced-note{padding:20px 24px;background:#f4f7fc;border:1px solid #e3e8f0;border-radius:12px;margin-bottom:20px}.advanced-note h3{margin:0 0 8px}.advanced-note p,.ldap-default-note{font-size:13px;color:#718098;line-height:1.7}.settings-page { min-height: 100%; }
 .settings-head { margin-bottom: 16px; }
 .settings-head h2 { margin: 0; font-size: 28px; color: #14213d; }
 .settings-head p { margin: 8px 0 0; color: #75829a; }

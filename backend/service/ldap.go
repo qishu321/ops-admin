@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -28,9 +29,8 @@ type LDAPConfigPayload struct {
 	DisplayAttribute   string `json:"displayAttribute"`
 	EmailAttribute     string `json:"emailAttribute"`
 	PhoneAttribute     string `json:"phoneAttribute"`
+	DefaultGroupIDs    []uint `json:"defaultGroupIds" gorm:"serializer:json;type:text"`
 	DefaultRoleID      uint   `json:"defaultRoleId"`
-	DefaultDeptID      uint   `json:"defaultDeptId"`
-	DefaultPostID      uint   `json:"defaultPostId"`
 }
 
 type LDAPUser struct {
@@ -82,16 +82,29 @@ func (s *Service) SaveLDAPConfig(payload LDAPConfigPayload) (map[string]any, err
 	if payload.Enabled && (payload.ServerURL == "" || payload.BaseDN == "" || payload.UsernameAttribute == "") {
 		return nil, errors.New("启用 LDAP 前请填写服务地址、Base DN 和用户名属性")
 	}
-	if payload.Enabled && payload.DefaultRoleID == 0 {
-		return nil, errors.New("启用 LDAP 前请指定新增用户的默认角色")
+	if payload.DefaultRoleID == 0 {
+		payload.DefaultRoleID, err = memberRole(s.db)
+		if err != nil {
+			return nil, err
+		}
 	}
+	var groupCount int64
+	payload.DefaultGroupIDs = uniqueIDs(payload.DefaultGroupIDs)
+	if len(payload.DefaultGroupIDs) > 0 {
+		if err = s.db.Model(&model.UserGroup{}).Where("id IN ?", payload.DefaultGroupIDs).Count(&groupCount).Error; err != nil {
+			return nil, err
+		}
+		if int64(len(payload.DefaultGroupIDs)) != groupCount {
+			return nil, errors.New("默认用户组不存在")
+		}
+	}
+	encodedGroups, _ := json.Marshal(payload.DefaultGroupIDs)
 	updates := map[string]any{
-		"enabled": payload.Enabled, "server_url": payload.ServerURL, "tls_mode": payload.TLSMode,
+		"default_group_ids": string(encodedGroups), "enabled": payload.Enabled, "server_url": payload.ServerURL, "tls_mode": payload.TLSMode,
 		"insecure_skip_verify": payload.InsecureSkipVerify, "bind_dn": payload.BindDN, "base_dn": payload.BaseDN,
 		"user_filter": payload.UserFilter, "username_attribute": payload.UsernameAttribute,
 		"display_attribute": payload.DisplayAttribute, "email_attribute": payload.EmailAttribute,
 		"phone_attribute": payload.PhoneAttribute, "default_role_id": payload.DefaultRoleID,
-		"default_dept_id": payload.DefaultDeptID, "default_post_id": payload.DefaultPostID,
 	}
 	if payload.BindPassword != "" {
 		updates["bind_password"] = payload.BindPassword
@@ -139,7 +152,10 @@ func (s *Service) SyncLDAPUsers(payload LDAPSyncPayload) (map[string]int, error)
 		return nil, errors.New("请先在系统设置中启用 LDAP 集成")
 	}
 	if cfg.DefaultRoleID == 0 {
-		return nil, errors.New("请先在系统设置中指定 LDAP 用户的默认角色")
+		cfg.DefaultRoleID, err = memberRole(s.db)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var role model.Role
 	if err := s.db.Where("id = ? AND status = ?", cfg.DefaultRoleID, 1).First(&role).Error; err != nil {
@@ -168,7 +184,7 @@ func (s *Service) SyncLDAPUsers(payload LDAPSyncPayload) (map[string]int, error)
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				admin = model.Admin{
 					Username: user.Username, Nickname: firstNonEmpty(user.Nickname, user.Username), Email: user.Email, Phone: user.Phone,
-					DeptID: cfg.DefaultDeptID, PostID: cfg.DefaultPostID, Status: 1,
+					Status:   1,
 					Password: util.HashPassword(fmt.Sprintf("ldap-sync:%s:%d", user.Username, time.Now().UnixNano())),
 				}
 				if createErr := tx.Create(&admin).Error; createErr != nil {
@@ -176,6 +192,9 @@ func (s *Service) SyncLDAPUsers(payload LDAPSyncPayload) (map[string]int, error)
 				}
 				if createErr := tx.Create(&model.AdminRole{AdminID: admin.ID, RoleID: cfg.DefaultRoleID}).Error; createErr != nil {
 					return createErr
+				}
+				if err := replaceUserGroups(tx, admin.ID, &cfg.DefaultGroupIDs); err != nil {
+					return err
 				}
 				result["created"]++
 				return nil
@@ -258,7 +277,8 @@ func ldapConfigView(cfg model.LDAPConfig) map[string]any {
 		"insecureSkipVerify": cfg.InsecureSkipVerify, "bindDn": cfg.BindDN, "bindPasswordSet": cfg.BindPassword != "",
 		"baseDn": cfg.BaseDN, "userFilter": cfg.UserFilter, "usernameAttribute": cfg.UsernameAttribute,
 		"displayAttribute": cfg.DisplayAttribute, "emailAttribute": cfg.EmailAttribute, "phoneAttribute": cfg.PhoneAttribute,
-		"defaultRoleId": cfg.DefaultRoleID, "defaultDeptId": cfg.DefaultDeptID, "defaultPostId": cfg.DefaultPostID,
+		"defaultGroupIds": cfg.DefaultGroupIDs,
+		"defaultRoleId":   cfg.DefaultRoleID,
 	}
 }
 

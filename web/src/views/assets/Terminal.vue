@@ -1,4 +1,5 @@
 <script setup>
+import { useAccessRefresh } from '../../composables/useAccessRefresh'
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -37,16 +38,22 @@ let resizeFrame
 
 const activeSession = computed(() => sessions.value.find((item) => item.id === activeSessionId.value))
 
+let treeVersion = 0
 async function loadTree() {
+  const version = ++treeVersion
   loading.value = true
   try {
     const [groupsRes, hostsRes] = await Promise.all([
       queryAssetHostGroupList({ keyword: query.keyword }),
       queryAssetHostList({ pageNum: 1, pageSize: 1000, keyword: query.keyword })
     ])
+    if (version !== treeVersion) return
     groupTree.value = buildTree(groupsRes.list || [], hostsRes.list || [])
+  } catch (error) {
+    if (version === treeVersion) groupTree.value = []
+    throw error
   } finally {
-    loading.value = false
+    if (version === treeVersion) loading.value = false
   }
 }
 
@@ -391,6 +398,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(resizeFrame)
   closeAllSessions()
 })
+useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
 </script>
 
 <template>

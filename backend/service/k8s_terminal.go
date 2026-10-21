@@ -150,6 +150,9 @@ func (s *Service) GetK8sPodContainers(clusterID uint, namespace string, podName 
 // file never becomes a cluster-side API object and is written via a temporary
 // sibling before the final rename, so readers cannot observe a partial file.
 func (s *Service) UploadK8sPodFile(clusterID uint, namespace string, podName string, container string, directory string, filename string, size int64, content io.Reader) (map[string]any, error) {
+	if err := s.requireResource("k8s", clusterID, namespace, "upload"); err != nil {
+		return nil, err
+	}
 	directory = path.Clean(strings.TrimSpace(directory))
 	filename = strings.TrimSpace(filename)
 	if clusterID == 0 || strings.TrimSpace(namespace) == "" || strings.TrimSpace(podName) == "" || !strings.HasPrefix(directory, "/") {
@@ -208,6 +211,9 @@ func (s *Service) UploadK8sPodFile(clusterID uint, namespace string, podName str
 }
 
 func (s *Service) OpenK8sPodTerminal(clusterID uint, namespace string, podName string, container string, command string, rows int, cols int, conn *websocket.Conn) error {
+	if err := s.requireResource("k8s", clusterID, namespace, "terminal"); err != nil {
+		return err
+	}
 	cluster, err := s.GetK8sCluster(clusterID)
 	if err != nil {
 		return err

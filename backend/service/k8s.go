@@ -806,6 +806,9 @@ func (s *Service) DeleteK8sCluster(id uint) error {
 const k8sOverviewCacheTTL = 15 * time.Second
 
 func (s *Service) GetK8sClusterDetail(clusterID uint) (model.K8sClusterDetail, error) {
+	if p := s.resourcePolicy(); p != nil && !p.Super {
+		return s.getK8sClusterDetailUncached(clusterID)
+	}
 	if detail, ok := s.cachedK8sClusterDetail(clusterID); ok {
 		return detail, nil
 	}
@@ -833,6 +836,9 @@ func (s *Service) GetK8sClusterDetail(clusterID uint) (model.K8sClusterDetail, e
 // overview request and render the pre-update resource limits as if the update
 // did not take effect.
 func (s *Service) GetK8sClusterDetailFresh(clusterID uint) (model.K8sClusterDetail, error) {
+	if p := s.resourcePolicy(); p != nil && !p.Super {
+		return s.getK8sClusterDetailUncached(clusterID)
+	}
 	detail, err := s.getK8sClusterDetailUncached(clusterID)
 	if err != nil {
 		return model.K8sClusterDetail{}, err
@@ -4927,6 +4933,9 @@ func newK8sHTTPClientWithDial(runtime kubeClusterRuntime, dialContext func(conte
 func (s *Service) newK8sHTTPClientForCluster(cluster model.K8sCluster, runtime kubeClusterRuntime) (*http.Client, func(), error) {
 	if normalizeConnectionMode(cluster.ConnectionMode) != "gateway" || cluster.GatewayID == nil || *cluster.GatewayID == 0 {
 		client, err := newK8sHTTPClient(runtime)
+		if err == nil {
+			s.guardK8sHTTPClient(client, cluster.ID)
+		}
 		return client, func() {}, err
 	}
 	gatewayID := *cluster.GatewayID
@@ -4941,6 +4950,7 @@ func (s *Service) newK8sHTTPClientForCluster(cluster model.K8sCluster, runtime k
 	if err != nil {
 		return nil, func() {}, err
 	}
+	s.guardK8sHTTPClient(client, cluster.ID)
 	return client, func() {}, nil
 }
 

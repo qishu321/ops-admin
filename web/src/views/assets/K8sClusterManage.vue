@@ -13,6 +13,8 @@ import {
 import { queryAssetGatewayOptions } from '../../api/asset'
 import { queryMonitorDatasourceOptions, saveMonitorDatasource } from '../../api/monitor'
 import { t } from '../../utils/i18n'
+import { getUser } from '../../utils/auth'
+import { useAccessRefresh } from '../../composables/useAccessRefresh'
 import { useEnvironmentOptions } from '../../composables/useEnvironmentOptions'
 
 const loading = ref(false)
@@ -27,6 +29,9 @@ const datasourceSaving = ref(false)
 const datasourceDialogVisible = ref(false)
 const { environmentOptions, environmentLoading, environmentName } = useEnvironmentOptions()
 const selectedEnv = ref('')
+const account = ref(getUser())
+const canManageClusters = computed(() => account.value.accountType === 'administrator')
+let listVersion = 0
 const filteredClusters = computed(() => {
   return clusterList.value.filter((item) => {
     if (selectedEnv.value && item.env !== selectedEnv.value) return false
@@ -71,11 +76,16 @@ function resetForm() {
 }
 
 async function loadClusters() {
+  const version = ++listVersion
   loading.value = true
   try {
-    clusterList.value = await queryK8sClusterList()
+    const data = await queryK8sClusterList()
+    if (version === listVersion) clusterList.value = data || []
+  } catch (error) {
+    if (version === listVersion) clusterList.value = []
+    throw error
   } finally {
-    loading.value = false
+    if (version === listVersion) loading.value = false
   }
 }
 
@@ -111,13 +121,15 @@ async function saveDatasource() {
   }
 }
 
-function openCreate() {
+async function openCreate() {
+  await Promise.all([loadGateways(), loadDatasourceOptions()])
   isEdit.value = false
   resetForm()
   dialogVisible.value = true
 }
 
 async function openEdit(row) {
+  await Promise.all([loadGateways(), loadDatasourceOptions()])
   const data = await queryK8sClusterInfo(row.id)
   isEdit.value = true
   Object.assign(form, {
@@ -184,12 +196,21 @@ function tagType(status) {
 }
 
 function openDetail(row) {
-  router.push({ name: 'K8sClusterDetail', params: { id: row.id } })
+  if (canManageClusters.value) router.push({ name: 'K8sClusterDetail', params: { id: row.id } })
+  else router.push({ path: '/containers/k8s/overview', query: { clusterId: String(row.id) } })
 }
 
-onMounted(async () => {
-  await loadGateways()
-  await loadDatasourceOptions()
+onMounted(loadClusters)
+useAccessRefresh(async () => {
+  account.value = getUser()
+  clusterList.value = []
+  if (!canManageClusters.value) {
+    dialogVisible.value = false
+    datasourceDialogVisible.value = false
+    form.kubeConfig = ''
+    gatewayOptions.value = []
+    datasourceOptions.value = []
+  }
   await loadClusters()
 })
 </script>
@@ -206,7 +227,7 @@ onMounted(async () => {
           <el-option v-for="item in environmentOptions" :key="item.code" :label="item.name" :value="item.code" />
         </el-select>
         <el-button :icon="Refresh" @click="loadClusters">{{ t('k8sRefresh') }}</el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreate">{{ t('k8sNewCluster') }}</el-button>
+        <el-button v-if="canManageClusters" type="primary" :icon="Plus" @click="openCreate">{{ t('k8sNewCluster') }}</el-button>
       </div>
     </section>
 
@@ -236,7 +257,7 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column prop="description" :label="t('k8sDescription')" min-width="180" show-overflow-tooltip />
-        <el-table-column :label="t('k8sOperations')" width="160" fixed="right">
+        <el-table-column v-if="canManageClusters" :label="t('k8sOperations')" width="160" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
               <el-button link type="primary" :icon="Edit" @click="openEdit(row)">{{ t('k8sEdit') }}</el-button>

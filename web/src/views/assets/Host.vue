@@ -3,6 +3,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
+import { useAccessRefresh } from '../../composables/useAccessRefresh'
+import { getPermissions, getUser } from '../../utils/auth'
 import { useEnvironmentOptions } from '../../composables/useEnvironmentOptions'
 import {
   addAssetHost,
@@ -65,6 +67,11 @@ const batchCredentialForm = reactive({
   credentialId: undefined
 })
 
+const account = ref(getUser())
+const featurePermissions = ref(getPermissions())
+const canManageHosts = computed(() => account.value.accountType === 'administrator')
+const canDeleteHosts = computed(() => featurePermissions.value.includes('assets:host:delete'))
+let listVersion = 0, optionsVersion = 0
 const isGroupView = computed(() => Number(query.groupId || 0) > 0)
 
 function resetForm() {
@@ -97,34 +104,53 @@ function resetBatchCredentialForm() {
 }
 
 async function loadOptions() {
-  const [groups, credentials, gateways] = await Promise.all([
-    queryAssetHostGroupList(),
-    queryAssetCredentialOptions(),
-    queryAssetGatewayOptions()
-  ])
-  groupOptions.value = groups.list || []
+  const version = ++optionsVersion
+  try {
+    const groups = await queryAssetHostGroupList()
+    if (version === optionsVersion) groupOptions.value = groups.list || []
+  } catch (error) {
+    if (version === optionsVersion) groupOptions.value = []
+    throw error
+  }
+}
+
+async function loadConnectionOptions() {
+  const [credentials, gateways] = await Promise.all([queryAssetCredentialOptions(), queryAssetGatewayOptions()])
   credentialOptions.value = credentials || []
   gatewayOptions.value = gateways || []
 }
 
 async function loadData() {
+  const version = ++listVersion
   loading.value = true
   try {
     const keyword = [query.keyword, query.ipKeyword].filter(Boolean).join(' ')
     const data = await queryAssetHostList({
-      pageNum: query.pageNum,
-      pageSize: query.pageSize,
-      keyword,
-      status: query.status,
-      groupId: query.groupId,
-      environment: query.environment
+      pageNum: query.pageNum, pageSize: query.pageSize, keyword,
+      status: query.status, groupId: query.groupId, environment: query.environment
     })
+    if (version !== listVersion) return
     tableData.value = data.list || []
     total.value = data.total || 0
+  } catch (error) {
+    if (version === listVersion) { tableData.value = []; total.value = 0 }
+    throw error
   } finally {
-    loading.value = false
+    if (version === listVersion) loading.value = false
   }
 }
+
+async function reloadView() {
+  await Promise.allSettled([loadOptions(), loadData()])
+}
+useAccessRefresh(async () => {
+  account.value = getUser()
+  featurePermissions.value = getPermissions()
+  selectedRows.value = []
+  tableData.value = []
+  total.value = 0
+  await reloadView()
+})
 
 function resetQuery() {
   query.keyword = ''
@@ -142,7 +168,8 @@ function applyRouteGroupFilter() {
   query.pageNum = 1
 }
 
-function openCreate() {
+async function openCreate() {
+  await loadConnectionOptions()
   isEdit.value = false
   isCopy.value = false
   resetForm()
@@ -156,16 +183,18 @@ function openImportDialog() {
 
 function openCloudSyncDialog() { router.push({ path: '/assets/server/sync', query: { type: 'cloud' } }) }
 
-function openBatchCredentialDialog() {
+async function openBatchCredentialDialog() {
   if (!selectedRows.value.length) {
     ElMessage.warning('请先选择主机')
     return
   }
+  credentialOptions.value = (await queryAssetCredentialOptions()) || []
   resetBatchCredentialForm()
   batchCredentialDialogVisible.value = true
 }
 
 async function openEdit(row) {
+  await loadConnectionOptions()
   isEdit.value = true
   isCopy.value = false
   const data = await assetHostInfo(row.id)
@@ -189,6 +218,7 @@ async function openEdit(row) {
 }
 
 async function openCopy(row) {
+  await loadConnectionOptions()
   isEdit.value = false
   isCopy.value = true
   const data = await assetHostInfo(row.id)
@@ -424,8 +454,7 @@ function handleMoreCommand(command) {
 
 onMounted(async () => {
   applyRouteGroupFilter()
-  await loadOptions()
-  await loadData()
+  await reloadView()
 })
 
 watch(
@@ -478,7 +507,7 @@ watch(
       <div class="query-actions">
         <el-button type="primary" @click="loadData">搜索</el-button>
         <el-button color="#f0a43a" @click="resetQuery">重置</el-button>
-        <el-dropdown split-button type="success" @click="openCreate" @command="handleCreateCommand">
+        <el-dropdown v-if="canManageHosts" split-button type="success" @click="openCreate" @command="handleCreateCommand">
           新增
           <template #dropdown>
             <el-dropdown-menu>
@@ -489,8 +518,9 @@ watch(
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button color="#6f58c9" @click="goTerminal">终端</el-button>
+        <el-button v-permission="'assets:terminal'" color="#6f58c9" @click="goTerminal">终端</el-button>
         <el-dropdown
+          v-if="canManageHosts || (canDeleteHosts && !isGroupView)"
           placement="bottom-end"
           popper-class="host-more-dropdown"
           :disabled="!selectedRows.length"
@@ -502,12 +532,12 @@ watch(
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
-			  <el-dropdown-item command="batch-sync" :disabled="batchSyncSubmitting">
+			  <el-dropdown-item v-if="canManageHosts" command="batch-sync" :disabled="batchSyncSubmitting">
 				<el-icon v-if="batchSyncSubmitting" class="is-loading"><Loading /></el-icon>
 				{{ batchSyncSubmitting ? '同步中' : '批量同步' }}
 			  </el-dropdown-item>
-              <el-dropdown-item command="batch-delete">{{ isGroupView ? '批量移出当前组' : '批量删除' }}</el-dropdown-item>
-              <el-dropdown-item command="batch-credential">批量替换认证凭据</el-dropdown-item>
+              <el-dropdown-item v-if="canDeleteHosts && (!isGroupView || canManageHosts)" command="batch-delete">{{ isGroupView ? '批量移出当前组' : '批量删除' }}</el-dropdown-item>
+              <el-dropdown-item v-if="canManageHosts" command="batch-credential">批量替换认证凭据</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -582,10 +612,10 @@ watch(
       </el-table-column>
       <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="primary" @click="openCopy(row)">复制</el-button>
-          <el-button link type="success" :loading="syncingId === row.id" @click="handleSync(row)">同步</el-button>
-          <el-button link type="danger" @click="handleDelete(row)">{{ isGroupView ? '移出组' : '删除' }}</el-button>
+          <el-button link type="primary" v-if="canManageHosts" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="primary" v-if="canManageHosts" @click="openCopy(row)">复制</el-button>
+          <el-button link type="success" :loading="syncingId === row.id" v-if="canManageHosts" @click="handleSync(row)">同步</el-button>
+          <el-button link type="danger" v-if="canDeleteHosts && (!isGroupView || canManageHosts)" @click="handleDelete(row)">{{ isGroupView ? '移出组' : '删除' }}</el-button>
         </template>
       </el-table-column>
     </el-table>

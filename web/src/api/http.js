@@ -118,7 +118,7 @@ http.interceptors.response.use(
     if (response.config.responseType === 'blob') return response
     const res = response.data
     if (res.code !== 200) {
-      ElMessage.error(res.message || '请求失败')
+      if (!response.config.silent) ElMessage.error(res.message || '请求失败')
       return Promise.reject(new Error(res.message || 'request failed'))
     }
     return res.data
@@ -140,7 +140,7 @@ http.interceptors.response.use(
     }
     if (res?.code === 401) expireLocalSession(res.message)
     const message = res?.message || error.message || '网络错误'
-    if (res?.code !== 401) ElMessage.error(message)
+    if (res?.code !== 401 && !config.silent) ElMessage.error(message)
     return Promise.reject(new Error(message))
   }
 )

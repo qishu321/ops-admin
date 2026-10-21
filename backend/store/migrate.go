@@ -10,8 +10,6 @@ import (
 
 func AutoMigrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
-		&model.Dept{},
-		&model.Post{},
 		&model.Role{},
 		&model.Menu{},
 		&model.Admin{},
@@ -28,6 +26,10 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.SSLCertificateTask{},
 		&model.SSLCertificateAuditLog{},
 		&model.AdminRole{},
+		&model.UserGroup{},
+		&model.UserGroupMember{},
+		&model.GroupAccessBinding{},
+		&model.ResourceGrant{},
 		&model.RoleMenu{},
 		&model.LoginLog{},
 		&model.OperationLog{},

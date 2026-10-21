@@ -1,4 +1,4 @@
-﻿export const APP_KEY = 'ops-admin-current-app'
+export const APP_KEY = 'ops-admin-current-app'
 
 export const appDefinitions = [
   {
@@ -113,6 +113,16 @@ export const appDefinitions = [
             icon: 'FolderOpened',
             children: []
           }
+        ]
+      },
+      {
+        title: '中间件管理', path: '/assets/middleware', icon: 'Connection',
+        children: [
+          { title: 'RabbitMQ', path: '/assets/middleware/rabbitmq', icon: 'MessageBox', children: [] },
+          { title: 'Nacos', path: '/assets/middleware/nacos', icon: 'SetUp', children: [] },
+          { title: 'etcd', path: '/assets/middleware/etcd', icon: 'Coin', children: [] },
+          { title: 'ZooKeeper', path: '/assets/middleware/zookeeper', icon: 'Share', children: [] },
+          { title: 'Kafka', path: '/assets/middleware/kafka', icon: 'Promotion', children: [] }
         ]
       },
       {

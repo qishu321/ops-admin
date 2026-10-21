@@ -111,3 +111,26 @@ func TestSQLResourceScopesApplyBeforePaginationCountAndIndirectFiles(t *testing.
 		t.Fatal("super administrators should retain full inventory")
 	}
 }
+
+func TestMiddlewareScopesAndReadonly(t *testing.T) {
+	p := &Policy{Grants: []model.ResourceGrant{{ResourceType: "middleware", ResourceID: 7, Unified: true, Actions: []string{"read", "query", "write", "delete"}}}, Actions: map[string]string{"middleware": "read"}}
+	if !p.Allows("middleware", 7, "", "query") || p.Allows("middleware", 8, "", "query") {
+		t.Fatal("middleware scope widened")
+	}
+	p.ReadOnly = true
+	if !p.Allows("middleware", 7, "", "query") || p.Allows("middleware", 7, "", "write") || p.Allows("middleware", 7, "", "delete") {
+		t.Fatal("readonly cap missing")
+	}
+	db, e := gorm.Open(mysql.New(mysql.Config{DSN: "unused:unused@tcp(127.0.0.1:1)/unused", SkipInitializeWithVersion: true}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = Install(db); e != nil {
+		t.Fatal(e)
+	}
+	var rows []model.MiddlewareDatasource
+	statement := db.WithContext(Context(context.Background(), p)).Find(&rows).Statement
+	if !strings.Contains(statement.SQL.String(), "WHERE `asset_middleware`.`id`") || len(statement.Vars) != 1 || statement.Vars[0] != uint(7) {
+		t.Fatalf("unscoped middleware SQL: %s %v", statement.SQL.String(), statement.Vars)
+	}
+}

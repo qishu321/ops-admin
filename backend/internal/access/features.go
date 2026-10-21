@@ -29,6 +29,7 @@ var operationFeatures = map[string]map[string][]string{
 		"export": {"assets:database:export", "assets:database:backup"}, "backup": {"assets:database:backup"}, "restore": {"assets:database:backup:restore"},
 	},
 	"datasource": {"read": {"monitor:datasource", "monitor:datasource:list", "monitor:query", "monitor:logs", "monitor:traces"}, "query": {"monitor:query", "monitor:logs"}},
+	"middleware": {"read": {"assets:middleware:list", "assets:middleware:rabbitmq", "assets:middleware:nacos", "assets:middleware:etcd", "assets:middleware:zookeeper", "assets:middleware:kafka"}, "query": {"assets:middleware:query"}, "write": {"assets:middleware:write"}, "delete": {"assets:middleware:delete"}},
 	"credential": {"read": {"assets:credential:list"}, "use": {"assets:credential:list"}, "manage": {"assets:credential:edit", "assets:credential:delete"}},
 }
 
@@ -69,6 +70,7 @@ var featureActions = map[string]map[string][]string{
 		"backup": {"assets:database:backup", "assets:database:backup:create"}, "restore": {"assets:database:backup", "assets:database:backup:restore"},
 	},
 	"datasource": {"read": {"monitor:datasource:list", "monitor:datasource"}, "query": {"monitor:query", "monitor:logs"}},
+	"middleware": {"read": {"assets:middleware:list", "assets:middleware:rabbitmq", "assets:middleware:nacos", "assets:middleware:etcd", "assets:middleware:zookeeper", "assets:middleware:kafka"}, "query": {"assets:middleware:query"}, "write": {"assets:middleware:write"}, "delete": {"assets:middleware:delete"}},
 	"credential": {"read": {"assets:credential:list"}, "use": {"assets:credential:list"}, "manage": {"assets:credential:edit", "assets:credential:delete"}},
 }
 
@@ -106,7 +108,7 @@ func TemplateActions(permissions []string, readOnly bool) map[string][]string {
 				if key == "assets:k8s:pod" && action != "logs" {
 					continue
 				}
-				if slices.Contains(permissions, key) && (slices.Contains([]string{"query", "logs"}, action) || slices.Contains([]string{"assets:host:terminal", "assets:host:upload", "assets:host:download", "ops:quickexec:command:execute", "ops:quickexec:script:execute", "assets:database:data:edit", "assets:database:import:execute", "assets:database:export", "assets:database:backup:create", "assets:database:backup:restore", "assets:k8s:pod:terminal", "assets:k8s:pod:upload", "assets:k8s:workload:restart", "assets:k8s:workload:scale", "assets:k8s:workload:yaml", "assets:k8s:pod:delete"}, key)) {
+				if slices.Contains(permissions, key) && (slices.Contains([]string{"query", "logs"}, action) || slices.Contains([]string{"assets:middleware:write", "assets:middleware:delete", "assets:host:terminal", "assets:host:upload", "assets:host:download", "ops:quickexec:command:execute", "ops:quickexec:script:execute", "assets:database:data:edit", "assets:database:import:execute", "assets:database:export", "assets:database:backup:create", "assets:database:backup:restore", "assets:k8s:pod:terminal", "assets:k8s:pod:upload", "assets:k8s:workload:restart", "assets:k8s:workload:scale", "assets:k8s:workload:yaml", "assets:k8s:pod:delete"}, key)) {
 					result[kind] = append(result[kind], action)
 					break
 				}

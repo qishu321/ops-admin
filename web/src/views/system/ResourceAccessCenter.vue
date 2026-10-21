@@ -17,7 +17,7 @@ let previewRequest = 0
 const keyword = ref(''), resourceType = ref(''), subjectType = ref(''), previewUserId = ref()
 const groupForm = reactive({ id: 0, name: '', description: '', status: 1, memberIds: [] })
 const grantForm = reactive({ name: '', enabled: true, templateId: undefined, id: 0, subjectType: 'group', subjectId: undefined, resourceType: 'host_group', resourceId: undefined, scope: '', actions: ['read'], description: '' })
-const kinds = { host: '主机', host_group: '主机组', k8s: 'K8s 集群', database: '数据库 / 中间件', datasource: '监控 / 日志数据源', credential: '凭据' }
+const kinds = { host: '主机', host_group: '主机组', k8s: 'K8s 集群', database: '数据库 / Redis', middleware: '中间件', datasource: '监控 / 日志数据源', credential: '凭据' }
 const labels = { read: '查看', terminal: '终端登录', upload: '上传文件', download: '下载文件', execute: '执行命令 / 脚本', query: '查询', write: '写入 / 变更', export: '导出', backup: '备份', restore: '恢复', restart: '重启', scale: '伸缩', logs: '查看日志', delete: '删除资源', use: '使用', manage: '全部资源操作' }
 const usersById = computed(() => Object.fromEntries(data.users.map(u => [u.id, u])))
 const groupsById = computed(() => Object.fromEntries(data.groups.map(g => [g.id, g])))

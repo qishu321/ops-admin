@@ -442,6 +442,12 @@ func seedApplicationMenus(db *gorm.DB) error {
 				{"DBMS 工作台", "/assets/databases/workbench", "assets:database:workbench", "EditPen"},
 				{"数据导入", "/assets/databases/import", "assets:database:import", "Upload"},
 				{"备份管理", "/assets/databases/backups", "assets:database:backup", "FolderOpened"},
+				{"中间件管理", "/assets/middleware", "assets:middleware:list", "Connection"},
+				{"RabbitMQ", "/assets/middleware/rabbitmq", "assets:middleware:rabbitmq", "Connection"},
+				{"Nacos", "/assets/middleware/nacos", "assets:middleware:nacos", "Connection"},
+				{"etcd", "/assets/middleware/etcd", "assets:middleware:etcd", "Connection"},
+				{"ZooKeeper", "/assets/middleware/zookeeper", "assets:middleware:zookeeper", "Connection"},
+				{"Kafka", "/assets/middleware/kafka", "assets:middleware:kafka", "Connection"},
 				{"网关管理", "/assets/gateways", "assets:gateway:list", "Switch"},
 			},
 		},
@@ -579,6 +585,9 @@ func seedApplicationMenus(db *gorm.DB) error {
 		{"assets:k8s:workload", "新增工作负载", "assets:k8s:workload:create"}, {"assets:k8s:workload", "伸缩工作负载", "assets:k8s:workload:scale"}, {"assets:k8s:workload", "重启工作负载", "assets:k8s:workload:restart"}, {"assets:k8s:workload", "更新镜像", "assets:k8s:workload:image"}, {"assets:k8s:workload", "编辑 YAML", "assets:k8s:workload:yaml"},
 		{"assets:k8s:pod", "进入 Pod 终端", "assets:k8s:pod:terminal"}, {"assets:k8s:pod", "上传 Pod 文件", "assets:k8s:pod:upload"}, {"assets:k8s:pod", "删除 Pod", "assets:k8s:pod:delete"}, {"assets:k8s:pod", "编辑 YAML", "assets:k8s:pod:yaml"},
 
+		{"assets:middleware:list", "查询中间件", "assets:middleware:query"},
+		{"assets:middleware:list", "变更中间件", "assets:middleware:write"},
+		{"assets:middleware:list", "删除中间件资源", "assets:middleware:delete"},
 		// Standard operations
 		{"ops:script:list", "新增脚本", "ops:script:add"}, {"ops:script:list", "编辑脚本", "ops:script:edit"}, {"ops:script:list", "删除脚本", "ops:script:delete"}, {"ops:script:list", "启用或禁用脚本", "ops:script:status"},
 		{"ops:quickexec:command", "执行命令", "ops:quickexec:command:execute"}, {"ops:quickexec:script", "执行脚本", "ops:quickexec:script:execute"}, {"ops:quickexec:file", "分发文件", "ops:quickexec:file:execute"},

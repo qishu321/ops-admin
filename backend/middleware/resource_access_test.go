@@ -18,6 +18,10 @@ func TestResourceRequestGateRequiresFeatureAndResourceForEveryTarget(t *testing.
 		grants                               []model.ResourceGrant
 		status                               int
 	}{
+		{"middleware query", "POST", "/api/v1/asset/middleware/query", `{"id":8}`, "assets:middleware:query", []model.ResourceGrant{{ResourceType: "middleware", ResourceID: 8, Actions: []string{"read", "query"}}}, 204},
+		{"middleware wrong source", "POST", "/api/v1/asset/middleware/query", `{"id":9}`, "assets:middleware:query", []model.ResourceGrant{{ResourceType: "middleware", ResourceID: 8, Actions: []string{"query"}}}, 403},
+		{"middleware readonly cannot write", "POST", "/api/v1/asset/middleware/write", `{"id":8}`, "assets:middleware:write", []model.ResourceGrant{{ResourceType: "middleware", ResourceID: 8, Actions: []string{"query"}}}, 403},
+		{"middleware connection editing is admin only", "POST", "/api/v1/asset/middleware/save", `{"id":8}`, "assets:middleware:write", []model.ResourceGrant{{ResourceType: "middleware", ResourceID: 8, Actions: []string{"manage"}}}, 403},
 		{"authorized SSH", "GET", "/api/v1/asset/terminal/ws?hostId=1", "", "assets:host:terminal", []model.ResourceGrant{{ResourceType: "host", ResourceID: 1, Actions: []string{"read", "terminal"}}}, 204},
 		{"SSH wrong host", "GET", "/api/v1/asset/terminal/ws?hostId=2", "", "assets:host:terminal", []model.ResourceGrant{{ResourceType: "host", ResourceID: 1, Actions: []string{"terminal"}}}, 403},
 		{"SSH missing feature", "GET", "/api/v1/asset/terminal/ws?hostId=1", "", "assets:host:list", []model.ResourceGrant{{ResourceType: "host", ResourceID: 1, Actions: []string{"terminal"}}}, 403},

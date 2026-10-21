@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import MainLayout from '../layouts/MainLayout.vue'
+import KafkaTopicDetail from '../views/assets/KafkaTopicDetail.vue'
+import MiddlewareManager from '../views/assets/MiddlewareManager.vue'
 import CommandFilter from '../views/assets/CommandFilter.vue'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
@@ -220,6 +222,13 @@ const routes = [
           summary: '维护云厂商访问账号，为云资产同步提供凭证来源。'
         }
       },
+      { path: '/assets/middleware', redirect: '/assets/middleware/rabbitmq' },
+      { path: '/assets/middleware/rabbitmq', component: MiddlewareManager, props: { kind: 'rabbitmq' }, meta: { title: 'RabbitMQ', app: 'assets' } },
+      { path: '/assets/middleware/nacos', component: MiddlewareManager, props: { kind: 'nacos' }, meta: { title: 'Nacos', app: 'assets' } },
+      { path: '/assets/middleware/etcd', component: MiddlewareManager, props: { kind: 'etcd' }, meta: { title: 'etcd', app: 'assets' } },
+      { path: '/assets/middleware/zookeeper', component: MiddlewareManager, props: { kind: 'zookeeper' }, meta: { title: 'ZooKeeper', app: 'assets' } },
+      { path: '/assets/middleware/kafka/topic', component: KafkaTopicDetail, props: route => ({ sourceId: Number(route.query.sourceId), topic: String(route.query.name || '') }), meta: { title: 'Topic 详情', app: 'assets' } },
+      { path: '/assets/middleware/kafka', component: MiddlewareManager, props: { kind: 'kafka' }, meta: { title: 'Kafka', app: 'assets' } },
       { path: '/assets/server/command-filters', component: CommandFilter, meta: { title: '命令过滤', app: 'assets', adminOnly: true } },
       {
         path: '/assets/server/sync',

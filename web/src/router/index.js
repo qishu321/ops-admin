@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import MainLayout from '../layouts/MainLayout.vue'
+import CommandFilter from '../views/assets/CommandFilter.vue'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
 import BusinessTopology from '../views/BusinessTopology.vue'
@@ -95,7 +96,7 @@ import DNSQueryTest from '../views/domains/DNSQueryTest.vue'
 import DNSAudit from '../views/domains/DNSAudit.vue'
 import SSLCertificates from '../views/domains/SSLCertificates.vue'
 import SSLCertificateDetail from '../views/domains/SSLCertificateDetail.vue'
-import { getToken } from '../utils/auth'
+import { getUser, getToken } from '../utils/auth'
 
 const moduleCards = {
   assetOverview: [
@@ -219,6 +220,7 @@ const routes = [
           summary: '维护云厂商访问账号，为云资产同步提供凭证来源。'
         }
       },
+      { path: '/assets/server/command-filters', component: CommandFilter, meta: { title: '命令过滤', app: 'assets', adminOnly: true } },
       {
         path: '/assets/server/sync',
         component: AssetSync,
@@ -587,6 +589,7 @@ router.beforeEach((to, from, next) => {
     next('/login')
     return
   }
+  if (to.meta.adminOnly && getUser().accountType !== 'administrator') { next('/dashboard'); return }
   next()
 })
 

@@ -29,6 +29,9 @@ type resourceRoute struct {
 func resourceRouteFor(method, path string) resourceRoute {
 	path = strings.TrimPrefix(path, "/api/v1")
 	read := method == http.MethodGet || method == http.MethodHead
+	if strings.HasPrefix(path, "/asset/command-filter/") {
+		return resourceRoute{Admin: true}
+	}
 	if path == "/profile" || path == "/admin/updatePersonal" || path == "/admin/updatePersonalPassword" {
 		return resourceRoute{Action: "self"}
 	}

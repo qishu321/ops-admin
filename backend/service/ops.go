@@ -480,6 +480,9 @@ func (s *Service) ExecuteOpsCommand(payload OpsExecCommandPayload) (map[string]a
 	if command == "" {
 		return nil, errors.New("执行命令不能为空")
 	}
+	if err := s.CheckCommandFilters("job", jobFilterContent(command, payload.Parameters, nil)); err != nil {
+		return nil, err
+	}
 	riskLevel, err := requireOpsRiskConfirmation(command, payload.RiskConfirmed)
 	if err != nil {
 		return nil, err
@@ -513,6 +516,9 @@ func (s *Service) ExecuteOpsCommand(payload OpsExecCommandPayload) (map[string]a
 		if strings.TrimSpace(payload.Parameters) != "" {
 			finalCommand += " " + strings.TrimSpace(payload.Parameters)
 		}
+		if err := s.CheckCommandFilters("job", finalCommand); err != nil {
+			return failedOpsFileResult(host, err)
+		}
 		return s.execCommandOnHost(host, finalCommand, task.TimeoutSeconds)
 	})
 }
@@ -527,6 +533,9 @@ func (s *Service) ExecuteOpsScript(payload OpsExecScriptPayload) (map[string]any
 	}
 	if script.Status != 1 {
 		return nil, errors.New("当前脚本已禁用，无法执行")
+	}
+	if err := s.CheckCommandFilters("job", jobFilterContent(script.Content, payload.Parameters, payload.Variables)); err != nil {
+		return nil, err
 	}
 	riskLevel, err := requireOpsRiskConfirmation(script.Content, payload.RiskConfirmed)
 	if err != nil {
@@ -1015,6 +1024,9 @@ func (s *Service) execCommandOnHostStreaming(host model.AssetHost, command strin
 }
 
 func (s *Service) execScriptOnHost(host model.AssetHost, script model.OpsScript, params string, variables map[string]string, timeoutSeconds int) model.OpsExecTargetResult {
+	if err := s.CheckCommandFilters("job", jobFilterContent(script.Content, params, variables)); err != nil {
+		return failedOpsFileResult(host, err)
+	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(script.Content))
 	interpreter := normalizeOpsInterpreter(script.Interpreter, script.ScriptType)
 	command := fmt.Sprintf(

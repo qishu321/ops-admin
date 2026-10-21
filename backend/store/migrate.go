@@ -29,6 +29,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.UserGroup{},
 		&model.UserGroupMember{},
 		&model.GroupAccessBinding{},
+		&model.CommandFilter{},
 		&model.ResourceGrant{},
 		&model.RoleMenu{},
 		&model.LoginLog{},

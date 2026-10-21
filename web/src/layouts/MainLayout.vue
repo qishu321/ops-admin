@@ -136,7 +136,7 @@ function loadTags() {
   try {
     const parsed = JSON.parse(raw)
     const source = Array.isArray(parsed) && parsed.length ? parsed : defaults
-    return trimTagViews(source.map((item) => ({
+    return trimTagViews(source.filter(item => item.path !== '/assets/server/command-filters' || getUser().accountType === 'administrator').map((item) => ({
       ...item,
       fullPath: item.fullPath || item.path,
       title: translateRoute(item.path, item.title),
@@ -222,7 +222,7 @@ function isAppEntryMenu(item) {
 }
 
 function normalizeStaticMenus(raw) {
-  return (raw || []).map((item) => ({
+  return (raw || []).filter(item => !item.adminOnly || user.value.accountType === 'administrator').map((item) => ({
     ...item,
     children: normalizeStaticMenus(item.children || [])
   }))
@@ -501,6 +501,11 @@ const profileSync = createAccessSynchronizer({
   loadProfile: () => profile({ silent: true }),
   applyProfile(data) {
     if (data?.user) { setUser(data.user); user.value = data.user }
+    if (user.value.accountType !== 'administrator') {
+      tagViews.value = tagViews.value.filter(tag => tag.path !== '/assets/server/command-filters')
+      saveTags()
+      if (route.meta.adminOnly) router.replace('/dashboard')
+    }
     if (data?.leftMenuList) { setMenus(data.leftMenuList); rawMenus.value = data.leftMenuList }
     if (data?.permissionList) setPermissions(data.permissionList)
     if (data?.systemConfig) {

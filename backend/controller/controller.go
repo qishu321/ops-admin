@@ -852,9 +852,10 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
+	commandFilter := ctl.service.NewTerminalCommandFilter()
 	var writeMu sync.Mutex
 	writePipe := func(reader io.Reader) {
-		if err := writeAssetTerminalOutput(conn, &writeMu, reader); err != nil {
+		if err := writeAssetTerminalOutput(conn, &writeMu, reader, commandFilter.ObserveOutput); err != nil {
 			// Unblock the input reader so the handler releases the SSH session.
 			_ = conn.Close()
 		}
@@ -871,8 +872,14 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 		if err != nil {
 			return
 		}
-		if _, err := terminal.Stdin.Write(message); err != nil {
+		notices, err := commandFilter.WriteInput(message, terminal.Stdin)
+		if err != nil {
 			return
+		}
+		for _, notice := range notices {
+			writeMu.Lock()
+			_ = conn.WriteMessage(websocket.BinaryMessage, []byte("\r\n\x1b[31m"+notice+"\x1b[0m\r\n"))
+			writeMu.Unlock()
 		}
 	}
 }

@@ -30,6 +30,9 @@ func TestResourceRequestGateRequiresFeatureAndResourceForEveryTarget(t *testing.
 		{"all log indices denied", "POST", "/api/v1/monitor/logs/query", `{"datasourceId":3,"index":"_all"}`, "monitor:logs", []model.ResourceGrant{{ResourceType: "datasource", ResourceID: 3, Scope: "dev-logs", Actions: []string{"query"}}}, 403},
 		{"index discovery", "GET", "/api/v1/monitor/logs/indices?datasourceId=3", "", "monitor:logs", []model.ResourceGrant{{ResourceType: "datasource", ResourceID: 3, Scope: "dev-logs", Actions: []string{"query"}}}, 204},
 		{"SQL wrong connection", "POST", "/api/v1/dbms/sql/execute", `{"databaseId":5}`, "assets:database:sql:execute", []model.ResourceGrant{{ResourceType: "database", ResourceID: 4, Actions: []string{"query"}}}, 403},
+		{"command filter list is admin-only", "GET", "/api/v1/asset/command-filter/list", "", "assets:commandfilter:admin", nil, 403},
+		{"command filter save cannot be delegated", "POST", "/api/v1/asset/command-filter/save", `{"name":"x"}`, "system:config:save", nil, 403},
+		{"command filter delete cannot be delegated", "DELETE", "/api/v1/asset/command-filter/delete", `{"id":1}`, "assets:host:delete", nil, 403},
 		{"cannot elevate own role", "PUT", "/api/v1/role/assignPermissions", `{"id":1}`, "system:role:assign", nil, 403},
 		{"cannot bypass via unintegrated route", "POST", "/api/v1/ops/application/pipeline/run", `{"id":1}`, "ops:app:pipeline:run", nil, 403},
 	} {

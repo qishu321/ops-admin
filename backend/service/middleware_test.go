@@ -159,3 +159,162 @@ func TestMiddlewareValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestMiddlewareRabbitQueueDetailAndArguments(t *testing.T) {
+	seen := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.EscapedPath())
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/bindings"):
+			w.Write([]byte(`[{"source":"orders","routing_key":"paid"}]`))
+		case r.Method == http.MethodPut:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			args, _ := body["arguments"].(map[string]any)
+			if args["x-queue-type"] != "quorum" || body["auto_delete"] != true || body["durable"] != true {
+				t.Errorf("unexpected declaration %v", body)
+			}
+			w.WriteHeader(204)
+		default:
+			w.Write([]byte(`{"name":"team/queue","messages":3}`))
+		}
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "rabbitmq", Endpoints: []string{server.URL}, CredentialID: 1}
+	c := model.AssetCredential{Username: "ops", Password: "secret"}
+	params := map[string]string{"vhost": "/", "name": "team/queue"}
+	if _, err := runMiddlewareHTTP(context.Background(), d, c, MiddlewareOperation{Operation: "queue.get", Params: params}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runMiddlewareHTTP(context.Background(), d, c, MiddlewareOperation{Operation: "queue.bindings", Params: params}); err != nil {
+		t.Fatal(err)
+	}
+	declare := map[string]string{"vhost": "/", "name": "team/queue", "arguments": `{"x-queue-type":"quorum"}`, "auto_delete": "true"}
+	if _, err := runMiddlewareHTTP(context.Background(), d, c, MiddlewareOperation{Operation: "queue.put", Params: declare}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /api/queues/%2F/team%2Fqueue",
+		"GET /api/queues/%2F/team%2Fqueue/bindings",
+		"PUT /api/queues/%2F/team%2Fqueue",
+	}
+	if strings.Join(seen, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected requests %v", seen)
+	}
+	if _, err := runMiddlewareHTTP(context.Background(), d, c, MiddlewareOperation{Operation: "queue.put", Params: map[string]string{"name": "bad", "arguments": "[]"}}); err == nil {
+		t.Fatal("non-object arguments must be rejected")
+	}
+}
+
+func TestMiddlewareNacosConfigContentAndParameters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/nacos/v1/cs/configs" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			q := r.URL.Query()
+			if q.Get("dataId") != "app.json" || q.Get("tenant") != "dev" || q.Get("group") != "OPS" {
+				t.Errorf("missing config identity: %v", q)
+			}
+			if q.Get("pageNo") != "" || q.Get("search") != "" {
+				t.Errorf("read request leaked list parameters: %v", q)
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte(`{"feature":{"enabled":true}}`))
+		case http.MethodPost:
+			r.ParseForm()
+			if r.Form.Get("pageNo") != "" || r.Form.Get("search") != "" {
+				t.Errorf("publish leaked list parameters: %v", r.Form)
+			}
+			if r.Form.Get("appName") != "order" || r.Form.Get("desc") != "订单配置" || r.Form.Get("type") != "json" {
+				t.Errorf("missing publish metadata: %v", r.Form)
+			}
+			w.Write([]byte(`true`))
+		}
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "nacos", Version: "2", Endpoints: []string{server.URL + "/nacos"}}
+	p := map[string]string{"namespaceId": "dev", "groupName": "OPS", "dataId": "app.json"}
+	v, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "config.get", Params: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != `{"feature":{"enabled":true}}` {
+		t.Fatalf("config content must stay raw: %v", v)
+	}
+	publish := map[string]string{"namespaceId": "dev", "groupName": "OPS", "dataId": "app.json", "content": `{"feature":true}`, "type": "json", "appName": "order", "desc": "订单配置"}
+	if _, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "config.put", Params: publish}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMiddlewareNacosV3ServiceGroupParameter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/console/ns/service/list" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("groupNameParam") != "OPS" || q.Get("serviceNameParam") != "order" || q.Get("namespaceId") != "dev" {
+			t.Errorf("v3 service query mismatch: %v", q)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"data":{"pageItems":[{"name":"order"}],"totalCount":1}}`))
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "nacos", Version: "3", Endpoints: []string{server.URL}}
+	p := map[string]string{"namespaceId": "dev", "groupName": "OPS", "serviceName": "order"}
+	if _, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "services", Params: p}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMiddlewareNacosV3ConfigContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/console/cs/config" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"data":{"dataId":"app.json","content":"{\"feature\":true}","type":"json"}}`))
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "nacos", Version: "3", Endpoints: []string{server.URL}}
+	v, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "config.get", Params: map[string]string{"dataId": "app.json", "namespaceId": "public"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != `{"feature":true}` {
+		t.Fatalf("v3 config content not extracted: %v", v)
+	}
+}
+
+func TestMiddlewareNacosV2ConfigContentKeepsJSONField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(`{"content":"business-value","enabled":true}`))
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "nacos", Version: "2", Endpoints: []string{server.URL + "/nacos"}}
+	v, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "config.get", Params: map[string]string{"dataId": "app.json"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != `{"content":"business-value","enabled":true}` {
+		t.Fatalf("v2 json config must not be unwrapped: %v", v)
+	}
+}
+
+func TestMiddlewareMissingResourceMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "rabbitmq", Endpoints: []string{server.URL}}
+	_, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "queue.get", Params: map[string]string{"name": "gone"}})
+	if err == nil || !strings.Contains(err.Error(), "资源不存在") {
+		t.Fatalf("expected not-found guidance, got %v", err)
+	}
+}

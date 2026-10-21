@@ -3,6 +3,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import MainLayout from '../layouts/MainLayout.vue'
 import KafkaTopicDetail from '../views/assets/KafkaTopicDetail.vue'
 import MiddlewareManager from '../views/assets/MiddlewareManager.vue'
+import RabbitMqExplorer from '../views/assets/RabbitMqExplorer.vue'
+import NacosExplorer from '../views/assets/NacosExplorer.vue'
 import ZookeeperExplorer from '../views/assets/ZookeeperExplorer.vue'
 import CommandFilter from '../views/assets/CommandFilter.vue'
 import Login from '../views/Login.vue'
@@ -228,7 +230,9 @@ const routes = [
       },
       { path: '/assets/middleware', redirect: '/assets/middleware/rabbitmq' },
       { path: '/assets/middleware/rabbitmq', component: MiddlewareManager, props: { kind: 'rabbitmq' }, meta: { title: 'RabbitMQ', app: 'assets' } },
+      { path: '/assets/middleware/rabbitmq/explorer', component: RabbitMqExplorer, props: route => ({ sourceId: Number(route.query.sourceId) }), meta: { title: 'RabbitMQ 工作台', app: 'assets' } },
       { path: '/assets/middleware/nacos', component: MiddlewareManager, props: { kind: 'nacos' }, meta: { title: 'Nacos', app: 'assets' } },
+      { path: '/assets/middleware/nacos/explorer', component: NacosExplorer, props: route => ({ sourceId: Number(route.query.sourceId) }), meta: { title: 'Nacos 工作台', app: 'assets' } },
       { path: '/assets/middleware/etcd', component: MiddlewareManager, props: { kind: 'etcd' }, meta: { title: 'etcd', app: 'assets' } },
       { path: '/assets/middleware/zookeeper', component: MiddlewareManager, props: { kind: 'zookeeper' }, meta: { title: 'ZooKeeper', app: 'assets' } },
       { path: '/assets/middleware/zookeeper/explorer', component: ZookeeperExplorer, props: route => ({ sourceId: Number(route.query.sourceId) }), meta: { title: 'ZooKeeper 节点浏览', app: 'assets' } },

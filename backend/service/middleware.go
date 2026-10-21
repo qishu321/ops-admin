@@ -23,7 +23,7 @@ type MiddlewareOperation struct {
 // This allowlist is also the authorization boundary: the client cannot select
 // a read endpoint and then submit a mutation operation.
 var middlewareOperations = map[string]map[string]string{
-	"rabbitmq":  {"overview": "query", "vhosts": "query", "queues": "query", "exchanges": "query", "connections": "query", "consumers": "query", "channels": "query", "queue.put": "write", "exchange.put": "write", "binding.put": "write", "queue.delete": "delete", "queue.purge": "delete", "exchange.delete": "delete", "connection.close": "delete"},
+	"rabbitmq":  {"overview": "query", "vhosts": "query", "queues": "query", "exchanges": "query", "connections": "query", "consumers": "query", "channels": "query", "queue.get": "query", "queue.bindings": "query", "exchange.get": "query", "exchange.bindings": "query", "queue.put": "write", "exchange.put": "write", "binding.put": "write", "queue.delete": "delete", "queue.purge": "delete", "exchange.delete": "delete", "connection.close": "delete"},
 	"nacos":     {"namespaces": "query", "configs": "query", "config.get": "query", "services": "query", "instances": "query", "config.put": "write", "namespace.put": "write", "instance.put": "write", "config.delete": "delete", "namespace.delete": "delete", "instance.delete": "delete"},
 	"etcd":      {"keys": "query", "key.get": "query", "members": "query", "key.put": "write", "key.delete": "delete"},
 	"zookeeper": {"children": "query", "node.get": "query", "node.create": "write", "node.put": "write", "node.delete": "delete"},

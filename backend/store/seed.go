@@ -18,9 +18,8 @@ func Seed(db *gorm.DB) error {
 		seedSystemConfig,
 		seedOpsScheduleLogRetention,
 		seedMonitorAlertTemplates,
-		seedDept,
-		seedPost,
 		seedRole,
+		seedMemberRole,
 		seedMenus,
 		seedAdmin,
 		seedSuperRolePermissions,
@@ -253,36 +252,6 @@ func seedSystemConfig(db *gorm.DB) error {
 	}).Error
 }
 
-func seedDept(db *gorm.DB) error {
-	var count int64
-	db.Model(&model.Dept{}).Count(&count)
-	if count > 0 {
-		return nil
-	}
-	return db.Create(&model.Dept{
-		ParentID:   0,
-		DeptType:   1,
-		DeptName:   "总部",
-		DeptStatus: 1,
-		CreatedAt:  time.Now(),
-	}).Error
-}
-
-func seedPost(db *gorm.DB) error {
-	var count int64
-	db.Model(&model.Post{}).Count(&count)
-	if count > 0 {
-		return nil
-	}
-	return db.Create(&model.Post{
-		PostCode:   "super-admin",
-		PostName:   "超级管理员",
-		PostStatus: 1,
-		Remark:     "系统初始化岗位",
-		CreatedAt:  time.Now(),
-	}).Error
-}
-
 func seedRole(db *gorm.DB) error {
 	var count int64
 	db.Model(&model.Role{}).Count(&count)
@@ -299,6 +268,10 @@ func seedRole(db *gorm.DB) error {
 }
 
 func seedMenus(db *gorm.DB) error {
+	if err := db.Model(&model.Menu{}).Where("value LIKE ? OR value LIKE ?", "system:dept:%", "system:post:%").Update("menu_status", 2).Error; err != nil {
+		return err
+	}
+
 	systemRoot, err := ensureMenu(db, model.Menu{
 		ParentID:   0,
 		MenuName:   "系统管理",
@@ -311,6 +284,11 @@ func seedMenus(db *gorm.DB) error {
 	})
 	if err != nil {
 		return err
+	}
+	for i, entry := range []struct{ name, url, value, icon string }{{"用户组", "/system/user-groups", "system:usergroup:list", "UserFilled"}, {"访问策略", "/system/access-policies", "system:resourcegrant:list", "Lock"}} {
+		if _, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: entry.name, MenuType: 2, URL: entry.url, Value: entry.value, MenuStatus: 1, Sort: 2 + i, Icon: entry.icon}); err != nil {
+			return err
+		}
 	}
 	businessTopologyMenu, err := ensureMenu(db, model.Menu{
 		ParentID:   0,
@@ -340,27 +318,19 @@ func seedMenus(db *gorm.DB) error {
 		return err
 	}
 
-	adminMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "用户信息", MenuType: 2, URL: "/system/admin", Value: "system:admin:list", MenuStatus: 1, Sort: 1, Icon: "User"})
+	adminMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "用户管理", MenuType: 2, URL: "/system/admin", Value: "system:admin:list", MenuStatus: 1, Sort: 1, Icon: "User"})
 	if err != nil {
 		return err
 	}
-	roleMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "角色信息", MenuType: 2, URL: "/system/role", Value: "system:role:list", MenuStatus: 1, Sort: 2, Icon: "Avatar"})
+	roleMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "权限模板", MenuType: 2, URL: "/system/role", Value: "system:role:list", MenuStatus: 1, Sort: 2, Icon: "Avatar"})
 	if err != nil {
 		return err
 	}
-	menuMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "菜单信息", MenuType: 2, URL: "/system/menu", Value: "system:menu:list", MenuStatus: 1, Sort: 3, Icon: "Grid"})
+	menuMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "菜单维护", MenuType: 2, URL: "/system/menu", Value: "system:menu:list", MenuStatus: 1, Sort: 3, Icon: "Grid"})
 	if err != nil {
 		return err
 	}
-	deptMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "部门信息", MenuType: 2, URL: "/system/dept", Value: "system:dept:list", MenuStatus: 1, Sort: 4, Icon: "OfficeBuilding"})
-	if err != nil {
-		return err
-	}
-	postMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "岗位信息", MenuType: 2, URL: "/system/post", Value: "system:post:list", MenuStatus: 1, Sort: 5, Icon: "Suitcase"})
-	if err != nil {
-		return err
-	}
-	configMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "系统设置", MenuType: 2, URL: "/system/settings", Value: "system:config:view", MenuStatus: 1, Sort: 6, Icon: "Tools"})
+	configMenu, err := ensureMenu(db, model.Menu{ParentID: systemRoot.ID, MenuName: "系统设置", MenuType: 2, URL: "/system/settings", Value: "system:config:view", MenuStatus: 1, Sort: 4, Icon: "Tools"})
 	if err != nil {
 		return err
 	}
@@ -391,15 +361,6 @@ func seedMenus(db *gorm.DB) error {
 		{ParentID: menuMenu.ID, MenuName: "新增菜单", MenuType: 3, Value: "system:menu:add", MenuStatus: 1, Sort: 1},
 		{ParentID: menuMenu.ID, MenuName: "编辑菜单", MenuType: 3, Value: "system:menu:edit", MenuStatus: 1, Sort: 2},
 		{ParentID: menuMenu.ID, MenuName: "删除菜单", MenuType: 3, Value: "system:menu:delete", MenuStatus: 1, Sort: 3},
-
-		{ParentID: deptMenu.ID, MenuName: "新增部门", MenuType: 3, Value: "system:dept:add", MenuStatus: 1, Sort: 1},
-		{ParentID: deptMenu.ID, MenuName: "编辑部门", MenuType: 3, Value: "system:dept:edit", MenuStatus: 1, Sort: 2},
-		{ParentID: deptMenu.ID, MenuName: "删除部门", MenuType: 3, Value: "system:dept:delete", MenuStatus: 1, Sort: 3},
-
-		{ParentID: postMenu.ID, MenuName: "新增岗位", MenuType: 3, Value: "system:post:add", MenuStatus: 1, Sort: 1},
-		{ParentID: postMenu.ID, MenuName: "编辑岗位", MenuType: 3, Value: "system:post:edit", MenuStatus: 1, Sort: 2},
-		{ParentID: postMenu.ID, MenuName: "删除岗位", MenuType: 3, Value: "system:post:delete", MenuStatus: 1, Sort: 3},
-		{ParentID: postMenu.ID, MenuName: "切换状态", MenuType: 3, Value: "system:post:status", MenuStatus: 1, Sort: 4},
 
 		{ParentID: configMenu.ID, MenuName: "保存配置", MenuType: 3, Value: "system:config:save", MenuStatus: 1, Sort: 1},
 		{ParentID: configMenu.ID, MenuName: "配置 LDAP 集成", MenuType: 3, Value: "system:config:ldap", MenuStatus: 1, Sort: 2},
@@ -725,23 +686,12 @@ func seedAdmin(db *gorm.DB) error {
 	if username == "" {
 		username = "admin"
 	}
-
-	var dept model.Dept
-	var post model.Post
 	var role model.Role
-	if err := db.First(&dept).Error; err != nil {
-		return err
-	}
-	if err := db.First(&post).Error; err != nil {
-		return err
-	}
-	if err := db.First(&role).Error; err != nil {
+	if err := db.Where("role_key = ?", "super-admin").First(&role).Error; err != nil {
 		return err
 	}
 
 	admin := model.Admin{
-		PostID:    post.ID,
-		DeptID:    dept.ID,
 		Username:  username,
 		Password:  util.HashPassword(initialPassword),
 		Nickname:  "系统管理员",
@@ -862,4 +812,15 @@ func ensureMenu(db *gorm.DB, menu model.Menu) (model.Menu, error) {
 		return existing, err
 	}
 	return menu, nil
+}
+
+func seedMemberRole(db *gorm.DB) error {
+	var count int64
+	if err := db.Model(&model.Role{}).Where("role_key=?", "member").Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	return db.Create(&model.Role{RoleName: "普通成员", RoleKey: "member", Status: 1, Description: "通过用户组和访问策略获得资源权限"}).Error
 }

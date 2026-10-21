@@ -4,8 +4,6 @@ import "time"
 
 type Admin struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
-	PostID    uint      `json:"postId"`
-	DeptID    uint      `json:"deptId"`
 	Username  string    `json:"username" gorm:"size:64;uniqueIndex;not null"`
 	Password  string    `json:"-"`
 	Nickname  string    `json:"nickname" gorm:"size:64;not null"`
@@ -32,15 +30,14 @@ func (AdminRole) TableName() string {
 }
 
 type AdminListItem struct {
+	AccountType string `json:"accountType"`
+	GroupIDs    []uint `json:"groupIds" gorm:"-"`
+
 	ID        uint      `json:"id"`
 	Username  string    `json:"username"`
 	Nickname  string    `json:"nickname"`
 	Status    int       `json:"status"`
-	PostID    uint      `json:"postId"`
-	DeptID    uint      `json:"deptId"`
 	RoleID    uint      `json:"roleId"`
-	PostName  string    `json:"postName"`
-	DeptName  string    `json:"deptName"`
 	RoleName  string    `json:"roleName"`
 	Email     string    `json:"email"`
 	Phone     string    `json:"phone"`

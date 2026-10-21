@@ -70,6 +70,7 @@ export const appDefinitions = [
             icon: 'Cloudy',
             children: []
           },
+          { title: '命令过滤', path: '/assets/server/command-filters', icon: 'Filter', adminOnly: true, children: [] },
           {
             title: '资产同步',
             path: '/assets/server/sync',

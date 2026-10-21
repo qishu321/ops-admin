@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"ops-admin/backend/httpx"
+	"ops-admin/backend/internal/access"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -45,6 +46,17 @@ func RequireCreateOrEditPermission(db *gorm.DB, createPermission, editPermission
 // consumed by more than one independently-authorized page.
 func RequireAnyPermission(db *gorm.DB, permissions ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if p := access.From(c.Request.Context()); p != nil {
+			for _, permission := range permissions {
+				if p.Has(permission) {
+					c.Next()
+					return
+				}
+			}
+			httpx.Failed(c, 403, "没有执行该操作的权限")
+			c.Abort()
+			return
+		}
 		values := make([]string, 0, len(permissions))
 		for _, permission := range permissions {
 			if permission = strings.TrimSpace(permission); permission != "" {

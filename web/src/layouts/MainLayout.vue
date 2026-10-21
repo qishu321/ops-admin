@@ -5,6 +5,7 @@ import { ArrowDown, Check, Expand, Fold, Grid, House, Search } from '@element-pl
 import { logoutSession, profile } from '../api/system'
 import {
   getMenus,
+  getToken,
   getSidebarCollapsed,
   getUser,
   logout,
@@ -13,6 +14,7 @@ import {
   setSidebarCollapsed,
   setUser
 } from '../utils/auth'
+import { ACCESS_CHANGED_EVENT, createAccessSynchronizer } from '../utils/access-sync'
 import { appDefinitions, getAppByRoute, setCurrentApp } from '../utils/apps'
 import { locale, setLocale, t, translateRoute } from '../utils/i18n'
 import { applySystemTheme, getSystemConfig, resolveSystemAsset, setSystemConfig } from '../utils/system-config'
@@ -134,7 +136,7 @@ function loadTags() {
   try {
     const parsed = JSON.parse(raw)
     const source = Array.isArray(parsed) && parsed.length ? parsed : defaults
-    return trimTagViews(source.map((item) => ({
+    return trimTagViews(source.filter(item => item.path !== '/assets/server/command-filters' || getUser().accountType === 'administrator').map((item) => ({
       ...item,
       fullPath: item.fullPath || item.path,
       title: translateRoute(item.path, item.title),
@@ -220,7 +222,7 @@ function isAppEntryMenu(item) {
 }
 
 function normalizeStaticMenus(raw) {
-  return (raw || []).map((item) => ({
+  return (raw || []).filter(item => !item.adminOnly || user.value.accountType === 'administrator').map((item) => ({
     ...item,
     children: normalizeStaticMenus(item.children || [])
   }))
@@ -494,36 +496,41 @@ function switchApp(key) {
   }
 }
 
-async function syncProfile() {
-  try {
-    const data = await profile()
-    if (data?.user) {
-      setUser(data.user)
-      user.value = data.user
+const profileSync = createAccessSynchronizer({
+  getIdentity: getToken,
+  loadProfile: () => profile({ silent: true }),
+  applyProfile(data) {
+    if (data?.user) { setUser(data.user); user.value = data.user }
+    if (user.value.accountType !== 'administrator') {
+      tagViews.value = tagViews.value.filter(tag => tag.path !== '/assets/server/command-filters')
+      saveTags()
+      if (route.meta.adminOnly) router.replace('/dashboard')
     }
-    if (data?.leftMenuList) {
-      setMenus(data.leftMenuList)
-      rawMenus.value = data.leftMenuList
-    }
-    if (data?.permissionList) {
-      setPermissions(data.permissionList)
-    }
+    if (data?.leftMenuList) { setMenus(data.leftMenuList); rawMenus.value = data.leftMenuList }
+    if (data?.permissionList) setPermissions(data.permissionList)
     if (data?.systemConfig) {
       setSystemConfig(data.systemConfig)
       layoutConfig.value = data.systemConfig
       applySystemTheme(data.systemConfig)
     }
-  } catch {
+  },
+  onChanged(detail) { window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT, { detail })) }
+})
+let profileSyncTimer
+async function syncProfile() {
+  try { await profileSync.sync() } catch {
     rawMenus.value = getMenus()
     user.value = getUser()
-    layoutConfig.value = getSystemConfig()
-    applySystemTheme(layoutConfig.value)
   }
+}
+function syncVisibleProfile() {
+  if (document.visibilityState === 'visible') syncProfile()
 }
 
 watch(
   () => route.fullPath,
   () => {
+    syncProfile()
     closeTagContextMenu()
     setCurrentApp(currentApp.value.key)
     ensureTag(route.path, currentTitle.value, route.fullPath)
@@ -545,11 +552,18 @@ watch(
 onMounted(() => {
   applySystemTheme(layoutConfig.value)
   syncProfile()
+  profileSyncTimer = window.setInterval(syncVisibleProfile, 15000)
+  window.addEventListener('focus', syncVisibleProfile)
+  document.addEventListener('visibilitychange', syncVisibleProfile)
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('ops-admin:close-tab-request', closeRequestedTag)
 })
 
 onBeforeUnmount(() => {
+  profileSync.dispose()
+  window.clearInterval(profileSyncTimer)
+  window.removeEventListener('focus', syncVisibleProfile)
+  document.removeEventListener('visibilitychange', syncVisibleProfile)
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('ops-admin:close-tab-request', closeRequestedTag)
 })

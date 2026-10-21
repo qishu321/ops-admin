@@ -125,7 +125,7 @@ func TestAggregationLookbackCoversConvergenceWindow(t *testing.T) {
 }
 
 func TestMonitorRuleEvaluationCannotOverlap(t *testing.T) {
-	service := &Service{monitorScheduler: &MonitorScheduler{running: map[uint]bool{}}}
+	service := &Service{serviceRuntime: &serviceRuntime{monitorScheduler: &MonitorScheduler{running: map[uint]bool{}}}}
 	if !service.beginMonitorAlertRuleEvaluation(9) {
 		t.Fatal("first evaluation should start")
 	}

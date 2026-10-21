@@ -869,6 +869,9 @@ func (s *Service) checkAllMonitorDatasources() {
 }
 
 func (s *Service) PrometheusInstantQuery(datasourceID uint, query string, ts time.Time) (map[string]any, error) {
+	if err := s.requireResource("datasource", datasourceID, "", "query"); err != nil {
+		return nil, err
+	}
 	return s.MonitorInstantQuery(datasourceID, query, ts)
 }
 
@@ -1286,6 +1289,9 @@ func (s *Service) elasticsearchQuery(ds model.MonitorDatasource, query string) (
 }
 
 func (s *Service) QueryMonitorLogs(payload MonitorLogQueryPayload) (map[string]any, error) {
+	if err := s.requireResource("datasource", payload.DatasourceID, strings.TrimSpace(payload.Index), "query"); err != nil {
+		return nil, err
+	}
 	if payload.DatasourceID == 0 {
 		return nil, errors.New("请选择日志数据源")
 	}
@@ -2046,7 +2052,7 @@ func (s *Service) ListMonitorElasticsearchIndices(datasourceID uint) ([]map[stri
 	result := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
 		name := monitorSourceString(item["index"])
-		if name == "" || strings.HasPrefix(name, ".security") {
+		if name == "" || strings.HasPrefix(name, ".security") || !s.resourcePolicy().Allows("datasource", datasourceID, name, "query") {
 			continue
 		}
 		result = append(result, map[string]any{

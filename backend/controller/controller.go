@@ -534,182 +534,6 @@ func (ctl *Controller) GetMenuInfo(c *gin.Context) {
 	httpx.Success(c, menu)
 }
 
-func (ctl *Controller) GetDeptList(c *gin.Context) {
-	list, err := ctl.service.ListDepts()
-	if err != nil {
-		httpx.Failed(c, 500, err.Error())
-		return
-	}
-	httpx.Success(c, list)
-}
-
-func (ctl *Controller) QuerySysDeptVoList(c *gin.Context) {
-	list, err := ctl.service.ListDepts()
-	if err != nil {
-		httpx.Failed(c, 500, err.Error())
-		return
-	}
-	vo := make([]gin.H, 0, len(list))
-	for _, item := range list {
-		vo = append(vo, gin.H{"id": item.ID, "parentId": item.ParentID, "label": item.DeptName})
-	}
-	httpx.Success(c, vo)
-}
-
-func (ctl *Controller) CreateDept(c *gin.Context) {
-	var payload service.DeptPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid department payload")
-		return
-	}
-	if err := ctl.service.CreateDept(payload); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) UpdateDept(c *gin.Context) {
-	var payload service.DeptPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid department payload")
-		return
-	}
-	if err := ctl.service.UpdateDept(payload); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) DeleteDept(c *gin.Context) {
-	var payload service.IDPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid delete payload")
-		return
-	}
-	if err := ctl.service.DeleteDept(payload.ID); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) GetDeptInfo(c *gin.Context) {
-	dept, err := ctl.service.GetDept(uint(mustAtoi(c.Query("id"))))
-	if err != nil {
-		httpx.Failed(c, 404, err.Error())
-		return
-	}
-	httpx.Success(c, dept)
-}
-
-func (ctl *Controller) GetDeptUsers(c *gin.Context) {
-	deptID := uint(mustAtoi(c.Query("deptId")))
-	users, err := ctl.service.DeptUsers(deptID)
-	if err != nil {
-		httpx.Failed(c, 500, err.Error())
-		return
-	}
-	httpx.Success(c, users)
-}
-
-func (ctl *Controller) GetPostList(c *gin.Context) {
-	list, err := ctl.service.ListPosts()
-	if err != nil {
-		httpx.Failed(c, 500, err.Error())
-		return
-	}
-	httpx.Success(c, map[string]any{"list": list, "total": len(list)})
-}
-
-func (ctl *Controller) QuerySysPostVoList(c *gin.Context) {
-	list, err := ctl.service.ListPosts()
-	if err != nil {
-		httpx.Failed(c, 500, err.Error())
-		return
-	}
-	vo := make([]gin.H, 0, len(list))
-	for _, item := range list {
-		vo = append(vo, gin.H{"id": item.ID, "postName": item.PostName})
-	}
-	httpx.Success(c, vo)
-}
-
-func (ctl *Controller) CreatePost(c *gin.Context) {
-	var payload service.PostPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid post payload")
-		return
-	}
-	if err := ctl.service.CreatePost(payload); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) UpdatePost(c *gin.Context) {
-	var payload service.PostPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid post payload")
-		return
-	}
-	if err := ctl.service.UpdatePost(payload); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) DeletePost(c *gin.Context) {
-	var payload service.IDPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid delete payload")
-		return
-	}
-	if err := ctl.service.DeletePost(payload.ID); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) BatchDeletePost(c *gin.Context) {
-	var payload service.BatchIDPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid batch delete payload")
-		return
-	}
-	if err := ctl.service.BatchDeletePosts(payload.IDs); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
-func (ctl *Controller) GetPostInfo(c *gin.Context) {
-	post, err := ctl.service.GetPost(uint(mustAtoi(c.Query("id"))))
-	if err != nil {
-		httpx.Failed(c, 404, err.Error())
-		return
-	}
-	httpx.Success(c, post)
-}
-
-func (ctl *Controller) UpdatePostStatus(c *gin.Context) {
-	var payload service.PostStatusPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		httpx.Failed(c, 400, "invalid status payload")
-		return
-	}
-	if err := ctl.service.UpdatePostStatus(payload); err != nil {
-		httpx.Failed(c, 400, err.Error())
-		return
-	}
-	httpx.Success(c, true)
-}
-
 func (ctl *Controller) GetLoginLogList(c *gin.Context) {
 	pageNum, _ := strconv.Atoi(c.DefaultQuery("pageNum", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
@@ -1028,9 +852,10 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
+	commandFilter := ctl.service.NewTerminalCommandFilter()
 	var writeMu sync.Mutex
 	writePipe := func(reader io.Reader) {
-		if err := writeAssetTerminalOutput(conn, &writeMu, reader); err != nil {
+		if err := writeAssetTerminalOutput(conn, &writeMu, reader, commandFilter.ObserveOutput); err != nil {
 			// Unblock the input reader so the handler releases the SSH session.
 			_ = conn.Close()
 		}
@@ -1047,8 +872,14 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 		if err != nil {
 			return
 		}
-		if _, err := terminal.Stdin.Write(message); err != nil {
+		notices, err := commandFilter.WriteInput(message, terminal.Stdin)
+		if err != nil {
 			return
+		}
+		for _, notice := range notices {
+			writeMu.Lock()
+			_ = conn.WriteMessage(websocket.BinaryMessage, []byte("\r\n\x1b[31m"+notice+"\x1b[0m\r\n"))
+			writeMu.Unlock()
 		}
 	}
 }

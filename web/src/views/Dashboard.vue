@@ -1,35 +1,27 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { profile, queryAdminList, queryRoleList, queryDeptList, queryPostList } from '../api/system'
+import { profile, queryAdminList } from '../api/system'
 import { t } from '../utils/i18n'
+import { getResourceAccessData } from '../api/resource-access'
 
 const currentUser = ref({})
-const stats = ref([
-  { title: t('userCount'), value: 0, note: t('userCountNote') },
-  { title: t('roleCount'), value: 0, note: t('roleCountNote') },
-  { title: t('deptCount'), value: 0, note: t('deptCountNote') },
-  { title: t('postCount'), value: 0, note: t('postCountNote') }
-])
+const stats = ref([])
 
 const welcome = computed(() => currentUser.value.nickname || currentUser.value.username || '管理员')
 
 onMounted(async () => {
-  const [userInfo, adminRes, roleRes, deptRes, postRes] = await Promise.all([
-    profile(),
-    queryAdminList({ pageNum: 1, pageSize: 1 }),
-    queryRoleList(),
-    queryDeptList(),
-    queryPostList()
-  ])
-
-  currentUser.value = userInfo.user || {}
-  stats.value = [
-    { title: t('userCount'), value: adminRes.total || 0, note: t('userCountNote') },
-    { title: t('roleCount'), value: roleRes.total || 0, note: t('roleCountNote') },
-    { title: t('deptCount'), value: (deptRes || []).length, note: t('deptCountNote') },
-    { title: t('postCount'), value: postRes.total || 0, note: t('postCountNote') }
-  ]
+ const userInfo = await profile()
+ currentUser.value = userInfo.user || {}
+ if (currentUser.value.accountType !== 'administrator') return
+ const [admins, access] = await Promise.all([queryAdminList({ pageNum: 1, pageSize: 1 }), getResourceAccessData()])
+ stats.value = [
+ { title: '用户总数', value: admins.total || 0, note: '平台账号数量' },
+ { title: '用户组', value: access.groups.length, note: '按团队组织协作成员' },
+ { title: '访问策略', value: access.grants.filter(g => g.enabled !== false).length, note: '已启用的资源授权策略' },
+ { title: '权限模板', value: access.templates.length, note: '可复用的授权配置' }
+ ]
 })
+
 </script>
 
 <template>
@@ -48,7 +40,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section class="stat-grid">
+    <section v-if="stats.length" class="stat-grid">
       <article v-for="(item, index) in stats" :key="item.title" class="stat-card" :class="`metric-${index + 1}`">
         <span class="stat-label">{{ item.title }}</span>
         <strong>{{ item.value }}</strong>

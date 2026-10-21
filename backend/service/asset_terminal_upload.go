@@ -41,6 +41,9 @@ type AssetTerminalFile struct {
 // separate SSH channel. It deliberately avoids rz/sz so the interactive PTY
 // remains intact, and publishes only after a successful temporary-file rename.
 func (s *Service) UploadAssetTerminalFile(hostID uint, directory, filename string, size int64, content io.Reader) (map[string]any, error) {
+	if err := s.requireResource("host", hostID, "", "upload"); err != nil {
+		return nil, err
+	}
 	directory = strings.TrimSpace(directory)
 	filename = strings.TrimSpace(filename)
 	if hostID == 0 || directory == "" {
@@ -103,6 +106,9 @@ func (s *Service) UploadAssetTerminalFile(hostID uint, directory, filename strin
 }
 
 func (s *Service) OpenAssetTerminalFileDownload(hostID uint, remotePath string) (*AssetTerminalDownload, error) {
+	if err := s.requireResource("host", hostID, "", "download"); err != nil {
+		return nil, err
+	}
 	remotePath = strings.TrimSpace(remotePath)
 	if hostID == 0 || remotePath == "" || strings.ContainsAny(remotePath, "\x00\r\n") {
 		return nil, errors.New("invalid host download target")

@@ -7,11 +7,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func writeAssetTerminalOutput(conn *websocket.Conn, writeMu *sync.Mutex, reader io.Reader) error {
+func writeAssetTerminalOutput(conn *websocket.Conn, writeMu *sync.Mutex, reader io.Reader, observers ...func([]byte)) error {
 	buf := make([]byte, 4096)
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
+			for _, observe := range observers {
+				observe(buf[:n])
+			}
 			writeMu.Lock()
 			// SSH is a byte stream: reads can split UTF-8 characters or contain
 			// arbitrary bytes. Text messages would make browsers close the socket.

@@ -1,15 +1,14 @@
-﻿import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 
 import MainLayout from '../layouts/MainLayout.vue'
+import CommandFilter from '../views/assets/CommandFilter.vue'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
 import BusinessTopology from '../views/BusinessTopology.vue'
 import Profile from '../views/Profile.vue'
 import Admin from '../views/system/Admin.vue'
-import Role from '../views/system/Role.vue'
-import Menu from '../views/system/Menu.vue'
-import Dept from '../views/system/Dept.vue'
-import Post from '../views/system/Post.vue'
+import AccessPolicies from '../views/system/AccessPolicies.vue'
+import ResourceAccessCenter from '../views/system/ResourceAccessCenter.vue'
 import LoginLog from '../views/system/LoginLog.vue'
 import OperationLog from '../views/system/OperationLog.vue'
 import SystemSettings from '../views/system/SystemSettings.vue'
@@ -97,7 +96,7 @@ import DNSQueryTest from '../views/domains/DNSQueryTest.vue'
 import DNSAudit from '../views/domains/DNSAudit.vue'
 import SSLCertificates from '../views/domains/SSLCertificates.vue'
 import SSLCertificateDetail from '../views/domains/SSLCertificateDetail.vue'
-import { getToken } from '../utils/auth'
+import { getUser, getToken } from '../utils/auth'
 
 const moduleCards = {
   assetOverview: [
@@ -118,11 +117,14 @@ const routes = [
       { path: '/dashboard', component: Dashboard, meta: { title: '仪表盘', app: 'console', affix: true } },
       { path: '/business-topology', component: BusinessTopology, meta: { title: '业务拓扑图', app: 'console', summary: '按环境展示应用的业务功能与已绑定的运行资源。' } },
       { path: '/profile', component: Profile, meta: { title: '个人信息', app: 'console' } },
-      { path: '/system/admin', component: Admin, meta: { title: '用户信息', app: 'console' } },
-      { path: '/system/role', component: Role, meta: { title: '角色信息', app: 'console' } },
-      { path: '/system/menu', component: Menu, meta: { title: '菜单信息', app: 'console' } },
-      { path: '/system/dept', component: Dept, meta: { title: '部门信息', app: 'console' } },
-      { path: '/system/post', component: Post, meta: { title: '岗位信息', app: 'console' } },
+      { path: '/system/admin', component: Admin, meta: { title: '用户管理', app: 'console' } },
+      { path: '/system/role', redirect: '/system/access-policies?tab=templates' },
+      { path: '/system/access-policies', component: AccessPolicies, meta: { title: '访问策略', app: 'console' } },
+      { path: '/system/user-groups', component: ResourceAccessCenter, props: { section: 'groups' }, meta: { title: '用户组', app: 'console' } },
+      { path: '/system/resource-access', redirect: '/system/access-policies' },
+      { path: '/system/menu', redirect: '/system/settings?tab=advanced' },
+      { path: '/system/dept', redirect: '/system/admin' },
+      { path: '/system/post', redirect: '/system/admin' },
       { path: '/system/settings', component: SystemSettings, meta: { title: '系统设置', app: 'console' } },
       { path: '/system/basic-config', redirect: '/system/settings' },
       {
@@ -218,6 +220,7 @@ const routes = [
           summary: '维护云厂商访问账号，为云资产同步提供凭证来源。'
         }
       },
+      { path: '/assets/server/command-filters', component: CommandFilter, meta: { title: '命令过滤', app: 'assets', adminOnly: true } },
       {
         path: '/assets/server/sync',
         component: AssetSync,
@@ -586,6 +589,7 @@ router.beforeEach((to, from, next) => {
     next('/login')
     return
   }
+  if (to.meta.adminOnly && getUser().accountType !== 'administrator') { next('/dashboard'); return }
   next()
 })
 

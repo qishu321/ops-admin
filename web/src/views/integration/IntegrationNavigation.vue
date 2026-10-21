@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { copyTextToClipboard } from '../../utils/clipboard'
+import { normalizeNavigationOrigins, buildPublicNavigationLink } from '../../utils/navigation-links'
 import {
   deleteNavigation,
   deleteNavigationGroup,
@@ -19,8 +21,59 @@ const keyword = ref('')
 const groupDialogVisible = ref(false)
 const navigationDialogVisible = ref(false)
 const saving = ref(false)
+const copying = ref(false)
+const copyDialogVisible = ref(false)
+const manualCopyURL = ref('')
+const manualCopyInput = ref()
+const linkDialogVisible = ref(false), savingLinks = ref(false), linkGroupId = ref(0)
+const originChoices = reactive({})
+const linkDraft = ref([]), defaultOriginId = ref(0)
+let originRowId = 0
+const currentOrigin = window.location.origin
+const publicOrigins = computed(() => [...new Set([...(selectedGroup.value?.publicOrigins || []), window.location.origin])])
+const activePublicOrigin = computed({
+  get: () => publicOrigins.value.includes(originChoices[selectedGroupId.value]) ? originChoices[selectedGroupId.value] : publicOrigins.value[0],
+  set: value => { originChoices[selectedGroupId.value] = value }
+})
+function addOrigin(value = '') {
+  if (linkDraft.value.length >= 10) return ElMessage.warning('最多配置 10 个访问入口')
+  const id = ++originRowId
+  linkDraft.value.push({ id, value })
+  if (!defaultOriginId.value) defaultOriginId.value = id
+}
+function removeOrigin(id) {
+  linkDraft.value = linkDraft.value.filter(row => row.id !== id)
+  if (defaultOriginId.value === id) defaultOriginId.value = linkDraft.value[0]?.id || 0
+}
+function openLinkEditor() {
+  linkGroupId.value = selectedGroupId.value
+  linkDraft.value = []; defaultOriginId.value = 0
+  const values = selectedGroup.value?.publicOrigins?.length ? selectedGroup.value.publicOrigins : [window.location.origin]
+  values.forEach(value => addOrigin(value))
+  linkDialogVisible.value = true
+}
+function linkPreview(value) {
+  try { return buildPublicNavigationLink(normalizeNavigationOrigins([value])[0], selectedGroup.value?.publicToken) } catch { return '' }
+}
+async function savePublicLinks() {
+  const group = groups.value.find(item => item.id === linkGroupId.value)
+  if (!group) return
+  let origins
+  try {
+    const preferred = linkDraft.value.find(row => row.id === defaultOriginId.value)
+    origins = normalizeNavigationOrigins([...(preferred ? [preferred.value] : []), ...linkDraft.value.filter(row => row.id !== defaultOriginId.value).map(row => row.value)])
+  } catch (error) { ElMessage.warning(error.message); return }
+  savingLinks.value = true
+  try {
+    await saveNavigationGroup({ ...group, publicOrigins: origins })
+    await loadGroups(group.id)
+    delete originChoices[group.id]
+    linkDialogVisible.value = false
+    ElMessage.success('公开链接入口已保存')
+  } finally { savingLinks.value = false }
+}
 
-const groupForm = reactive({ id: undefined, name: '', description: '', isPublic: false, status: 1, sort: 0 })
+const groupForm = reactive({ id: undefined, name: '', description: '', isPublic: false, status: 1, sort: 0, publicOrigins: [] })
 const navigationForm = reactive({
   id: undefined,
   groupId: 0,
@@ -38,11 +91,11 @@ const totalNavigationCount = computed(() => groups.value.reduce((total, item) =>
 const publicGroupCount = computed(() => groups.value.filter((item) => item.isPublic).length)
 const publicURL = computed(() => {
   if (!selectedGroup.value?.isPublic || !selectedGroup.value?.publicToken) return ''
-  return `${window.location.origin}/public/navigation/${selectedGroup.value.publicToken}`
+  return buildPublicNavigationLink(activePublicOrigin.value, selectedGroup.value.publicToken)
 })
 
 function resetGroupForm() {
-  Object.assign(groupForm, { id: undefined, name: '', description: '', isPublic: false, status: 1, sort: 0 })
+  Object.assign(groupForm, { id: undefined, name: '', description: '', isPublic: false, status: 1, sort: 0, publicOrigins: [] })
 }
 
 function resetNavigationForm() {
@@ -179,9 +232,21 @@ function openNavigation(item) {
 }
 
 async function copyPublicURL() {
-  if (!publicURL.value) return
-  await navigator.clipboard.writeText(publicURL.value)
-  ElMessage.success('公开链接已复制')
+  const url = publicURL.value
+  if (!url || copying.value) return
+  copying.value = true
+  try {
+    if (await copyTextToClipboard(url)) {
+      ElMessage.success('公开链接已复制')
+      return
+    }
+  } catch {
+    // Always leave a usable manual path when browser clipboard access fails.
+  } finally {
+    copying.value = false
+  }
+  manualCopyURL.value = url
+  copyDialogVisible.value = true
 }
 
 async function regenerateToken() {
@@ -296,8 +361,9 @@ onMounted(async () => {
 
           <div v-if="publicURL" class="public-link-bar">
             <div class="public-status"><span></span><strong>公开访问已开启</strong></div>
-            <code>{{ publicURL }}</code>
-            <el-button size="small" @click="copyPublicURL">复制链接</el-button>
+            <div class="public-link-address"><el-select v-if="publicOrigins.length > 1" v-model="activePublicOrigin" size="small" aria-label="公开链接访问入口"><el-option v-for="origin in publicOrigins" :key="origin" :value="origin" :label="origin === currentOrigin ? `当前地址 · ${origin}` : origin" /></el-select><code :title="publicURL">{{ publicURL }}</code></div>
+            <el-button size="small" @click="openLinkEditor">编辑链接</el-button>
+            <el-button size="small" :loading="copying" @click="copyPublicURL">复制链接</el-button>
             <el-button size="small" @click="regenerateToken">重新生成</el-button>
           </div>
 
@@ -339,6 +405,22 @@ onMounted(async () => {
         <el-empty v-else description="创建一个导航组后开始添加导航" />
       </main>
     </section>
+
+    <el-dialog v-model="linkDialogVisible" title="编辑公开链接" width="min(740px, calc(100vw - 32px))" :close-on-click-modal="false" :close-on-press-escape="!savingLinks" :show-close="!savingLinks" class="public-links-dialog">
+      <div class="public-link-intro"><strong>为同一个导航组配置多个访问入口</strong><p>填写已部署平台的 IP、域名及端口，也可粘贴完整公开链接。分享标识自动保留；新增地址需要已能访问本平台。</p></div>
+      <div class="origin-editor-heading"><span>访问入口 <small>最多 10 个，选中一项作为默认入口</small></span><el-button size="small" type="primary" plain :disabled="savingLinks || linkDraft.length >= 10" @click="addOrigin()">新增地址</el-button></div>
+      <el-radio-group v-model="defaultOriginId" class="origin-editor" :disabled="savingLinks">
+        <div v-for="(row, index) in linkDraft" :key="row.id" class="origin-editor-row"><div class="origin-row-heading"><el-radio :value="row.id">入口 {{ index + 1 }}<el-tag v-if="defaultOriginId === row.id" size="small" effect="plain">默认</el-tag></el-radio><el-button link type="danger" :disabled="savingLinks" :aria-label="`移除入口 ${index + 1}`" @click="removeOrigin(row.id)">移除</el-button></div><el-input v-model="row.value" :disabled="savingLinks" :aria-label="`入口地址 ${index + 1}`" placeholder="例如：https://ops.example.com 或 http://192.168.1.10:8080" maxlength="2048" /><small v-if="row.value && linkPreview(row.value)" class="origin-link-preview">{{ linkPreview(row.value) }}</small></div>
+      </el-radio-group>
+      <el-empty v-if="!linkDraft.length" description="未配置入口时，使用当前访问地址" :image-size="55" />
+      <template #footer><el-button :disabled="savingLinks" @click="linkDialogVisible = false">取消</el-button><el-button type="primary" :loading="savingLinks" @click="savePublicLinks">保存链接</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="copyDialogVisible" title="手动复制公开链接" width="min(640px, calc(100vw - 32px))" @opened="manualCopyInput?.select()">
+      <p>浏览器限制了自动复制，请选中下方链接后按 Ctrl+C（Mac 使用 ⌘C）复制。</p>
+      <el-input ref="manualCopyInput" :model-value="manualCopyURL" readonly aria-label="公开导航链接" @focus="$event.target.select()" />
+      <template #footer><el-button @click="copyDialogVisible = false">关闭</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="groupDialogVisible" :title="groupForm.id ? '编辑导航组' : '新增导航组'" width="620px" destroy-on-close>
       <el-form label-position="top">
@@ -426,10 +508,10 @@ onMounted(async () => {
 .heading-line { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .heading-line h2 { margin: 0 0 4px; font-size: 22px; }
 .group-actions { display: flex; flex-shrink: 0; }
-.public-link-bar { display: grid; grid-template-columns: auto minmax(120px, 1fr) auto auto; align-items: center; gap: 9px; margin-top: 14px; padding: 9px 11px; border: 1px solid #bce5cd; border-radius: 7px; background: #f3fbf6; }
+.public-link-bar { display: grid; grid-template-columns: auto minmax(120px, 1fr) auto auto auto; align-items: center; gap: 9px; margin-top: 14px; padding: 9px 11px; border: 1px solid #bce5cd; border-radius: 7px; background: #f3fbf6; }
 .public-status { display: flex; align-items: center; gap: 7px; color: #187847; white-space: nowrap; }
 .public-status span { width: 7px; height: 7px; border-radius: 50%; background: #22b66c; }
-.public-link-bar code { overflow: hidden; color: #46617c; text-overflow: ellipsis; white-space: nowrap; }
+.public-link-bar code { display:block; font-size:11px; overflow: hidden; color: #46617c; text-overflow: ellipsis; white-space: nowrap; }
 .navigation-toolbar { display: flex; align-items: center; gap: 9px; margin: 16px 0 13px; }
 .navigation-toolbar .el-input { width: min(420px, 55%); }
 .navigation-count { margin-left: auto; color: #8996aa; }
@@ -465,5 +547,9 @@ onMounted(async () => {
 .three-columns { grid-template-columns: 1.4fr 1fr 1fr; }
 @media (max-width: 1450px) { .navigation-grid { grid-template-columns: repeat(3, minmax(220px, 1fr)); } }
 @media (max-width: 1100px) { .navigation-grid { grid-template-columns: repeat(2, minmax(220px, 1fr)); } }
-@media (max-width: 800px) { .integration-header { align-items: flex-start; flex-direction: column; } .navigation-summary { grid-template-columns: repeat(2, 1fr); } .summary-cell:nth-child(2) { border-right: 0; } .summary-cell:nth-child(-n + 2) { border-bottom: 1px solid #e8eef7; } .header-actions, .group-heading { align-items: flex-start; } .group-heading { flex-direction: column; } .integration-workspace { grid-template-columns: 1fr; } .group-panel { border-right: 0; border-bottom: 1px solid #e7edf6; } .group-list { flex-direction: row; overflow-x: auto; } .group-item { min-width: 210px; } .navigation-grid { grid-template-columns: 1fr; } .public-link-bar { grid-template-columns: 1fr auto; } .public-link-bar code { grid-column: 1 / -1; } .form-grid { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .integration-header { align-items: flex-start; flex-direction: column; } .navigation-summary { grid-template-columns: repeat(2, 1fr); } .summary-cell:nth-child(2) { border-right: 0; } .summary-cell:nth-child(-n + 2) { border-bottom: 1px solid #e8eef7; } .header-actions, .group-heading { align-items: flex-start; } .group-heading { flex-direction: column; } .integration-workspace { grid-template-columns: 1fr; } .group-panel { border-right: 0; border-bottom: 1px solid #e7edf6; } .group-list { flex-direction: row; overflow-x: auto; } .group-item { min-width: 210px; } .navigation-grid { grid-template-columns: 1fr; } .public-link-bar { grid-template-columns: 1fr auto; } .public-link-address { grid-column: 1 / -1; } .form-grid { grid-template-columns: 1fr; } }
+.public-link-address { min-width:0; display:grid; gap:6px; }.public-link-address .el-select { max-width:100%; width:100%; }
+.public-link-intro { padding:14px 16px; border:1px solid #dfe9f7; border-radius:8px; background:#f5f9ff; color:#294c78; }.public-link-intro strong { font-size:14px; }.public-link-intro p { margin:8px 0 0; color:#7b8da6; line-height:1.8; font-size:12px; }
+.origin-editor-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:20px 0 12px; font-weight:600; color:#354d6c; }.origin-editor-heading small { margin-left:10px; font-weight:400; color:#8c9bb0; font-size:11px; }
+.origin-editor { display:flex; flex-direction:column; width:100%; gap:12px; align-items:stretch; max-height:42vh; overflow:auto; padding:2px; }.origin-editor-row { padding:12px 14px; border:1px solid #e3eaf4; border-radius:8px; background:#fcfdff; }.origin-row-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }.origin-row-heading .el-tag { margin-left:8px; font-size:10px; }.origin-link-preview { display:block; margin-top:8px; overflow-wrap:anywhere; color:#8394aa; font:11px/1.8 Consolas,monospace; }
 </style>

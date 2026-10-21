@@ -77,6 +77,7 @@ function createTerminal() {
   term = new Terminal({
     cursorBlink: true,
     convertEol: true,
+    scrollback: 5000,
     fontSize: 13,
     rows: 32,
     cols: 120,
@@ -118,7 +119,12 @@ function scheduleTerminalSizeSync() {
 
 function syncTerminalSize() {
   if (!term || !terminalRef.value) return
-  const width = terminalRef.value.clientWidth
+  const viewport = terminalRef.value.querySelector('.xterm-viewport')
+  // The renderer sits above the native viewport. Reserve its scrollbar gutter
+  // so terminal cells cannot cover the thumb or intercept a drag. Overlay
+  // scrollbars report zero width, but still need an unobstructed 14px strip.
+  const scrollbarWidth = Math.max(14, viewport ? viewport.offsetWidth - viewport.clientWidth : 0)
+  const width = Math.max(0, terminalRef.value.clientWidth - scrollbarWidth)
   const height = terminalRef.value.clientHeight
   if (!width || !height) return
 
@@ -128,7 +134,7 @@ function syncTerminalSize() {
   const screen = terminalRef.value.querySelector('.xterm-screen')
   const cellWidth = screen?.clientWidth ? screen.clientWidth / term.cols : 8.2
   const cellHeight = screen?.clientHeight ? screen.clientHeight / term.rows : 18
-  const cols = Math.max(80, Math.floor(width / cellWidth))
+  const cols = Math.max(2, Math.floor(width / cellWidth))
   const rows = Math.max(20, Math.floor(height / cellHeight))
   if (term.cols !== cols || term.rows !== rows) {
     term.resize(cols, rows)
@@ -578,6 +584,29 @@ onBeforeUnmount(() => {
 .terminal-body :deep(.xterm) {
   width: 100%;
   height: 100%;
+}
+
+.terminal-body :deep(.xterm-viewport) {
+  scrollbar-gutter: stable;
+}
+
+.terminal-body :deep(.xterm-viewport::-webkit-scrollbar) {
+  width: 14px;
+}
+
+.terminal-body :deep(.xterm-viewport::-webkit-scrollbar-track) {
+  background: #0e1b2d;
+}
+
+.terminal-body :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
+  min-height: 36px;
+  border: 3px solid #0e1b2d;
+  border-radius: 7px;
+  background: #627b96;
+}
+
+.terminal-body :deep(.xterm-viewport::-webkit-scrollbar-thumb:hover) {
+  background: #8ba3bd;
 }
 
 .upload-target {

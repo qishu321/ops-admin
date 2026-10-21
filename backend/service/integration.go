@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"ops-admin/backend/model"
@@ -13,12 +14,13 @@ import (
 )
 
 type IntegrationNavigationGroupPayload struct {
-	ID          uint   `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	IsPublic    bool   `json:"isPublic"`
-	Status      int    `json:"status"`
-	Sort        int    `json:"sort"`
+	ID            uint      `json:"id"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	IsPublic      bool      `json:"isPublic"`
+	Status        int       `json:"status"`
+	Sort          int       `json:"sort"`
+	PublicOrigins *[]string `json:"publicOrigins"`
 }
 
 type IntegrationNavigationPayload struct {
@@ -50,7 +52,7 @@ func (s *Service) ListIntegrationNavigationGroups(keyword string) ([]map[string]
 		}
 		result = append(result, map[string]any{
 			"id": group.ID, "name": group.Name, "description": group.Description,
-			"isPublic": group.IsPublic, "publicToken": group.PublicToken,
+			"isPublic": group.IsPublic, "publicToken": group.PublicToken, "publicOrigins": group.PublicOrigins,
 			"status": group.Status, "sort": group.Sort, "itemCount": count,
 			"createTime": group.CreatedAt, "updateTime": group.UpdatedAt,
 		})
@@ -78,6 +80,13 @@ func (s *Service) SaveIntegrationNavigationGroup(payload IntegrationNavigationGr
 	group.IsPublic = payload.IsPublic
 	group.Status = status
 	group.Sort = payload.Sort
+	if payload.PublicOrigins != nil {
+		origins, err := normalizeNavigationPublicOrigins(*payload.PublicOrigins)
+		if err != nil {
+			return group, err
+		}
+		group.PublicOrigins = origins
+	}
 	if group.IsPublic && group.PublicToken == "" {
 		token, err := newPublicNavigationToken()
 		if err != nil {
@@ -228,6 +237,55 @@ func newPublicNavigationToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buffer), nil
+}
+
+func normalizeNavigationPublicOrigins(values []string) ([]string, error) {
+	if len(values) > 10 {
+		return nil, errors.New("最多配置 10 个访问入口")
+	}
+	result := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if len(value) > 2048 {
+			return nil, errors.New("入口地址不能超过 2048 字节")
+		}
+		u, err := url.Parse(value)
+		if err != nil {
+			return nil, errors.New("入口地址必须是有效的 HTTP/HTTPS 地址")
+		}
+		scheme := strings.ToLower(u.Scheme)
+		if (scheme != "http" && scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+			return nil, errors.New("入口地址需包含 http:// 或 https://，不能包含账号、查询参数或片段")
+		}
+		path := strings.Trim(u.Path, "/")
+		parts := strings.Split(path, "/")
+		if path != "" && !(len(parts) == 3 && parts[0] == "public" && parts[1] == "navigation" && parts[2] != "") {
+			return nil, errors.New("请填写平台 IP/域名和端口，或粘贴完整的公开导航链接")
+		}
+		host, port := strings.ToLower(u.Hostname()), u.Port()
+		if port != "" {
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 1 || n > 65535 {
+				return nil, errors.New("入口地址端口必须在 1 到 65535 之间")
+			}
+		}
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
+		if port != "" && !(scheme == "http" && port == "80" || scheme == "https" && port == "443") {
+			host += ":" + port
+		}
+		origin := scheme + "://" + host
+		if !seen[origin] {
+			result = append(result, origin)
+			seen[origin] = true
+		}
+	}
+	return result, nil
 }
 
 func validatePublicNavigationURL(value string) error {

@@ -1,4 +1,5 @@
 <script setup>
+import { useAccessRefresh } from '../../composables/useAccessRefresh'
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -37,16 +38,22 @@ let resizeFrame
 
 const activeSession = computed(() => sessions.value.find((item) => item.id === activeSessionId.value))
 
+let treeVersion = 0
 async function loadTree() {
+  const version = ++treeVersion
   loading.value = true
   try {
     const [groupsRes, hostsRes] = await Promise.all([
       queryAssetHostGroupList({ keyword: query.keyword }),
       queryAssetHostList({ pageNum: 1, pageSize: 1000, keyword: query.keyword })
     ])
+    if (version !== treeVersion) return
     groupTree.value = buildTree(groupsRes.list || [], hostsRes.list || [])
+  } catch (error) {
+    if (version === treeVersion) groupTree.value = []
+    throw error
   } finally {
-    loading.value = false
+    if (version === treeVersion) loading.value = false
   }
 }
 
@@ -391,6 +398,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(resizeFrame)
   closeAllSessions()
 })
+useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
 </script>
 
 <template>
@@ -409,20 +417,19 @@ onBeforeUnmount(() => {
       </el-tree>
     </aside>
 
-    <section v-if="sessions.length" ref="terminalBoxRef" class="terminal-window">
-      <header class="terminal-titlebar">
-        <div><strong>SSH 终端</strong><span class="session-count">已打开 {{ sessions.length }} 个会话</span></div>
-        <el-dropdown trigger="click" @command="(command) => command === 'closeOthers' && closeOtherSessions()">
-          <button class="terminal-menu" aria-label="终端会话操作">•••</button>
+    <section v-if="sessions.length" ref="terminalBoxRef" class="terminal-window" aria-label="SSH 终端">
+      <div class="terminal-tabbar">
+        <div class="terminal-tabs" role="tablist" aria-label="终端会话">
+          <button v-for="session in sessions" :key="session.id" :class="['terminal-tab', { active: session.id === activeSessionId }]" role="tab" :aria-selected="session.id === activeSessionId" @click="activateSession(session.id)">
+            <span :class="['connection-dot', session.status]" />
+            <span class="terminal-tab-label">{{ session.host.sshIp || session.host.hostName }}</span>
+            <span class="terminal-tab-close" title="关闭终端" @click.stop="closeSession(session.id)">×</span>
+          </button>
+        </div>
+        <el-dropdown class="terminal-session-menu" trigger="click" @command="(command) => command === 'closeOthers' && closeOtherSessions()">
+          <button type="button" class="terminal-menu" aria-label="终端会话操作">•••</button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item command="closeOthers" :disabled="sessions.length < 2">关闭其他会话</el-dropdown-item></el-dropdown-menu></template>
         </el-dropdown>
-      </header>
-      <div class="terminal-tabs" role="tablist" aria-label="终端会话">
-        <button v-for="session in sessions" :key="session.id" :class="['terminal-tab', { active: session.id === activeSessionId }]" role="tab" :aria-selected="session.id === activeSessionId" @click="activateSession(session.id)">
-          <span :class="['connection-dot', session.status]" />
-          <span class="terminal-tab-label">{{ session.host.sshIp || session.host.hostName }}</span>
-          <span class="terminal-tab-close" title="关闭终端" @click.stop="closeSession(session.id)">×</span>
-        </button>
       </div>
       <div class="terminal-toolbar">
         <span class="active-host">{{ activeSession?.host.hostName || activeSession?.host.sshIp }}</span>
@@ -470,9 +477,10 @@ onBeforeUnmount(() => {
 .asset-tree { --el-tree-node-hover-bg-color: rgba(0, 185, 107, .1); background: transparent; color: #00b96b; }
 .tree-node { display: inline-flex; align-items: center; gap: 8px; border-radius: 4px; font-weight: 700; }.tree-node.host { color: #a3b600; }.tree-node.host.active { color: #16d995; }
 .terminal-window { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-radius: 12px 12px 0 0; background: #20384c; box-shadow: 0 22px 48px rgba(7, 20, 35, .28); }
-.terminal-titlebar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 0 18px 0 22px; border-bottom: 1px solid rgba(0, 208, 132, .6); color: #00ff88; font-size: 18px; }.session-count { margin-left: 12px; color: #9db0c1; font-size: 12px; font-weight: 500; }
+.terminal-tabbar { display: flex; flex: 0 0 auto; min-width: 0; min-height: 44px; border-bottom: 1px solid rgba(111, 140, 164, .35); background: #172b3a; }
+.terminal-session-menu { flex: 0 0 auto; align-self: center; margin: 0 10px 0 6px; }
 .terminal-menu { width: 32px; height: 30px; border: 1px solid rgba(157, 176, 193, .45); border-radius: 6px; background: transparent; color: #c7d4dc; cursor: pointer; font-weight: 700; letter-spacing: 1px; }.terminal-menu:hover { border-color: #00d084; color: #00ff88; }
-.terminal-tabs { display: flex; min-height: 44px; gap: 4px; overflow-x: auto; padding: 6px 10px 0; border-bottom: 1px solid rgba(111, 140, 164, .35); background: #172b3a; }
+.terminal-tabs { display: flex; flex: 1; min-width: 0; min-height: 44px; gap: 4px; overflow-x: auto; padding: 6px 10px 0; }
 .terminal-tab { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; max-width: 240px; padding: 0 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; background: transparent; color: #aabac7; cursor: pointer; font-size: 13px; }.terminal-tab:hover { background: rgba(0, 208, 132, .08); color: #ecf6f1; }.terminal-tab.active { border-color: rgba(0, 208, 132, .55); background: #20384c; color: #f4fffa; }.terminal-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .connection-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #8393a5; }.connection-dot.connecting { background: #f2c94c; box-shadow: 0 0 0 3px rgba(242, 201, 76, .14); }.connection-dot.connected { background: #00d084; box-shadow: 0 0 0 3px rgba(0, 208, 132, .14); }.connection-dot.error { background: #ff6b6b; }
 .terminal-tab-close { display: inline-grid; width: 18px; height: 18px; place-items: center; border-radius: 4px; color: #91a2b1; font-size: 18px; line-height: 1; }.terminal-tab-close:hover { background: rgba(255, 77, 79, .18); color: #ff8a8c; }

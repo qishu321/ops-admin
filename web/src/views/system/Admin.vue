@@ -1,16 +1,17 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { addAdmin, adminInfo, adminUpdate, deleteAdmin, previewLDAPUsers, queryAdminList, queryDeptList, querySysPostVoList, querySysRoleVoList, resetPassword, syncLDAPUsers, updateAdminStatus } from '../../api/system'
+import { useRouter } from 'vue-router'
+import { getResourceAccessData } from '../../api/resource-access'
+const router = useRouter()
+import { addAdmin, adminInfo, adminUpdate, deleteAdmin, previewLDAPUsers, queryAdminList, resetPassword, syncLDAPUsers, updateAdminStatus } from '../../api/system'
 
 const loading = ref(false)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const tableData = ref([])
 const total = ref(0)
-const roles = ref([])
-const depts = ref([])
-const posts = ref([])
+const groups = ref([])
 const ldapDialogVisible = ref(false)
 const ldapLoading = ref(false)
 const ldapSyncing = ref(false)
@@ -30,9 +31,7 @@ const form = reactive({
   username: '',
   password: '',
   nickname: '',
-  roleId: undefined,
-  deptId: undefined,
-  postId: undefined,
+ accountType: 'member', groupIds: [],
   email: '',
   phone: '',
   note: '',
@@ -45,9 +44,7 @@ function resetForm() {
     username: '',
     password: '',
     nickname: '',
-    roleId: undefined,
-    deptId: undefined,
-    postId: undefined,
+ accountType: 'member', groupIds: [],
     email: '',
     phone: '',
     note: '',
@@ -55,16 +52,8 @@ function resetForm() {
   })
 }
 
-async function loadOptions() {
-  const [roleData, deptData, postData] = await Promise.all([
-    querySysRoleVoList(),
-    queryDeptList(),
-    querySysPostVoList()
-  ])
-  roles.value = roleData || []
-  depts.value = deptData || []
-  posts.value = postData || []
-}
+async function loadOptions() { const data = await getResourceAccessData(); groups.value = data.groups || [] }
+function groupNames(ids) { return (ids || []).map(id => groups.value.find(g => g.id === id)?.name).filter(Boolean).join('、') || '尚未加入用户组' }
 
 async function loadData() {
   loading.value = true
@@ -162,7 +151,7 @@ onMounted(async () => {
 
 <template>
   <div class="page-card console-card-page">
-    <h2 class="page-title">用户管理</h2>
+    <div class="users-heading"><div><span>IDENTITY & ACCESS</span><h2 class="page-title">用户管理</h2><p>管理账号与团队归属，资源权限统一在访问策略中配置。</p></div><el-button @click="router.push('/system/access-policies')">管理访问策略 <el-icon><Right /></el-icon></el-button></div>
     <div class="toolbar">
       <div class="toolbar-left">
         <el-input v-model="query.username" placeholder="按用户名搜索" clearable style="width: 220px" />
@@ -182,9 +171,8 @@ onMounted(async () => {
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="username" label="账号" min-width="120" />
       <el-table-column prop="nickname" label="昵称" min-width="120" />
-      <el-table-column prop="roleName" label="角色" min-width="140" />
-      <el-table-column prop="deptName" label="部门" min-width="140" />
-      <el-table-column prop="postName" label="岗位" min-width="140" />
+      <el-table-column label="账号类型" min-width="140"><template #default="{ row }"><el-tag :type="row.accountType === 'administrator' ? 'warning' : 'info'" effect="plain">{{ row.accountType === 'administrator' ? '平台管理员' : '普通成员' }}</el-tag></template></el-table-column>
+ <el-table-column label="用户组" min-width="190" show-overflow-tooltip><template #default="{ row }">{{ groupNames(row.groupIds) }}</template></el-table-column>
       <el-table-column prop="email" label="邮箱" min-width="180" />
       <el-table-column prop="phone" label="手机号" min-width="140" />
       <el-table-column label="状态" width="100">
@@ -192,12 +180,13 @@ onMounted(async () => {
           <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" width="400" fixed="right">
         <template #default="{ row }">
+          <el-button link type="primary" @click="router.push({ path: '/system/access-policies', query: { userId: row.id } })">权限预览</el-button>
           <el-button v-permission="'system:admin:edit'" link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button v-permission="'system:admin:status'" link type="warning" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
+          <el-button v-if="row.username !== 'admin'" v-permission="'system:admin:status'" link type="warning" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
           <el-button v-permission="'system:admin:resetpwd'" link type="success" @click="handleResetPassword(row)">重置密码</el-button>
-          <el-button v-permission="'system:admin:delete'" link type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="row.username !== 'admin'" v-permission="'system:admin:delete'" link type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -219,9 +208,9 @@ onMounted(async () => {
           <el-col :span="12"><el-form-item label="账号"><el-input v-model="form.username" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="昵称"><el-input v-model="form.nickname" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="密码"><el-input v-model="form.password" type="password" show-password :placeholder="isEdit ? '留空则不修改' : '请输入密码'" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="角色"><el-select v-model="form.roleId" style="width:100%"><el-option v-for="item in roles" :key="item.id" :label="item.roleName" :value="item.id" /></el-select></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="部门"><el-select v-model="form.deptId" style="width:100%"><el-option v-for="item in depts" :key="item.id" :label="item.deptName" :value="item.id" /></el-select></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="岗位"><el-select v-model="form.postId" style="width:100%"><el-option v-for="item in posts" :key="item.id" :label="item.postName" :value="item.id" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="账号类型"><el-select v-model="form.accountType" :disabled="form.username === 'admin'" style="width:100%"><el-option label="普通成员" value="member" /><el-option label="平台管理员" value="administrator" /></el-select></el-form-item></el-col>
+ <el-col :span="24"><el-form-item label="用户组"><el-select v-model="form.groupIds" multiple filterable placeholder="选择用户组，继承组内访问策略" style="width:100%"><el-option v-for="g in groups" :key="g.id" :label="g.name + (g.status === 1 ? '' : '（已停用）')" :value="g.id" /></el-select></el-form-item></el-col>
+ <el-col :span="24"><el-alert :closable="false" :type="form.accountType === 'administrator' ? 'warning' : 'info'">{{ form.accountType === 'administrator' ? '平台管理员可管理全部资源、用户和系统配置。' : '普通成员通过用户组或个人访问策略获得权限，无需再单独分配角色。' }}</el-alert><p v-if="isEdit && form.roleId && form.accountType === 'member'" class="compat-note">现有账号的兼容角色关联会保留；仅修改资料或用户组不会重置原有权限。</p></el-col>
           <el-col :span="12"><el-form-item label="邮箱"><el-input v-model="form.email" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="手机号"><el-input v-model="form.phone" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="状态"><el-radio-group v-model="form.status"><el-radio :value="1">启用</el-radio><el-radio :value="2">停用</el-radio></el-radio-group></el-form-item></el-col>
@@ -260,4 +249,8 @@ onMounted(async () => {
 .ldap-dialog-tip { margin-bottom: 14px; padding: 11px 13px; color: #486283; background: #f2f7ff; border: 1px solid #dce9ff; border-radius: 6px; }
 .ldap-toolbar { display: flex; gap: 12px; margin-bottom: 14px; }
 .ldap-toolbar .el-input { width: 320px; }
+</style>
+
+<style scoped>
+.users-heading { display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;gap:20px;flex-wrap:wrap; }.users-heading span{font-size:11px;font-weight:700;letter-spacing:1px;color:#356ae6}.users-heading h2{margin:8px 0}.users-heading p,.compat-note{color:#718098;font-size:13px;line-height:1.7}.compat-note{margin:10px 0 18px}.users-heading .el-icon{margin-left:8px}
 </style>

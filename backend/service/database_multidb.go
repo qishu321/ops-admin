@@ -1200,6 +1200,11 @@ func (s *Service) ExecuteRedisCommand(payload RedisCommandPayload) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	if analysis.WriteOperation {
+		if err := s.requireResource("database", payload.DatabaseID, "", "write"); err != nil {
+			return nil, err
+		}
+	}
 	if analysis.WriteOperation && analysis.AccessMode == "readonly" {
 		return nil, fmt.Errorf("当前 Redis 连接为只读模式，不能执行写入命令")
 	}

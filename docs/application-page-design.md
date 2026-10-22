@@ -1414,14 +1414,16 @@ Filter Toolbar\n├─ Search + core filters\n└─ Reset / export / batch acti
 
 ## 16. 凭据管理
 
-- **应用 / 路由 / 实现**：资产管理 · `/assets/server/credentials` · `Credential.vue`
+- **应用 / 路由 / 实现**：资产管理 · `/assets/credentials` · `Credential.vue`
+- **入口位置**：资产管理一级菜单，位于中间件管理之后、网关管理之前；与主机、中间件等资源管理同级。
 
 ### 1. 页面定位
 
 - 核心用户：平台管理员、对应业务负责人。
-- 主任务：维护密码和密钥凭据。
+- 主任务：维护密码、密钥、TLS 证书与资产同步凭据。
 - 高频任务：新增凭据、筛选当前范围、进入详情或结果。
 - 首要信息：名称、类型、关联范围、状态、更新时间。
+- 认证方式：密码认证、密钥认证、TLS 证书（CA / 客户端证书 / 私钥，供 etcd 等中间件加密连接）、JumpServer API Key。证书内容不回显，编辑时留空保留原值。
 
 ### 2. 当前 UI 问题
 

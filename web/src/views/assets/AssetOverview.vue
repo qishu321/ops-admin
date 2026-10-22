@@ -41,7 +41,7 @@ const summaryCards = computed(() => {
       value: summary.credentialTotal || 0,
       note: `启用 ${summary.credentialEnabled || 0}`,
       icon: Key,
-      action: () => router.push('/assets/server/credentials')
+      action: () => router.push('/assets/credentials')
     },
     {
       key: 'cloudAccounts',

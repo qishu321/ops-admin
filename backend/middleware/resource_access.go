@@ -29,6 +29,20 @@ type resourceRoute struct {
 func resourceRouteFor(method, path string) resourceRoute {
 	path = strings.TrimPrefix(path, "/api/v1")
 	read := method == http.MethodGet || method == http.MethodHead
+	if strings.HasPrefix(path, "/asset/middleware/") {
+		action := "read"
+		switch {
+		case strings.HasSuffix(path, "/save"), strings.HasSuffix(path, "/delete"), strings.HasSuffix(path, "/test"):
+			return resourceRoute{Admin: true}
+		case strings.HasSuffix(path, "/query"):
+			action = "query"
+		case strings.HasSuffix(path, "/write"):
+			action = "write"
+		case strings.HasSuffix(path, "/remove"):
+			action = "delete"
+		}
+		return resourceRoute{Kind: "middleware", Action: action, Permissions: []string{"assets:middleware:" + map[string]string{"read": "list", "query": "query", "write": "write", "delete": "delete"}[action]}}
+	}
 	if strings.HasPrefix(path, "/asset/command-filter/") {
 		return resourceRoute{Admin: true}
 	}
@@ -258,7 +272,7 @@ func authorizeResourceRequest(c *gin.Context, p *access.Policy) {
 			}
 		}
 	}
-	idKeys := map[string][]string{"host": {"hostId", "hostIds"}, "k8s": {"clusterId"}, "database": {"databaseId", "targetDatabaseId"}, "datasource": {"datasourceId"}, "credential": {"id"}}
+	idKeys := map[string][]string{"middleware": {"id"}, "host": {"hostId", "hostIds"}, "k8s": {"clusterId"}, "database": {"databaseId", "targetDatabaseId"}, "datasource": {"datasourceId"}, "credential": {"id"}}
 	if strings.HasPrefix(c.Request.URL.Path, "/api/v1/asset/host/") {
 		idKeys["host"] = append(idKeys["host"], "id", "ids")
 	}

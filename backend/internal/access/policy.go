@@ -248,7 +248,7 @@ func Install(db *gorm.DB) error {
 			return
 		}
 		table := tx.Statement.Table
-		kinds := map[string]string{"asset_host": "host", "asset_database": "database", "k8s_cluster": "k8s", "monitor_datasource": "datasource", "asset_host_group": "host_group"}
+		kinds := map[string]string{"asset_middleware": "middleware", "asset_host": "host", "asset_database": "database", "k8s_cluster": "k8s", "monitor_datasource": "datasource", "asset_host_group": "host_group"}
 		if p.Actions["credential"] != "" {
 			kinds["asset_credential"] = "credential"
 		}
@@ -309,6 +309,7 @@ var Actions = map[string][]string{
 	"host":       {"read", "terminal", "upload", "download", "execute", "manage"},
 	"host_group": {"read", "terminal", "upload", "download", "execute", "manage"},
 	"k8s":        {"read", "logs", "terminal", "upload", "restart", "scale", "write", "delete", "manage"},
+	"middleware": {"read", "query", "write", "delete", "manage"},
 	"database":   {"read", "query", "write", "export", "backup", "restore", "manage"},
 	"datasource": {"read", "query", "manage"},
 	"credential": {"read", "use", "manage"},

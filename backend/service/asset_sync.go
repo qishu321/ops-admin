@@ -70,6 +70,48 @@ func validateSyncCredentialPayload(p AssetCredentialPayload, editing bool) error
 	}
 	return nil
 }
+
+// validateTLSCredentialPayload keeps TLS credentials meaningful: a CA bundle is
+// enough for one-way TLS, while mutual TLS needs the client certificate and its
+// private key together. Empty fields on update keep the stored value.
+func validateTLSCredentialPayload(p AssetCredentialPayload, existing model.AssetCredential) error {
+	if normalizedAuthType(p.AuthType) != "tls" {
+		return nil
+	}
+	keep := func(incoming, stored string) string {
+		if strings.TrimSpace(incoming) != "" {
+			return strings.TrimSpace(incoming)
+		}
+		if normalizedAuthType(existing.AuthType) == "tls" {
+			return strings.TrimSpace(stored)
+		}
+		return ""
+	}
+	ca := keep(p.CACert, existing.CACert)
+	cert := keep(p.ClientCert, existing.ClientCert)
+	key := keep(p.PrivateKey, existing.PrivateKey)
+	if strings.Contains(ca, "******") || strings.Contains(cert, "******") || strings.Contains(key, "******") {
+		return errors.New("请重新选择证书文件，认证信息不会回显")
+	}
+	if ca == "" && cert == "" && key == "" {
+		return errors.New("请至少填写 CA 证书，或同时填写客户端证书与私钥")
+	}
+	if cert == "" || key == "" {
+		if cert != "" || key != "" {
+			return errors.New("客户端证书与客户端私钥必须同时填写")
+		}
+	}
+	if ca != "" && !strings.Contains(ca, "BEGIN CERTIFICATE") {
+		return errors.New("CA 证书应为 PEM 格式，需包含 BEGIN CERTIFICATE")
+	}
+	if cert != "" && !strings.Contains(cert, "BEGIN CERTIFICATE") {
+		return errors.New("客户端证书应为 PEM 格式，需包含 BEGIN CERTIFICATE")
+	}
+	if key != "" && !strings.Contains(key, "PRIVATE KEY") {
+		return errors.New("客户端私钥应为 PEM 格式，需包含 BEGIN ... PRIVATE KEY")
+	}
+	return nil
+}
 func (s *Service) checkSyncCredentialReferences(id uint) error {
 	var sources []model.AssetSyncSource
 	if err := s.db.Find(&sources).Error; err != nil {

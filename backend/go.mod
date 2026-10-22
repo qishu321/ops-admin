@@ -3,6 +3,8 @@ module ops-admin/backend
 go 1.24.0
 
 require (
+	github.com/go-zookeeper/zk v1.0.4
+	github.com/segmentio/kafka-go v0.4.49
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-acme/lego/v4 v4.33.0
 	github.com/go-ldap/ldap/v3 v3.4.10
@@ -75,6 +77,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/quic-go/quic-go v0.54.0 // indirect

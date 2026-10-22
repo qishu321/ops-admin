@@ -48,6 +48,15 @@ func (MonitorLogShortcut) TableName() string {
 }
 
 type MonitorAlertRule struct {
+	RecoveryQuery          string  `json:"recoveryQuery" gorm:"type:text"`
+	RecoveryComparator     string  `json:"recoveryComparator" gorm:"size:8"`
+	RecoveryThreshold      float64 `json:"recoveryThreshold"`
+	RecoveryForSeconds     int     `json:"recoveryForSeconds"`
+	MissingDataPolicy      string  `json:"missingDataPolicy" gorm:"size:16"`
+	IdentityLabels         string  `json:"identityLabels" gorm:"size:512"`
+	DiscoveryWindowSeconds int     `json:"discoveryWindowSeconds"`
+	HealthQuery            string  `json:"healthQuery" gorm:"type:text"`
+
 	ID                          uint       `json:"id" gorm:"primaryKey"`
 	Name                        string     `json:"name" gorm:"size:128;not null;index"`
 	AlertType                   string     `json:"alertType" gorm:"size:32;default:metric;index"`
@@ -137,6 +146,12 @@ type MonitorAlertTemplateGroup struct {
 func (MonitorAlertTemplateGroup) TableName() string { return "monitor_alert_template_group" }
 
 type MonitorAlertEvent struct {
+	LastEvaluatedAt  *time.Time `json:"lastEvaluatedAt"`
+	PendingSince     *time.Time `json:"pendingSince"`
+	RecoverySince    *time.Time `json:"recoverySince"`
+	ObservationState string     `json:"observationState" gorm:"size:24"`
+	LastObservedAt   *time.Time `json:"lastObservedAt"`
+
 	ID                uint       `json:"id" gorm:"primaryKey"`
 	RuleID            uint       `json:"ruleId" gorm:"index;not null"`
 	RuleName          string     `json:"ruleName" gorm:"size:128"`

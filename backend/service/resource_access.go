@@ -217,7 +217,7 @@ func (s *Service) SaveResourceGrant(g model.ResourceGrant) error {
 		if count != 1 {
 			return errors.New("授权对象不存在")
 		}
-		tables := map[string]any{"host": &model.AssetHost{}, "host_group": &model.AssetHostGroup{}, "k8s": &model.K8sCluster{}, "database": &model.AssetDatabase{}, "datasource": &model.MonitorDatasource{}, "credential": &model.AssetCredential{}}
+		tables := map[string]any{"middleware": &model.MiddlewareDatasource{}, "host": &model.AssetHost{}, "host_group": &model.AssetHostGroup{}, "k8s": &model.K8sCluster{}, "database": &model.AssetDatabase{}, "datasource": &model.MonitorDatasource{}, "credential": &model.AssetCredential{}}
 		if err := tx.Model(tables[g.ResourceType]).Where("id=?", g.ResourceID).Count(&count).Error; err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func (s *Service) DeleteResourceGrant(id uint) error {
 }
 func (s *Service) ResourceAccessOptions() (map[string]any, error) {
 	result := map[string]any{}
-	for _, entry := range []struct{ kind, table, name string }{{"host", "asset_host", "host_name"}, {"host_group", "asset_host_group", "name"}, {"k8s", "k8s_cluster", "name"}, {"database", "asset_database", "name"}, {"datasource", "monitor_datasource", "name"}, {"credential", "asset_credential", "name"}} {
+	for _, entry := range []struct{ kind, table, name string }{{"middleware", "asset_middleware", "name"}, {"host", "asset_host", "host_name"}, {"host_group", "asset_host_group", "name"}, {"k8s", "k8s_cluster", "name"}, {"database", "asset_database", "name"}, {"datasource", "monitor_datasource", "name"}, {"credential", "asset_credential", "name"}} {
 		var list []struct {
 			ID   uint   `json:"id"`
 			Name string `json:"name"`
@@ -315,7 +315,7 @@ func (s *Service) SaveGroupBindings(payload GroupBindingsPayload) error {
 					return err
 				}
 				b.Scope = grant.Scope
-				tables := map[string]any{"host": &model.AssetHost{}, "host_group": &model.AssetHostGroup{}, "k8s": &model.K8sCluster{}, "database": &model.AssetDatabase{}, "datasource": &model.MonitorDatasource{}, "credential": &model.AssetCredential{}}
+				tables := map[string]any{"middleware": &model.MiddlewareDatasource{}, "host": &model.AssetHost{}, "host_group": &model.AssetHostGroup{}, "k8s": &model.K8sCluster{}, "database": &model.AssetDatabase{}, "datasource": &model.MonitorDatasource{}, "credential": &model.AssetCredential{}}
 				var count int64
 				if err := tx.Model(tables[b.ResourceType]).Where("id=?", b.ResourceID).Count(&count).Error; err != nil {
 					return err

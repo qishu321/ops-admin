@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { queryAssetServiceList, queryAssetServiceRuntimeTopology, queryAssetServiceWorkloadRuntime, queryAssetServiceDiagnosisEnvironment, queryAssetServiceDiagnosisProcesses, queryAssetServiceDiagnosisRun, uploadAssetServiceArthas } from '../../api/asset'
@@ -19,6 +19,7 @@ const flameSrcdoc = ref('')
 const flameViewport = ref(null)
 const flameResults = ref({ cpu: null, alloc: null })
 let flameRenderVersion = 0
+let sessionVersion = 0, reloadOnReturn = false, pageActive = true
 const target = ref({ serviceId: '', workloadKey: '', podName: '', container: '', pid: '' })
 const activeTab = ref('dashboard')
 const classPattern = ref('')
@@ -51,10 +52,10 @@ function readableName(name) {
 function prepareFlameHtml(html) {
   return String(html || '').replace(/\blet inverted = true;/, 'let inverted = false;')
 }
-async function loadServices() { const data = await queryAssetServiceList({ pageNum: 1, pageSize: 100 }); services.value = data.list || [] }
-async function changeService() { reset('service'); topology.value = target.value.serviceId ? await queryAssetServiceRuntimeTopology(target.value.serviceId) : {} }
-async function changeWorkload() { reset('workload'); if (selectedWorkload.value) runtime.value = await queryAssetServiceWorkloadRuntime(params.value) }
-async function changePod() { reset('pod'); if (!target.value.podName) return; const service = services.value.find(item => Number(item.id) === Number(target.value.serviceId)); containers.value = await queryK8sPodContainers(service.k8sClusterId, service.namespace, target.value.podName) }
+async function loadServices() { const version = sessionVersion; const data = await queryAssetServiceList({ pageNum: 1, pageSize: 100 }); if (version === sessionVersion) services.value = data.list || [] }
+async function changeService() { reset('service'); const version = sessionVersion; const data = target.value.serviceId ? await queryAssetServiceRuntimeTopology(target.value.serviceId) : {}; if (version === sessionVersion) topology.value = data }
+async function changeWorkload() { reset('workload'); const version = sessionVersion; if (selectedWorkload.value) { const data = await queryAssetServiceWorkloadRuntime(params.value); if (version === sessionVersion) runtime.value = data } }
+async function changePod() { reset('pod'); if (!target.value.podName) return; const service = services.value.find(item => Number(item.id) === Number(target.value.serviceId)); const version = sessionVersion; const data = await queryK8sPodContainers(service.k8sClusterId, service.namespace, target.value.podName); if (version === sessionVersion) containers.value = data }
 function clearFlameResults() {
   flameResults.value = { cpu: null, alloc: null }
   clearFlamePreview()
@@ -83,17 +84,19 @@ function changeProcess() {
   clearFlameResults()
 }
 function reset(level) { if (level === 'service') target.value.workloadKey = ''; if (level === 'service' || level === 'workload') { target.value.podName = ''; runtime.value = {} }; if (level !== 'pod') containers.value = []; target.value.container = ''; target.value.pid = ''; processes.value = []; environment.value = null; diagnostic.value = null; clearFlameResults() }
-async function refreshProcesses() { if (!canInspect.value) return ElMessage.warning('请先选择服务、工作负载、Pod 和容器'); clearFlameResults(); actionLoading.value = true; try { const data = await queryAssetServiceDiagnosisProcesses(params.value); processes.value = data.processes || []; target.value.pid = ''; environment.value = await queryAssetServiceDiagnosisEnvironment(params.value); ElMessage.success(`已加载 ${processes.value.length} 个 Java 进程，并完成环境检查`) } finally { actionLoading.value = false } }
-async function checkEnvironment() { if (!canInspect.value) return ElMessage.warning('请先选择诊断目标'); actionLoading.value = true; try { environment.value = await queryAssetServiceDiagnosisEnvironment(params.value) } finally { actionLoading.value = false } }
-async function uploadArthas(file) { if (!canInspect.value) { ElMessage.warning('请先选择诊断目标'); return false }; actionLoading.value = true; try { const form = new FormData(); form.append('file', file.raw); Object.entries(params.value).forEach(([key, value]) => form.append(key, value || '')); environment.value = await uploadAssetServiceArthas(form); ElMessage.success('Arthas 已上传') } finally { actionLoading.value = false }; return false }
+async function refreshProcesses() { if (!canInspect.value) return ElMessage.warning('请先选择服务、工作负载、Pod 和容器'); clearFlameResults(); const version = sessionVersion; actionLoading.value = true; try { const data = await queryAssetServiceDiagnosisProcesses(params.value); if (version !== sessionVersion) return; processes.value = data.processes || []; target.value.pid = ''; const env = await queryAssetServiceDiagnosisEnvironment(params.value); if (version !== sessionVersion) return; environment.value = env; ElMessage.success(`已加载 ${processes.value.length} 个 Java 进程，并完成环境检查`) } finally { if (version === sessionVersion) actionLoading.value = false } }
+async function checkEnvironment() { if (!canInspect.value) return ElMessage.warning('请先选择诊断目标'); const version = sessionVersion; actionLoading.value = true; try { const data = await queryAssetServiceDiagnosisEnvironment(params.value); if (version === sessionVersion) environment.value = data } finally { if (version === sessionVersion) actionLoading.value = false } }
+async function uploadArthas(file) { if (!canInspect.value) { ElMessage.warning('请先选择诊断目标'); return false }; const version = sessionVersion; actionLoading.value = true; try { const form = new FormData(); form.append('file', file.raw); Object.entries(params.value).forEach(([key, value]) => form.append(key, value || '')); const data = await uploadAssetServiceArthas(form); if (version !== sessionVersion) return false; environment.value = data; ElMessage.success('Arthas 已上传') } finally { if (version === sessionVersion) actionLoading.value = false }; return false }
 async function runDiagnostic(operation, extra = {}) {
   if (!target.value.pid) return ElMessage.warning('请先刷新并选择 Java 进程 PID')
   if (!environment.value?.ready) return ElMessage.warning('请先检查 Arthas 环境')
+  const version = sessionVersion
   diagnosticLoading.value = true
   diagnostic.value = null
   clearFlamePreview()
   try {
     const result = await queryAssetServiceDiagnosisRun({ ...params.value, operation, ...extra })
+    if (version !== sessionVersion) return
     if (operation === 'flame' && result.data?.flameHtml) {
       const event = result.data.event === 'alloc' ? 'alloc' : 'cpu'
       const cached = { ...result.data, flameHtml: prepareFlameHtml(result.data.flameHtml), seconds: Number(extra.seconds), generatedAt: new Date().toLocaleString() }
@@ -103,7 +106,7 @@ async function runDiagnostic(operation, extra = {}) {
       diagnostic.value = result.data
     }
   } finally {
-    diagnosticLoading.value = false
+    if (version === sessionVersion) diagnosticLoading.value = false
   }
 }
 async function showFlameResult(result) {
@@ -142,8 +145,35 @@ function changeTab(tab) {
   diagnostic.value = null
   clearFlamePreview()
 }
-onMounted(loadServices)
-onBeforeUnmount(clearFlameResults)
+function clearSession() {
+  sessionVersion++
+  reset('service')
+  target.value.serviceId = ''
+  topology.value = {}; services.value = []
+  activeTab.value = 'dashboard'; classPattern.value = ''
+  actionLoading.value = false; diagnosticLoading.value = false
+  reloadOnReturn = true
+}
+function handleTabClosed(event) {
+  if (event.detail?.path === '/containers/services/health-diagnosis') clearSession()
+}
+function handlePermissionsChanged() { clearSession(); if (pageActive) { reloadOnReturn = false; loadServices() } }
+onMounted(() => {
+  window.addEventListener('ops-admin:tab-closed', handleTabClosed)
+  window.addEventListener('ops-admin-permissions-changed', handlePermissionsChanged)
+  loadServices()
+})
+onActivated(() => {
+  pageActive = true
+  if (reloadOnReturn) { reloadOnReturn = false; loadServices() }
+})
+onDeactivated(() => { pageActive = false })
+onBeforeUnmount(() => {
+  sessionVersion++
+  clearFlameResults()
+  window.removeEventListener('ops-admin:tab-closed', handleTabClosed)
+  window.removeEventListener('ops-admin-permissions-changed', handlePermissionsChanged)
+})
 </script>
 
 <template>

@@ -258,6 +258,8 @@ type AssetCredentialPayload struct {
 	Password    string `json:"password"`
 	PrivateKey  string `json:"privateKey"`
 	Passphrase  string `json:"passphrase"`
+	CACert      string `json:"caCert"`
+	ClientCert  string `json:"clientCert"`
 	Status      int    `json:"status"`
 	Description string `json:"description"`
 }
@@ -1984,11 +1986,31 @@ func (s *Service) ListAssetCredentials(pageNum, pageSize int, keyword string, au
 	return map[string]any{"list": list, "total": total, "pageNum": pageNum, "pageSize": pageSize}, nil
 }
 
-func (s *Service) ListAssetCredentialOptions() ([]model.AssetCredential, error) {
+// ListAssetCredentialOptions returns credentials that may be attached to assets.
+// authType narrows the list (comma separated) so middlewares can ask for TLS
+// certificates while host forms keep seeing SSH credentials only.
+func (s *Service) ListAssetCredentialOptions(authType string) ([]model.AssetCredential, error) {
+	kinds := []string{"password", "key"}
+	if strings.TrimSpace(authType) != "" {
+		kinds = kinds[:0]
+		for _, raw := range strings.Split(authType, ",") {
+			switch strings.ToLower(strings.TrimSpace(raw)) {
+			case "password":
+				kinds = append(kinds, "password")
+			case "key", "private_key":
+				kinds = append(kinds, "key")
+			case "tls", "ssl", "cert", "certificate":
+				kinds = append(kinds, "tls")
+			}
+		}
+		if len(kinds) == 0 {
+			return []model.AssetCredential{}, nil
+		}
+	}
 	var list []model.AssetCredential
 	if p := s.resourcePolicy(); p != nil && !p.Super {
 		query := s.db.Where("id IN ?", p.OperationIDs("credential", "use"))
-		if err := query.Where("status = ?", 1).Order("id desc").Find(&list).Error; err != nil {
+		if err := query.Where("status = ? AND auth_type IN ?", 1, kinds).Order("id desc").Find(&list).Error; err != nil {
 			return nil, err
 		}
 		for i := range list {
@@ -1996,7 +2018,7 @@ func (s *Service) ListAssetCredentialOptions() ([]model.AssetCredential, error) 
 		}
 		return list, nil
 	}
-	err := s.db.Where("status = ? AND auth_type IN ?", 1, []string{"password", "key"}).Order("id desc").Find(&list).Error
+	err := s.db.Where("status = ? AND auth_type IN ?", 1, kinds).Order("id desc").Find(&list).Error
 	for i := range list {
 		maskCredential(&list[i])
 	}
@@ -2014,6 +2036,9 @@ func (s *Service) CreateAssetCredential(payload AssetCredentialPayload) error {
 	if err := validateSyncCredentialPayload(payload, false); err != nil {
 		return err
 	}
+	if err := validateTLSCredentialPayload(payload, model.AssetCredential{}); err != nil {
+		return err
+	}
 	item := model.AssetCredential{
 		Name:        Trimmed(payload.Name),
 		AuthType:    normalizedAuthType(payload.AuthType),
@@ -2021,6 +2046,8 @@ func (s *Service) CreateAssetCredential(payload AssetCredentialPayload) error {
 		Password:    payload.Password,
 		PrivateKey:  payload.PrivateKey,
 		Passphrase:  payload.Passphrase,
+		CACert:      Trimmed(payload.CACert),
+		ClientCert:  Trimmed(payload.ClientCert),
 		Status:      payload.Status,
 		Description: Trimmed(payload.Description),
 	}
@@ -2032,6 +2059,13 @@ func (s *Service) CreateAssetCredential(payload AssetCredentialPayload) error {
 
 func (s *Service) UpdateAssetCredential(payload AssetCredentialPayload) error {
 	if err := s.validateCredentialTypeChange(payload); err != nil {
+		return err
+	}
+	var existing model.AssetCredential
+	if err := s.db.First(&existing, payload.ID).Error; err != nil {
+		return err
+	}
+	if err := validateTLSCredentialPayload(payload, existing); err != nil {
 		return err
 	}
 	updates := map[string]any{
@@ -2049,6 +2083,12 @@ func (s *Service) UpdateAssetCredential(payload AssetCredentialPayload) error {
 	}
 	if payload.Passphrase != "" {
 		updates["passphrase"] = payload.Passphrase
+	}
+	if strings.TrimSpace(payload.CACert) != "" {
+		updates["ca_cert"] = Trimmed(payload.CACert)
+	}
+	if strings.TrimSpace(payload.ClientCert) != "" {
+		updates["client_cert"] = Trimmed(payload.ClientCert)
 	}
 	return s.db.Model(&model.AssetCredential{}).Where("id = ?", payload.ID).Updates(updates).Error
 }
@@ -2658,6 +2698,8 @@ func normalizedAuthType(value string) string {
 		return "jumpserver_key"
 	case "key", "private_key", "密钥认证":
 		return "key"
+	case "tls", "ssl", "cert", "certificate", "证书认证":
+		return "tls"
 	default:
 		return "password"
 	}
@@ -2667,6 +2709,8 @@ func maskCredential(item *model.AssetCredential) {
 	item.Password = maskedSecret(item.Password)
 	item.PrivateKey = maskedSecret(item.PrivateKey)
 	item.Passphrase = maskedSecret(item.Passphrase)
+	item.CACert = maskedSecret(item.CACert)
+	item.ClientCert = maskedSecret(item.ClientCert)
 }
 
 func maskedSecret(value string) string {

@@ -1,4 +1,4 @@
-﻿export const APP_KEY = 'ops-admin-current-app'
+export const APP_KEY = 'ops-admin-current-app'
 
 export const appDefinitions = [
   {
@@ -57,13 +57,6 @@ export const appDefinitions = [
             children: []
           },
           {
-            title: '凭据管理',
-            titleKey: 'credentialManagement',
-            path: '/assets/server/credentials',
-            icon: 'Key',
-            children: []
-          },
-          {
             title: '云账号管理',
             titleKey: 'cloudAccountManagement',
             path: '/assets/server/cloud-accounts',
@@ -114,6 +107,23 @@ export const appDefinitions = [
             children: []
           }
         ]
+      },
+      {
+        title: '中间件管理', path: '/assets/middleware', icon: 'Connection',
+        children: [
+          { title: 'RabbitMQ', path: '/assets/middleware/rabbitmq', icon: 'MessageBox', children: [] },
+          { title: 'Nacos', path: '/assets/middleware/nacos', icon: 'SetUp', children: [] },
+          { title: 'etcd', path: '/assets/middleware/etcd', icon: 'Coin', children: [] },
+          { title: 'ZooKeeper', path: '/assets/middleware/zookeeper', icon: 'Share', children: [] },
+          { title: 'Kafka', path: '/assets/middleware/kafka', icon: 'Promotion', children: [] }
+        ]
+      },
+      {
+        title: '凭据管理',
+        titleKey: 'credentialManagement',
+        path: '/assets/credentials',
+        icon: 'Key',
+        children: []
       },
       {
         title: '网关管理',

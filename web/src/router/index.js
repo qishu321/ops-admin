@@ -1,6 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import MainLayout from '../layouts/MainLayout.vue'
+import KafkaTopicDetail from '../views/assets/KafkaTopicDetail.vue'
+import MiddlewareManager from '../views/assets/MiddlewareManager.vue'
+import RabbitMqExplorer from '../views/assets/RabbitMqExplorer.vue'
+import NacosExplorer from '../views/assets/NacosExplorer.vue'
+import ZookeeperExplorer from '../views/assets/ZookeeperExplorer.vue'
 import CommandFilter from '../views/assets/CommandFilter.vue'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
@@ -203,14 +208,17 @@ const routes = [
         }
       },
       {
-        path: '/assets/server/credentials',
+        path: '/assets/credentials',
         component: Credential,
         meta: {
           title: '凭据管理',
           app: 'assets',
-          summary: '集中维护密码认证和密钥认证两类主机登录凭据。'
+          summary: '集中维护主机登录、资产同步与 TLS 加密连接凭据。'
         }
       },
+      { path: '/assets/server/credentials', redirect: '/assets/credentials' },
+      { path: '/assets/server/credentials/password', redirect: '/assets/credentials' },
+      { path: '/assets/server/credentials/key', redirect: '/assets/credentials' },
       {
         path: '/assets/server/cloud-accounts',
         component: CloudAccount,
@@ -220,6 +228,16 @@ const routes = [
           summary: '维护云厂商访问账号，为云资产同步提供凭证来源。'
         }
       },
+      { path: '/assets/middleware', redirect: '/assets/middleware/rabbitmq' },
+      { path: '/assets/middleware/rabbitmq', component: MiddlewareManager, props: { kind: 'rabbitmq' }, meta: { title: 'RabbitMQ', app: 'assets' } },
+      { path: '/assets/middleware/rabbitmq/explorer', component: RabbitMqExplorer, props: route => ({ sourceId: Number(route.query.sourceId), key: 'rabbitmq-' + String(route.query.sourceId) }), meta: { title: 'RabbitMQ 工作台', app: 'assets' } },
+      { path: '/assets/middleware/nacos', component: MiddlewareManager, props: { kind: 'nacos' }, meta: { title: 'Nacos', app: 'assets' } },
+      { path: '/assets/middleware/nacos/explorer', component: NacosExplorer, props: route => ({ sourceId: Number(route.query.sourceId), key: 'nacos-' + String(route.query.sourceId) }), meta: { title: 'Nacos 工作台', app: 'assets' } },
+      { path: '/assets/middleware/etcd', component: MiddlewareManager, props: { kind: 'etcd' }, meta: { title: 'etcd', app: 'assets' } },
+      { path: '/assets/middleware/zookeeper', component: MiddlewareManager, props: { kind: 'zookeeper' }, meta: { title: 'ZooKeeper', app: 'assets' } },
+      { path: '/assets/middleware/zookeeper/explorer', component: ZookeeperExplorer, props: route => ({ sourceId: Number(route.query.sourceId), key: 'zookeeper-' + String(route.query.sourceId) }), meta: { title: 'ZooKeeper 节点浏览', app: 'assets' } },
+      { path: '/assets/middleware/kafka/topic', component: KafkaTopicDetail, props: route => ({ sourceId: Number(route.query.sourceId), topic: String(route.query.name || '') }), meta: { title: 'Topic 详情', app: 'assets' } },
+      { path: '/assets/middleware/kafka', component: MiddlewareManager, props: { kind: 'kafka' }, meta: { title: 'Kafka', app: 'assets' } },
       { path: '/assets/server/command-filters', component: CommandFilter, meta: { title: '命令过滤', app: 'assets', adminOnly: true } },
       {
         path: '/assets/server/sync',
@@ -257,7 +275,7 @@ const routes = [
         }
       },
       { path: '/containers/services', component: AssetApplication, meta: { title: '服务管理', app: 'containers', summary: '从 Kubernetes 命名空间发现工作负载，并维护业务服务与通信链路。' } },
-      { path: '/containers/services/health-diagnosis', component: AssetServiceHealthDiagnosis, meta: { title: '服务健康诊断', app: 'containers', summary: '选择服务工作负载、Pod、容器和 Java 进程，通过 Arthas 进行运行时诊断。' } },
+      { path: '/containers/services/health-diagnosis', component: AssetServiceHealthDiagnosis, meta: { title: '服务健康诊断', app: 'containers', keepAlive: true, summary: '选择服务工作负载、Pod、容器和 Java 进程，通过 Arthas 进行运行时诊断。' } },
       { path: '/containers/services/topology', component: AssetApplicationTopology, meta: { title: '服务资源拓扑', app: 'containers', summary: '展示玩家入口、GM 管理、ZooKeeper 和游戏服务通信链路。' } },
       { path: '/containers/services/workload', component: AssetServiceWorkloadDetail, meta: { title: '服务详情', app: 'containers', summary: '展示服务工作负载、Service、Deployment、ReplicaSet 与 Pod 的资源关系。' } },
       { path: '/containers/services/logs', component: AssetServiceWorkloadLogs, meta: { title: '查看日志', app: 'containers', summary: '查看服务工作负载中 Pod 的 Kubernetes 日志。' } },
@@ -284,8 +302,8 @@ const routes = [
         meta: { title: 'Pod 终端', app: 'containers', keepAlive: true }
       },
       { path: '/assets/k8s/:pathMatch(.*)*', redirect: (to) => `/containers/k8s/${to.params.pathMatch || ''}` },
-      { path: '/assets/server/credentials/password', redirect: '/assets/server/credentials' },
-      { path: '/assets/server/credentials/key', redirect: '/assets/server/credentials' },
+      { path: '/assets/server/credentials/password', redirect: '/assets/credentials' },
+      { path: '/assets/server/credentials/key', redirect: '/assets/credentials' },
       { path: '/assets/hosts', redirect: '/assets/server/hosts' },
       { path: '/assets/server/hosts/:id/detail', name: 'AssetHostDetail', component: AssetDetail, props: { resourceType: 'host' }, meta: { title: '主机详情', app: 'assets' } },
       { path: '/assets/tags', redirect: '/assets/server/groups' },

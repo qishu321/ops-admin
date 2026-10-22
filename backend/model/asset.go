@@ -65,6 +65,8 @@ type AssetCredential struct {
 	Password    string    `json:"password,omitempty" gorm:"size:512"`
 	PrivateKey  string    `json:"privateKey,omitempty" gorm:"type:text"`
 	Passphrase  string    `json:"passphrase,omitempty" gorm:"size:512"`
+	CACert      string    `json:"caCert,omitempty" gorm:"type:text"`
+	ClientCert  string    `json:"clientCert,omitempty" gorm:"type:text"`
 	Status      int       `json:"status" gorm:"default:1;not null"`
 	Description string    `json:"description" gorm:"size:255"`
 	CreatedAt   time.Time `json:"createTime"`

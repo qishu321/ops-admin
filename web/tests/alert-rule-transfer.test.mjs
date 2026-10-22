@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {exportRuleDocument,parseNativeRuleDocument,prepareImportedRule,collectRulePages} from '../src/views/monitor/alert-rule-transfer.js'
+import {exportRuleDocument,parseNativeRuleDocument,prepareImportedRule,collectRulePages,resolveRuleImportTarget} from '../src/views/monitor/alert-rule-transfer.js'
 const source=[{id:4,name:'上海-Prometheus',type:'prometheus'}],notify=[{id:8,name:'值班通知'}]
 const rule={id:99,name:'CPU',alertType:'metric',datasourceScope:'specific',datasourceIds:[4],promql:'rate(cpu[5m])',comparator:'>',threshold:85,forSeconds:180,evalIntervalSeconds:60,severity:'P1',labelsJson:'{"team":"ops"}',annotationsJson:'{}',status:1,notifyEnabled:true,notifyRuleId:8,notifyRepeatIntervalSeconds:3600,maxNotifyCount:4,notifyRecoveryEnabled:true,lastEvalStatus:'failed',logTimeRangeSeconds:300,env:'test'}
 test('rule backup roundtrip preserves condition and notification parameters without source IDs or evaluation state',()=>{
@@ -38,7 +38,7 @@ test('partial import retains only unfinished rules and retry does not recreate t
  const {computed,nextTick,ref}=await import('vue'), {default:vm}=await import('node:vm'), {readFileSync}=await import('node:fs')
  const setup=readFileSync(new URL('../src/views/monitor/AlertRuleTransfer.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const saved=[],events=[];let fail=true
- const ctx=vm.createContext({computed,nextTick,ref,defineProps:()=>({datasources:source,notifications:notify}),defineEmits:()=>name=>events.push(name),prepareImportedRule,collectRulePages,exportRuleDocument,parseNativeRuleDocument,ElMessageBox:{confirm:async()=>{}},queryMonitorAlertRuleList:async()=>({list:saved.map((name,id)=>({id,name})),total:saved.length}),saveMonitorAlertRule:async payload=>{if(payload.name==='second' && fail)throw Error('temporary failure');saved.push(payload.name)}})
+ const ctx=vm.createContext({computed,nextTick,ref,defineProps:()=>({datasources:source,notifications:notify}),defineEmits:()=>name=>events.push(name),prepareImportedRule,collectRulePages,exportRuleDocument,parseNativeRuleDocument,resolveRuleImportTarget,ElMessageBox:{confirm:async()=>{}},queryMonitorAlertRuleList:async()=>({list:saved.map((name,id)=>({id,name})),total:saved.length}),saveMonitorAlertRule:async payload=>{if(payload.name==='second' && fail)throw Error('temporary failure');saved.push(payload.name)}})
  const view=vm.runInContext(`${setup};({rules,selected,submit,error,report,saving})`,ctx)
  view.rules.value=[{...rule,name:'first',datasources:[{name:source[0].name,type:'prometheus'}]},{...rule,name:'second',datasources:[{name:source[0].name,type:'prometheus'}]}];view.selected.value=[0,1]
  await view.submit();assert.deepEqual(saved,['first']);assert.deepEqual(Array.from(view.selected.value),[1]);assert.match(view.error.value,/second/)

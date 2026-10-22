@@ -59,6 +59,15 @@ const (
 )
 
 type MonitorAlertRulePayload struct {
+	RecoveryQuery          string  `json:"recoveryQuery" gorm:"type:text"`
+	RecoveryComparator     string  `json:"recoveryComparator" gorm:"size:8"`
+	RecoveryThreshold      float64 `json:"recoveryThreshold"`
+	RecoveryForSeconds     int     `json:"recoveryForSeconds"`
+	MissingDataPolicy      string  `json:"missingDataPolicy" gorm:"size:16"`
+	IdentityLabels         string  `json:"identityLabels" gorm:"size:512"`
+	DiscoveryWindowSeconds int     `json:"discoveryWindowSeconds"`
+	HealthQuery            string  `json:"healthQuery" gorm:"type:text"`
+
 	ID                          uint    `json:"id"`
 	Name                        string  `json:"name"`
 	AlertType                   string  `json:"alertType"`
@@ -3071,6 +3080,10 @@ func uniqueMonitorDatasourceIDs(ids []uint, fallback uint) []uint {
 }
 
 func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
+	if err := validateMonitorRecoveryPolicy(payload); err != nil {
+		return err
+	}
+
 	if strings.TrimSpace(payload.Name) == "" {
 		return errors.New("规则名称不能为空")
 	}
@@ -3153,6 +3166,14 @@ func (s *Service) SaveMonitorAlertRule(payload MonitorAlertRulePayload) error {
 		"datasource_id":                  datasourceID,
 		"datasource_name":                datasourceName,
 		"prom_ql":                        queryText,
+		"recovery_query":                 payload.RecoveryQuery,
+		"recovery_comparator":            payload.RecoveryComparator,
+		"recovery_threshold":             payload.RecoveryThreshold,
+		"recovery_for_seconds":           payload.RecoveryForSeconds,
+		"missing_data_policy":            payload.MissingDataPolicy,
+		"identity_labels":                payload.IdentityLabels,
+		"discovery_window_seconds":       payload.DiscoveryWindowSeconds,
+		"health_query":                   payload.HealthQuery,
 		"log_index":                      firstNonEmpty(strings.TrimSpace(payload.LogIndex), "_all"),
 		"log_time_range_seconds":         normalizeLogTimeRangeSeconds(payload.LogTimeRangeSeconds),
 		"comparator":                     normalizeComparator(payload.Comparator),
@@ -3817,54 +3838,29 @@ func (s *Service) evaluateMonitorAlertRule(id uint) {
 		s.updateMonitorRuleEval(*rule, "failed", err.Error())
 		return
 	}
-	activeFingerprints := map[string]bool{}
-	matched := 0
-	failed := 0
+	matched, failed := 0, 0
+	var failures []string
 	for _, ds := range datasources {
-		scopedRule := *rule
-		scopedRule.DatasourceID = ds.ID
-		scopedRule.DatasourceName = ds.Name
-		if isMonitorLogAlertType(rule.AlertType) {
-			value, sample, err := s.monitorLogAlertValue(scopedRule, ds)
-			if err != nil {
-				failed++
-				continue
-			}
-			if !compareFloat(value, scopedRule.Comparator, scopedRule.Threshold) {
-				continue
-			}
-			fp := monitorFingerprint(scopedRule.ID, sample.Metric)
-			activeFingerprints[fp] = true
-			matched++
-			s.upsertMonitorAlertEvent(scopedRule, sample, fp, value)
-			continue
-		}
-		result, err := s.prometheusQuery(ds, scopedRule.PromQL, time.Now())
+		scoped := *rule
+		scoped.DatasourceID, scoped.DatasourceName = ds.ID, ds.Name
+		count, err := s.evaluateMonitorDatasource(scoped, ds)
+		matched += count
 		if err != nil {
 			failed++
-			continue
-		}
-		for _, sample := range result.Data.Result {
-			value, ok := promSampleValue(sample)
-			if !ok || !compareFloat(value, scopedRule.Comparator, scopedRule.Threshold) {
-				continue
-			}
-			if sample.Metric == nil {
-				sample.Metric = map[string]string{}
-			}
-			sample.Metric["datasource"] = ds.Name
-			fp := monitorFingerprint(scopedRule.ID, sample.Metric)
-			activeFingerprints[fp] = true
-			matched++
-			s.upsertMonitorAlertEvent(scopedRule, sample, fp, value)
+			failures = append(failures, ds.Name+": "+err.Error())
+			s.markMonitorSourceUnknown(scoped)
 		}
 	}
-	s.recoverInactiveMonitorEvents(*rule, activeFingerprints)
-	if failed == len(datasources) {
-		s.updateMonitorRuleEval(*rule, "failed", "全部匹配数据源评估失败")
-		return
+	status := "success"
+	if failed > 0 {
+		status = "failed"
 	}
-	s.updateMonitorRuleEval(*rule, "success", fmt.Sprintf("命中 %d 条序列，%d 个数据源失败", matched, failed))
+	message := fmt.Sprintf("命中 %d 条序列，%d 个数据源评估失败或采集不健康", matched, failed)
+	if len(failures) > 0 {
+		message += "；" + strings.Join(failures, "；")
+	}
+	s.updateMonitorRuleEval(*rule, status, message)
+
 }
 
 func (s *Service) beginMonitorAlertRuleEvaluation(id uint) bool {
@@ -4036,7 +4032,7 @@ func promSampleValue(sample PromMetricSample) (float64, bool) {
 	}
 	raw := fmt.Sprintf("%v", sample.Value[1])
 	value, err := strconv.ParseFloat(raw, 64)
-	return value, err == nil
+	return value, err == nil && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func compareFloat(value float64, comparator string, threshold float64) bool {
@@ -4319,10 +4315,14 @@ func applyMonitorEventAggregation(event *model.MonitorAlertEvent, updates map[st
 	event.AggregateRuleName = aggregation.Name
 }
 
-func (s *Service) upsertMonitorAlertEvent(rule model.MonitorAlertRule, sample PromMetricSample, fp string, value float64) {
+func (s *Service) upsertMonitorAlertEvent(rule model.MonitorAlertRule, sample PromMetricSample, fp string, value float64, missing bool) {
 	now := time.Now()
+	sample.Metric = monitorEventLabels(rule, sample.Metric)
 	labelsBytes, _ := json.Marshal(sample.Metric)
 	summary := fmt.Sprintf("%s 当前值 %.4f %s %.4f", rule.Name, value, rule.Comparator, rule.Threshold)
+	if missing {
+		summary = rule.Name + " 指标缺失，采集健康，按可用性缺失策略判定异常"
+	}
 	silenceRule, silenced := s.matchMonitorSilenceRule(rule, sample.Metric)
 	aggregationRule, aggregationKey, aggregated := s.matchMonitorAggregationRule(rule, sample.Metric)
 	var existing model.MonitorAlertEvent
@@ -4330,10 +4330,19 @@ func (s *Service) upsertMonitorAlertEvent(rule model.MonitorAlertRule, sample Pr
 	if err == nil {
 		previousAggregateRuleID := existing.AggregateRuleID
 		updates := map[string]any{
-			"current_value": value, "last_trigger_at": now, "summary": summary,
+			"current_value": value, "last_trigger_at": now, "summary": summary, "observation_state": "observed", "last_observed_at": now, "last_evaluated_at": now, "recovery_since": nil,
+			"labels_json": string(labelsBytes),
+		}
+		if missing {
+			updates["observation_state"] = "missing"
+			delete(updates, "current_value")
+			delete(updates, "last_observed_at")
 		}
 		shouldNotify := false
-		if existing.Status == "pending" && !silenced && rule.ForSeconds > 0 && now.Sub(existing.FirstTriggerAt) >= time.Duration(rule.ForSeconds)*time.Second {
+		pendingSince := monitorContinuousSince(existing.PendingSince, existing.LastTriggerAt, now, rule.EvalIntervalSeconds)
+		updates["pending_since"] = pendingSince
+
+		if existing.Status == "pending" && !silenced && now.Sub(*pendingSince) >= time.Duration(rule.ForSeconds)*time.Second {
 			updates["status"] = "firing"
 			shouldNotify = true
 		}
@@ -4388,8 +4397,12 @@ func (s *Service) upsertMonitorAlertEvent(rule model.MonitorAlertRule, sample Pr
 	event := model.MonitorAlertEvent{
 		RuleID: rule.ID, RuleName: rule.Name, DatasourceID: rule.DatasourceID, DatasourceName: rule.DatasourceName,
 		Fingerprint: fp, Severity: rule.Severity, Status: "firing", Metric: firstNonEmpty(sample.Metric["__name__"], rule.PromQL),
-		LabelsJSON: string(labelsBytes), AnnotationsJSON: rule.AnnotationsJSON, CurrentValue: value, Threshold: rule.Threshold,
+		LabelsJSON: string(labelsBytes), AnnotationsJSON: rule.AnnotationsJSON, CurrentValue: value, Threshold: rule.Threshold, PendingSince: &now, ObservationState: "observed", LastObservedAt: &now, LastEvaluatedAt: &now,
 		Summary: summary, FirstTriggerAt: now, LastTriggerAt: now,
+	}
+	if missing {
+		event.ObservationState = "missing"
+		event.LastObservedAt = nil
 	}
 	if silenced && silenceRule != nil {
 		event.Status = "silenced"
@@ -4424,7 +4437,7 @@ func (s *Service) upsertMonitorAlertEvent(rule model.MonitorAlertRule, sample Pr
 
 func (s *Service) recoverInactiveMonitorEvents(rule model.MonitorAlertRule, active map[string]bool) {
 	var events []model.MonitorAlertEvent
-	if err := s.db.Where("rule_id = ? AND status IN ?", rule.ID, []string{"pending", "firing", "claimed", "silenced"}).Find(&events).Error; err != nil {
+	if err := s.db.Where("rule_id = ? AND datasource_id = ? AND status IN ?", rule.ID, rule.DatasourceID, []string{"pending", "firing", "claimed", "silenced"}).Find(&events).Error; err != nil {
 		return
 	}
 	now := time.Now()
@@ -4433,8 +4446,12 @@ func (s *Service) recoverInactiveMonitorEvents(rule model.MonitorAlertRule, acti
 			continue
 		}
 		wasPending := event.Status == "pending"
+		summary := fmt.Sprintf("%s 当前值 %.4f，已满足恢复条件", event.RuleName, event.CurrentValue)
+		if event.ObservationState == "missing" {
+			summary = event.RuleName + " 查询结果消失，按显式配置的无数据恢复策略结束"
+		}
 		_ = s.db.Model(&model.MonitorAlertEvent{}).Where("id = ?", event.ID).Updates(map[string]any{
-			"status": "recovered", "recovered_at": &now,
+			"status": "recovered", "recovered_at": &now, "summary": summary,
 		}).Error
 		if wasPending {
 			s.appendMonitorAlertTimeline(event.ID, "recovered", "等待持续已取消", "告警条件已恢复，未达到持续时间，不发送恢复通知", "系统", nil)
@@ -4442,6 +4459,7 @@ func (s *Service) recoverInactiveMonitorEvents(rule model.MonitorAlertRule, acti
 			s.appendMonitorAlertTimeline(event.ID, "recovered", "告警已自动恢复", "指标已不再满足告警条件", "系统", nil)
 		}
 		event.Status = "recovered"
+		event.Summary = summary
 		event.RecoveredAt = &now
 		// 恢复通知只能对应一条已经发出过触发通知的告警。pending 事件在持续
 		// 时间内恢复时并未对外告警，因此不能产生一条孤立的“恢复”消息。

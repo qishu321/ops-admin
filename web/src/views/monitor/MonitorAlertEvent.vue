@@ -227,7 +227,7 @@ onMounted(async () => {
         </template>
       </el-table-column>
       <el-table-column label="当前值" width="120">
-        <template #default="{ row }">{{ Number(row.currentValue || 0).toFixed(4) }}</template>
+        <template #default="{ row }">{{ ['missing','unknown'].includes(row.observationState) ? (row.observationState === 'missing' ? '无数据' : '评估异常') : Number(row.currentValue || 0).toFixed(4) }}</template>
       </el-table-column>
       <el-table-column prop="threshold" label="阈值" width="100" />
       <el-table-column label="最后触发时间" width="156">
@@ -259,7 +259,7 @@ onMounted(async () => {
           </div>
           <el-descriptions :column="4" border>
             <el-descriptions-item label="数据源">{{ detail.event?.datasourceName || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="当前值">{{ Number(detail.event?.currentValue || 0).toFixed(4) }}</el-descriptions-item>
+            <el-descriptions-item label="当前值">{{ ['missing','unknown'].includes(detail.event?.observationState) ? '无有效当前值' : Number(detail.event?.currentValue || 0).toFixed(4) }}</el-descriptions-item>
             <el-descriptions-item label="阈值">{{ detail.event?.threshold ?? '-' }}</el-descriptions-item>
             <el-descriptions-item label="首次触发">{{ formatTime(detail.event?.firstTriggerAt) }}</el-descriptions-item>
           </el-descriptions>

@@ -2,7 +2,7 @@
 import { computed, nextTick, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { queryMonitorAlertRuleList, monitorAlertRuleInfo, parsePrometheusAlertTemplates, saveMonitorAlertRule } from '../../api/monitor'
-import { collectRulePages, exportRuleDocument, parseNativeRuleDocument, prepareImportedRule } from './alert-rule-transfer'
+import { collectRulePages, exportRuleDocument, parseNativeRuleDocument, prepareImportedRule, resolveRuleImportTarget } from './alert-rule-transfer'
 const props=defineProps({ selectedIds:Array, filters:Object, datasources:Array, notifications:Array })
 const emit=defineEmits(['imported'])
 const restoring=ref(false)
@@ -53,27 +53,25 @@ async function submit(){
  const items=selectedPreviews.value
  if(saving.value || !items.length)return
  if(items.some(item=>item.errors.length)){error.value='请先处理已选规则的数据源或通知匹配问题';return}
- try{await ElMessageBox.confirm(`将新增导入 ${items.length} 条规则。${keepStatus.value?'按文件中的状态启用或禁用。':'全部先保存为禁用状态。'}${keepNotifications.value?'保留文件中的通知配置。':'导入后暂不开启通知。'}`,'确认导入',{confirmButtonText:'开始导入',cancelButtonText:'取消'})}catch{return}
+ try{await ElMessageBox.confirm(`将导入 ${items.length} 条规则（${strategy.value==='update'?'更新唯一同名规则，其他新增':strategy.value==='skip'?'跳过同名规则':'同名重命名新增'}）。${keepStatus.value?'按文件中的状态启用或禁用。':'全部先保存为禁用状态。'}${keepNotifications.value?'保留文件中的通知配置。':'导入后暂不开启通知。'}`,'确认导入',{confirmButtonText:'开始导入',cancelButtonText:'取消'})}catch{return}
  saving.value=true;error.value='';report.value=''
- let created=0,skipped=0;const finished=new Set()
+ let created=0,updated=0,skipped=0;const finished=new Set()
  try{
   const existing=await collectRulePages(queryMonitorAlertRuleList)
-  const names=new Set(existing.map(rule=>rule.name))
   for(const item of items){
-   const payload={...item.payload};const base=payload.name
-   if(names.has(base) && strategy.value==='skip'){skipped++;finished.add(item._index);continue}
-   for(let n=2;names.has(payload.name);n++)payload.name=`${base}（导入 ${n}）`
+   const payload=resolveRuleImportTarget({...item.payload},existing,strategy.value)
+   if(!payload){skipped++;finished.add(item._index);continue}
    try{await saveMonitorAlertRule(payload)}catch(e){throw new Error(`“${payload.name}”导入失败：${e.message || '保存失败'}`)}
-   names.add(payload.name);created++;finished.add(item._index)
+   if(payload.id)updated++;else {created++;existing.push({name:payload.name})};finished.add(item._index)
   }
-  report.value=`导入完成：新增 ${created} 条，跳过同名 ${skipped} 条。`
- }catch(e){error.value=`${e.message || '导入失败'}；已新增 ${created} 条，跳过 ${skipped} 条，未完成的规则已保留，可继续重试。`}
+  report.value=`导入完成：新增 ${created} 条，更新 ${updated} 条，跳过同名 ${skipped} 条。`
+ }catch(e){error.value=`${e.message || '导入失败'}；已新增 ${created} 条，更新 ${updated} 条，跳过 ${skipped} 条，未完成的规则已保留，可继续重试。`}
  finally{
   const remaining=selected.value.filter(index=>!finished.has(index));restoring.value=true
   selected.value=remaining;saving.value=false
   await nextTick();table.value?.clearSelection();for(const row of previews.value)if(remaining.includes(row._index))table.value?.toggleRowSelection(row,true)
   restoring.value=false
-  if(created)emit('imported')
+  if(created || updated)emit('imported')
  }
 }
 </script>
@@ -85,7 +83,7 @@ async function submit(){
   <el-alert v-if="report" :title="report" type="success" :closable="false" show-icon class="transfer-notice"/>
   <div v-if="stage==='input'" class="transfer-input"><el-upload action="#" accept=".json,.yaml,.yml" :auto-upload="false" :show-file-list="false" :on-change="readFile"><el-button>选择规则文件</el-button></el-upload><el-input v-model="content" type="textarea" :rows="14" placeholder="上传文件，或在此粘贴规则 JSON / Prometheus YAML" aria-label="导入规则内容" spellcheck="false"/></div>
   <template v-else>
-   <el-form label-position="top" class="transfer-settings" :disabled="saving"><el-form-item label="数据源（可重新指定，按规则类型匹配）"><el-select v-model="datasourceIds" multiple filterable clearable placeholder="留空按文件中的名称与类型匹配"><el-option v-for="ds in datasources" :key="ds.id" :label="`${ds.name} · ${ds.type}`" :value="ds.id"/></el-select></el-form-item><el-form-item label="同名规则处理"><el-select v-model="strategy"><el-option label="跳过同名规则" value="skip"/><el-option label="自动重命名后新增" value="rename"/></el-select></el-form-item><div class="transfer-toggles"><el-checkbox v-model="keepStatus">保留原启用状态</el-checkbox><el-checkbox v-model="keepNotifications">保留通知配置（按名称匹配）</el-checkbox></div></el-form>
+   <el-form label-position="top" class="transfer-settings" :disabled="saving"><el-form-item label="数据源（可重新指定，按规则类型匹配）"><el-select v-model="datasourceIds" multiple filterable clearable placeholder="留空按文件中的名称与类型匹配"><el-option v-for="ds in datasources" :key="ds.id" :label="`${ds.name} · ${ds.type}`" :value="ds.id"/></el-select></el-form-item><el-form-item label="同名规则处理"><el-select v-model="strategy"><el-option label="跳过同名规则" value="skip"/><el-option label="自动重命名后新增" value="rename"/><el-option label="更新同名规则（保留规则 ID）" value="update"/></el-select></el-form-item><div class="transfer-toggles"><el-checkbox v-model="keepStatus">保留原启用状态</el-checkbox><el-checkbox v-model="keepNotifications">保留通知配置（按名称匹配）</el-checkbox></div></el-form>
    <p class="transfer-hint">默认导入为禁用状态且不开启通知。数据源 ID 不跨环境复用；未匹配项需在上方重新指定。</p>
    <el-table ref="table" :data="previews" row-key="_index" max-height="360" :disabled="saving" @selection-change="items=>{if(!saving && !restoring)selected=items.map(row=>row._index)}"><el-table-column type="selection" :selectable="()=>!saving" :reserve-selection="true" width="45"/><el-table-column prop="name" label="规则名称" min-width="180" show-overflow-tooltip/><el-table-column label="查询与条件" min-width="270"><template #default="{row}"><code class="transfer-query">{{row.promql}}</code><small>{{row.comparator}} {{row.threshold}} · 持续 {{row.forSeconds || 0}} 秒 · 每 {{row.evalIntervalSeconds || 60}} 秒评估</small></template></el-table-column><el-table-column prop="severity" label="等级" width="70"/><el-table-column label="导入检查" min-width="210"><template #default="{row}"><span v-if="row.errors.length" class="transfer-error">{{row.errors.join('；')}}</span><span v-else>{{row.payload.datasourceScope==='all'?'全部同类数据源':row.payload.datasourceIds.map(id=>datasources.find(ds=>ds.id===id)?.name).join('、')}}</span></template></el-table-column></el-table>
    <p class="transfer-hint">共 {{rules.length}} 条，已选 {{selected.length}} 条。成功导入和跳过的规则会从选择中移除，重试只处理剩余项。</p>

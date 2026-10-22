@@ -77,6 +77,7 @@ const form = reactive({
   comparator: '>',
   threshold: 0,
   forSeconds: 0,
+  recoveryQuery: '', recoveryComparator: '==', recoveryThreshold: 1, recoveryForSeconds: 0, missingDataPolicy: 'keep', identityLabels: '', discoveryWindowSeconds: 0, healthQuery: '',
   evalIntervalSeconds: 60,
   notifyRepeatIntervalMinutes: 30,
   maxNotifyCount: 0,
@@ -229,6 +230,7 @@ function defaultQueryForType(type) {
 
 function resetForm() {
   Object.assign(form, {
+    recoveryQuery: '', recoveryComparator: '==', recoveryThreshold: 1, recoveryForSeconds: 0, missingDataPolicy: 'keep', identityLabels: '', discoveryWindowSeconds: 0, healthQuery: '',
     id: undefined,
     name: '',
     alertType: 'metric',
@@ -302,6 +304,7 @@ async function openEdit(row) {
   copyMode.value = false
   const data = await monitorAlertRuleInfo(row.id)
   Object.assign(form, {
+    recoveryQuery: '', recoveryComparator: '==', recoveryThreshold: 1, recoveryForSeconds: 0, missingDataPolicy: 'keep', identityLabels: '', discoveryWindowSeconds: 0, healthQuery: '',
     ...data,
     alertType: data.alertType || 'metric',
     datasourceScope: data.datasourceScope || 'specific',
@@ -324,6 +327,7 @@ async function openCopy(row) {
   isEdit.value = false
   copyMode.value = true
   Object.assign(form, {
+    recoveryQuery: '', recoveryComparator: '==', recoveryThreshold: 1, recoveryForSeconds: 0, missingDataPolicy: 'keep', identityLabels: '', discoveryWindowSeconds: 0, healthQuery: '',
     ...data,
     id: undefined,
     name: `${data.name} - 副本`,
@@ -494,6 +498,7 @@ async function importSelectedTemplates() {
 
 function applyRuleTemplate(template) {
   Object.assign(form, {
+    recoveryQuery: '', recoveryComparator: '==', recoveryThreshold: 1, recoveryForSeconds: 0, missingDataPolicy: 'keep', identityLabels: '', discoveryWindowSeconds: 0, healthQuery: '',
     id: undefined,
     name: template.name,
     alertType: template.type,
@@ -914,6 +919,16 @@ onMounted(async () => {
         <el-form-item label="告警等级"><el-radio-group v-model="form.severity"><el-radio-button v-for="item in ['P0','P1','P2','P3']" :key="item" :label="item" /></el-radio-group></el-form-item></section>
 
         <section v-else class="form-section"><div class="section-heading"><span>03</span><div><strong>健康判定</strong><small>平台固定执行：每 15 秒检测一次，连续失败 2 次触发；连续成功 3 次后自动恢复。</small></div></div></section>
+        <section v-if="form.alertType === 'metric'" class="form-section">
+          <div class="section-heading"><div><strong>恢复与无数据处理</strong><small>查询失败始终保留事件，不视为恢复。</small></div></div>
+          <el-form-item label="无数据策略"><el-select v-model="form.missingDataPolicy"><el-option label="保留事件，标记数据缺失" value="keep"/><el-option label="视为恢复（仅适用于结果消失代表正常的查询）" value="recover"/><el-option label="可用性指标缺失视为异常" value="alert"/></el-select></el-form-item>
+          <el-form-item label="恢复查询（可选）"><el-input v-model="form.recoveryQuery" type="textarea" :rows="2" placeholder="留空时：同一对象出现正常值才恢复"/></el-form-item>
+          <div v-if="form.recoveryQuery" class="form-grid"><el-form-item label="恢复比较符"><el-select v-model="form.recoveryComparator"><el-option v-for="op in ['==','!=','>','>=','<','<=']" :key="op" :label="op" :value="op"/></el-select></el-form-item><el-form-item label="恢复阈值"><el-input-number v-model="form.recoveryThreshold" :precision="4"/></el-form-item></div>
+          <el-form-item label="恢复确认时间（秒）"><el-input-number v-model="form.recoveryForSeconds" :min="0" :max="86400"/></el-form-item>
+          <el-form-item label="对象关联标签"><el-input v-model="form.identityLabels" placeholder="例如 cluster,namespace,pod,container；实例规则可用 job,instance"/><div class="form-tip">触发与恢复查询必须返回相同的对象标签；不要使用 UID。标签需能区分不同集群或实例。</div></el-form-item>
+          <el-form-item label="采集健康查询（可选）"><el-input v-model="form.healthQuery" placeholder='例如 up{job="kube-state-metrics"}'/><div class="form-tip">结果必须非空且全部为 1，否则暂停本规则评估并保留事件。</div></el-form-item>
+          <template v-if="form.missingDataPolicy === 'alert'"><el-form-item label="历史发现窗口（秒）"><el-input-number v-model="form.discoveryWindowSeconds" :min="60" :max="86400"/></el-form-item><el-alert :closable="false" type="info" title="仅用于 == 0 时异常的可用性指标。需配置采集健康查询及明确恢复查询。历史窗口过期不会恢复已存在的异常事件。"/></template>
+        </section>
         <section class="form-section"><div class="section-heading"><span>04</span><div><strong>通知与上下文</strong><small>补充事件标签、处置说明与消息发送策略。</small></div></div>
         <div class="json-grid"><el-form-item label="标签 JSON"><el-input v-model="form.labelsJson" type="textarea" :rows="2" placeholder='例如：{"team":"game"}' /></el-form-item><el-form-item label="注解 JSON"><el-input v-model="form.annotationsJson" type="textarea" :rows="2" placeholder='例如：{"summary":"请及时处理"}' /></el-form-item></div>
         <div class="notify-toggle" :class="{ 'is-enabled': form.notifyEnabled }">

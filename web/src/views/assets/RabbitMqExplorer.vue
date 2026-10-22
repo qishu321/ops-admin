@@ -29,7 +29,7 @@ const tabs = [['overview', '实例概览'], ['queues', '队列'], ['exchanges', 
 
 const source = ref(null)
 const error = ref('')
-const tab = ref('overview')
+const tab = ref('queues')
 const vhosts = ref([])
 const vhost = ref(rabbitAllVhosts)
 const vhostKeyword = ref('')
@@ -61,6 +61,7 @@ const canRead = computed(() => can('query'))
 const valid = computed(() => Number.isSafeInteger(props.sourceId) && props.sourceId > 0)
 const tabLabel = computed(() => (tabs.find(([key]) => key === tab.value) || ['', ''])[1])
 const filteredVhosts = computed(() => rabbitVhostRows(vhosts.value, vhostKeyword.value))
+const filterResources = rows => rows.filter(row => Object.values(row).some(value => typeof value === 'string' && value.toLowerCase().includes(queueKeyword.value.trim().toLowerCase())))
 const filteredQueues = computed(() => rabbitQueueRows(queues.value, queueKeyword.value))
 const vhostTotal = computed(() => vhosts.value.reduce((sum, item) => sum + Number(item?.messages || 0), 0))
 
@@ -121,7 +122,7 @@ onUnmounted(() => {
 })
 
 async function permissionsChanged() {
-  revision.value++
+  revision.value++;generation++;drawerGeneration++;loading.value=false;drawer.value=false;queueDialog.value=false;exchangeDialog.value=false;queue.value=null;exchange.value=null;selection.value=[];vhosts.value=[];queues.value=[];exchanges.value=[];connections.value=[];consumers.value=[];overview.value=null
   error.value = ''
   if (!canRead.value) { queues.value = []; exchanges.value = []; connections.value = []; consumers.value = []; overview.value = null; return }
   await loadVhosts()
@@ -136,10 +137,11 @@ async function loadSource() {
 }
 
 async function loadVhosts() {
+  const g=generation
   try {
     const data = await api('vhosts')
-    vhosts.value = Array.isArray(data) ? data : []
-  } catch { vhosts.value = [] }
+    if(g===generation)vhosts.value = Array.isArray(data) ? data : []
+  } catch { if(g===generation)vhosts.value = [] }
 }
 
 function api(operation, params = {}, action = 'query') {
@@ -186,12 +188,16 @@ async function refresh() {
   try {
     await loadVhosts()
     await reload()
+    if (drawer.value) { if (drawerKind.value === 'queue' && queue.value) await openQueue(queue.value); else if (exchange.value) await openExchange(exchange.value) }
   } finally {
     refreshing.value = false
   }
 }
 
+function closeDetail() { drawerGeneration++; drawer.value = false; detailLoading.value = false }
+
 function changeTab() {
+  closeDetail()
   error.value = ''
   queueKeyword.value = ''
   selection.value = []
@@ -204,6 +210,7 @@ function onSelectionChange(rows) {
 
 function selectVhost(name) {
   if (vhost.value === name) return
+  closeDetail()
   vhost.value = name
   queues.value = []
   exchanges.value = []
@@ -426,7 +433,7 @@ function back() { router.push('/assets/middleware/rabbitmq') }
       <el-button link type="primary" :icon="ArrowLeft" @click="back">数据源</el-button>
       <div class="rmq-title">
         <h1>{{ source?.name || 'RabbitMQ' }}</h1>
-        <p>{{ source?.description || '管理队列、交换机、连接与消费者，让消息流转清晰可见。' }}</p>
+        <p>RabbitMQ · 队列与消息管理</p>
       </div>
       <el-button :icon="Refresh" :loading="refreshing" :disabled="!canRead" @click="refresh">刷新</el-button>
     </header>
@@ -439,10 +446,10 @@ function back() { router.push('/assets/middleware/rabbitmq') }
         <div class="side-head"><span>虚拟主机</span><em>{{ vhosts.length }}</em></div>
         <div class="side-search"><el-input v-model="vhostKeyword" :prefix-icon="Search" placeholder="搜索虚拟主机" clearable aria-label="搜索虚拟主机"/></div>
         <ul class="vhost-list">
-          <li :class="{ active: vhost === rabbitAllVhosts }" @click="selectVhost(rabbitAllVhosts)">
+          <li tabindex="0" @keydown.enter="selectVhost(rabbitAllVhosts)" :class="{ active: vhost === rabbitAllVhosts }" @click="selectVhost(rabbitAllVhosts)">
             <span class="vhost-name">全部虚拟主机</span><em>{{ rabbitCount(vhostTotal) }}</em>
           </li>
-          <li v-for="item in filteredVhosts" :key="item.name" :class="{ active: vhost === item.name }" @click="selectVhost(item.name)">
+          <li tabindex="0" @keydown.enter="selectVhost(item.name)" v-for="item in filteredVhosts" :key="item.name" :class="{ active: vhost === item.name }" @click="selectVhost(item.name)">
             <span class="vhost-name">{{ item.name }}</span><em>{{ rabbitCount(item.messages) }}</em>
           </li>
           <li v-if="!filteredVhosts.length" class="side-empty">无匹配虚拟主机</li>
@@ -451,7 +458,7 @@ function back() { router.push('/assets/middleware/rabbitmq') }
       </aside>
 
       <main class="rmq-main">
-        <div class="rmq-toolbar">
+        <div v-show="!drawer" class="rmq-toolbar">
           <template v-if="tab === 'queues'">
             <el-button type="primary" :icon="Plus" :disabled="!can('write')" @click="openQueueDialog">创建队列</el-button>
             <el-button :disabled="!can('delete') || !selection.length || actionBusy" @click="removeSelectedQueues">批量删除<span v-if="selection.length">（{{ selection.length }}）</span></el-button>
@@ -461,7 +468,7 @@ function back() { router.push('/assets/middleware/rabbitmq') }
           </template>
           <span v-else class="toolbar-label">{{ tabLabel }}</span>
           <div class="toolbar-right">
-            <el-input v-if="tab === 'queues'" v-model="queueKeyword" :prefix-icon="Search" placeholder="队列名称" clearable aria-label="按名称筛选队列" @keyup.enter="reload"/>
+            <el-input v-if="tab !== 'overview'" v-model="queueKeyword" :prefix-icon="Search" placeholder="搜索当前列表" clearable aria-label="搜索当前列表" @keyup.enter="reload"/>
             <el-button v-if="tab === 'queues'" :disabled="!canRead" @click="reload">查询</el-button>
             <el-button :icon="Refresh" circle :loading="loading" :disabled="!canRead" aria-label="刷新当前列表" @click="refresh"/>
           </div>
@@ -471,141 +478,7 @@ function back() { router.push('/assets/middleware/rabbitmq') }
           <el-tab-pane v-for="[key, label] in tabs" :key="key" :label="label" :name="key"/>
         </el-tabs>
 
-        <div v-loading="loading" class="rmq-results">
-          <template v-if="tab === 'overview'">
-            <div v-if="!canRead" class="rmq-empty">当前账号没有查询权限。</div>
-            <template v-else>
-              <div class="stat-grid">
-                <article v-for="card in overviewCards" :key="card.label">
-                  <span>{{ card.label }}</span>
-                  <strong>{{ card.value }}</strong>
-                  <small v-if="card.hint">{{ card.hint }}</small>
-                </article>
-              </div>
-              <div class="section-head"><h2>虚拟主机</h2><span>{{ vhosts.length }} 个 · 消息总数 {{ rabbitCount(vhostTotal) }}</span></div>
-              <el-table :data="rabbitVhostRows(vhosts)" empty-text="暂无虚拟主机" @row-click="openVhost">
-                <el-table-column prop="name" label="虚拟主机" min-width="180"><template #default="{ row }"><el-button link type="primary" @click.stop="openVhost(row)">{{ row.name }}</el-button></template></el-table-column>
-                <el-table-column label="消息数" width="120" align="right"><template #default="{ row }">{{ rabbitCount(row.messages) }}</template></el-table-column>
-                <el-table-column label="待消费" width="120" align="right"><template #default="{ row }">{{ rabbitCount(row.ready) }}</template></el-table-column>
-                <el-table-column label="未确认" width="120" align="right"><template #default="{ row }">{{ rabbitCount(row.unacked) }}</template></el-table-column>
-                <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.description || '—' }}</template></el-table-column>
-                <el-table-column label="操作" width="110"><template #default="{ row }"><el-button link type="primary" @click.stop="openVhost(row)">查看队列</el-button></template></el-table-column>
-              </el-table>
-            </template>
-          </template>
-
-          <template v-else-if="tab === 'queues'">
-            <el-table :data="filteredQueues" row-key="name" empty-text="暂无队列，可调整虚拟主机或新建队列" @selection-change="onSelectionChange">
-              <el-table-column type="selection" width="46"/>
-              <el-table-column label="队列名称" min-width="230">
-                <template #default="{ row }">
-                  <el-button link type="primary" class="resource-name" @click="openQueue(row)">{{ row.name }}</el-button>
-                  <span v-if="vhost === rabbitAllVhosts" class="resource-sub">{{ row.vhost }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="消息" min-width="150">
-                <template #default="{ row }">
-                  <span class="metric-main">{{ rabbitCount(rabbitQueueMessages(row).messages) }}</span>
-                  <span class="metric-sub">待消费 {{ rabbitCount(row.messages_ready) }} · 未确认 {{ rabbitCount(row.messages_unacknowledged) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="消费者" width="92" align="right"><template #default="{ row }">{{ rabbitCount(row.consumers) }}</template></el-table-column>
-              <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="rabbitQueueState(row).type" effect="light">{{ rabbitQueueState(row).label }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="170" align="right">
-                <template #default="{ row }">
-                  <el-button link type="primary" @click="openQueue(row)">查看</el-button>
-                  <el-button link type="primary" :disabled="!can('delete')" @click="purgeQueue(row)">清空</el-button>
-                  <el-button link type="danger" :disabled="!can('delete')" @click="deleteQueue(row)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <p class="result-note">共 {{ filteredQueues.length }} 个队列<span v-if="queueKeyword">（按名称过滤）</span><span v-if="vhost === rabbitAllVhosts"> · 跨全部虚拟主机</span></p>
-          </template>
-
-          <template v-else-if="tab === 'exchanges'">
-            <el-table :data="exchanges" row-key="name" empty-text="暂无交换机">
-              <el-table-column label="交换机" min-width="200">
-                <template #default="{ row }">
-                  <el-button link type="primary" class="resource-name" @click="openExchange(row)">{{ row.name || '(默认交换机)' }}</el-button>
-                  <span v-if="vhost === rabbitAllVhosts" class="resource-sub">{{ row.vhost }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="type" label="类型" width="110"/>
-              <el-table-column label="持久化" width="90"><template #default="{ row }">{{ row.durable ? '是' : '否' }}</template></el-table-column>
-              <el-table-column label="自动删除" width="95"><template #default="{ row }">{{ row.auto_delete ? '是' : '否' }}</template></el-table-column>
-              <el-table-column label="参数" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ rabbitArguments(row.arguments).map(item => `${item.key}=${item.value}`).join(' · ') || '—' }}</template></el-table-column>
-              <el-table-column label="操作" width="120" align="right">
-                <template #default="{ row }">
-                  <el-button link type="primary" @click="openExchange(row)">详情</el-button>
-                  <el-button link type="danger" :disabled="!can('delete') || !row.name" @click="deleteExchange(row)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <p class="result-note">共 {{ exchanges.length }} 个交换机</p>
-          </template>
-
-          <template v-else-if="tab === 'connections'">
-            <el-table :data="connections" row-key="name" empty-text="暂无连接">
-              <el-table-column label="连接" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.name }}</span></template></el-table-column>
-              <el-table-column prop="user" label="用户" width="110"/>
-              <el-table-column label="客户端" min-width="130"><template #default="{ row }">{{ row.peer_host }}<span v-if="row.peer_port">:{{ row.peer_port }}</span></template></el-table-column>
-              <el-table-column prop="vhost" label="Virtual host" width="110"/>
-              <el-table-column label="状态" width="95"><template #default="{ row }"><el-tag size="small" :type="rabbitConnectionState(row.state).type" effect="light">{{ rabbitConnectionState(row.state).label }}</el-tag></template></el-table-column>
-              <el-table-column label="通道" width="80" align="right"><template #default="{ row }">{{ rabbitCount(row.channels) }}</template></el-table-column>
-              <el-table-column label="操作" width="110" align="right"><template #default="{ row }"><el-button link type="danger" :disabled="!can('delete')" @click="closeConnection(row)">关闭连接</el-button></template></el-table-column>
-            </el-table>
-            <p class="result-note">共 {{ connections.length }} 个连接 · 关闭连接会同时断开其通道与消费者</p>
-          </template>
-
-          <template v-else>
-            <el-table :data="consumers" empty-text="当前虚拟主机下暂无消费者">
-              <el-table-column prop="consumer_tag" label="消费者" min-width="200" show-overflow-tooltip/>
-              <el-table-column label="队列" min-width="190"><template #default="{ row }">{{ row.queue?.name || '—' }}</template></el-table-column>
-              <el-table-column label="连接" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.channel_details?.connection_name || '—' }}</span></template></el-table-column>
-              <el-table-column label="通道" width="80"><template #default="{ row }">{{ row.channel_details?.name ?? '—' }}</template></el-table-column>
-              <el-table-column label="消息确认" width="100"><template #default="{ row }">{{ row.ack_required ? '需要' : '自动' }}</template></el-table-column>
-              <el-table-column label="预取数量" width="95" align="right"><template #default="{ row }">{{ rabbitCount(row.prefetch_count) }}</template></el-table-column>
-            </el-table>
-            <p class="result-note">共 {{ consumers.length }} 个消费者 · 消费者随连接生命周期管理，可在“连接”页关闭对应连接</p>
-          </template>
-        </div>
-      </main>
-    </div>
-
-    <div v-else class="rmq-placeholder">请先选择 RabbitMQ 数据源</div>
-
-    <el-dialog v-model="queueDialog" title="创建队列" width="min(680px, 94vw)" :close-on-click-modal="false" class="rmq-dialog">
-      <el-form label-position="top" :disabled="actionBusy">
-        <div class="form-columns">
-          <el-form-item label="队列名称" required><el-input v-model="queueForm.name" placeholder="例如：order.created" maxlength="255"/></el-form-item>
-          <el-form-item label="Virtual host" required><el-input v-model="queueForm.vhost" placeholder="/" maxlength="255"/></el-form-item>
-        </div>
-        <div class="form-columns">
-          <el-form-item label="队列类型"><el-select v-model="queueForm.queueType"><el-option v-for="[value, label] in rabbitQueueTypeOptions" :key="value" :label="label" :value="value"/></el-select></el-form-item>
-          <el-form-item label="特性"><div class="switch-row"><el-checkbox v-model="queueForm.durable">持久化</el-checkbox><el-checkbox v-model="queueForm.autoDelete">自动删除</el-checkbox></div></el-form-item>
-        </div>
-        <el-form-item label="扩展参数（JSON）"><el-input v-model="queueForm.arguments" type="textarea" :rows="5" spellcheck="false" class="mono-input" placeholder='例如：{"x-max-length":1000,"x-message-ttl":60000}'/></el-form-item>
-      </el-form>
-      <p class="dialog-note">队列声明幂等：同名队列已存在且参数一致时不会重建；参数不一致会被服务端拒绝。</p>
-      <template #footer><el-button :disabled="actionBusy" @click="queueDialog = false">取消</el-button><el-button type="primary" :loading="actionBusy" @click="saveQueue">创建</el-button></template>
-    </el-dialog>
-
-    <el-dialog v-model="exchangeDialog" title="创建交换机" width="min(680px, 94vw)" :close-on-click-modal="false" class="rmq-dialog">
-      <el-form label-position="top" :disabled="actionBusy">
-        <div class="form-columns">
-          <el-form-item label="交换机名称" required><el-input v-model="exchangeForm.name" placeholder="例如：order.events" maxlength="255"/></el-form-item>
-          <el-form-item label="Virtual host" required><el-input v-model="exchangeForm.vhost" placeholder="/" maxlength="255"/></el-form-item>
-        </div>
-        <div class="form-columns">
-          <el-form-item label="类型"><el-select v-model="exchangeForm.type"><el-option v-for="type in rabbitExchangeTypes" :key="type" :label="type" :value="type"/></el-select></el-form-item>
-          <el-form-item label="特性"><div class="switch-row"><el-checkbox v-model="exchangeForm.durable">持久化</el-checkbox><el-checkbox v-model="exchangeForm.autoDelete">自动删除</el-checkbox></div></el-form-item>
-        </div>
-        <el-form-item label="扩展参数（JSON）"><el-input v-model="exchangeForm.arguments" type="textarea" :rows="4" spellcheck="false" class="mono-input" placeholder="通常留空，alternate-exchange 等参数可在此填写"/></el-form-item>
-      </el-form>
-      <template #footer><el-button :disabled="actionBusy" @click="exchangeDialog = false">取消</el-button><el-button type="primary" :loading="actionBusy" @click="saveExchange">创建</el-button></template>
-    </el-dialog>
-
-    <el-drawer v-model="drawer" :title="drawerKind === 'queue' ? (queue?.name || '队列详情') : (exchange?.name || '交换机详情')" size="min(780px, 96vw)" class="rmq-drawer">
+        <section v-if="drawer" class="inline-detail"><div class="detail-top"><el-button :icon="ArrowLeft" @click="closeDetail">返回列表</el-button><div><span>{{ drawerKind === 'queue' ? '队列详情' : '交换机详情' }}</span><h2>{{ drawerKind === 'queue' ? queue?.name || '加载中…' : exchange?.name || '(默认交换机)' }}</h2></div></div>
       <div v-loading="detailLoading" class="drawer-body">
         <el-alert v-if="detailError" :title="detailError" type="warning" :closable="false" show-icon/>
         <template v-if="drawerKind === 'queue' && queue">
@@ -664,9 +537,9 @@ function back() { router.push('/assets/middleware/rabbitmq') }
           </el-table>
         </template>
       </div>
-      <template #footer>
+      <div class="inline-footer">
         <div class="drawer-foot">
-          <el-button :disabled="detailLoading" @click="drawer = false">关闭</el-button>
+          <el-button :disabled="detailLoading" @click="closeDetail">返回列表</el-button>
           <div class="drawer-actions">
             <template v-if="drawerKind === 'queue' && queue">
               <el-button :disabled="!can('delete') || actionBusy" @click="purgeQueue(queue)">清空消息</el-button>
@@ -677,19 +550,154 @@ function back() { router.push('/assets/middleware/rabbitmq') }
             </template>
           </div>
         </div>
-      </template>
-    </el-drawer>
+      </div>
+    </section>
+        <div v-show="!drawer" v-loading="loading" class="rmq-results">
+          <template v-if="tab === 'overview'">
+            <div v-if="!canRead" class="rmq-empty">当前账号没有查询权限。</div>
+            <template v-else>
+              <div class="stat-grid">
+                <article v-for="card in overviewCards" :key="card.label">
+                  <span>{{ card.label }}</span>
+                  <strong>{{ card.value }}</strong>
+                  <small v-if="card.hint">{{ card.hint }}</small>
+                </article>
+              </div>
+              <div class="section-head"><h2>虚拟主机</h2><span>{{ vhosts.length }} 个 · 消息总数 {{ rabbitCount(vhostTotal) }}</span></div>
+              <el-table :data="rabbitVhostRows(vhosts)" empty-text="暂无虚拟主机" @row-click="openVhost">
+                <el-table-column prop="name" label="虚拟主机" min-width="180"><template #default="{ row }"><el-button link type="primary" @click.stop="openVhost(row)">{{ row.name }}</el-button></template></el-table-column>
+                <el-table-column label="消息数" width="120" align="right"><template #default="{ row }">{{ rabbitCount(row.messages) }}</template></el-table-column>
+                <el-table-column label="待消费" width="120" align="right"><template #default="{ row }">{{ rabbitCount(row.ready) }}</template></el-table-column>
+                <el-table-column label="未确认" width="120" align="right"><template #default="{ row }">{{ rabbitCount(row.unacked) }}</template></el-table-column>
+                <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.description || '—' }}</template></el-table-column>
+                <el-table-column label="操作" fixed="right" width="110"><template #default="{ row }"><el-button link type="primary" @click.stop="openVhost(row)">查看队列</el-button></template></el-table-column>
+              </el-table>
+            </template>
+          </template>
+
+          <template v-else-if="tab === 'queues'">
+            <el-table :data="filteredQueues" :row-key="row => JSON.stringify([row.vhost, row.name])" empty-text="暂无队列，可调整虚拟主机或新建队列" @selection-change="onSelectionChange">
+              <el-table-column type="selection" width="46"/>
+              <el-table-column label="队列名称" min-width="230">
+                <template #default="{ row }">
+                  <el-button link type="primary" class="resource-name" @click="openQueue(row)">{{ row.name }}</el-button>
+                  <span v-if="vhost === rabbitAllVhosts" class="resource-sub">{{ row.vhost }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="消息" min-width="150">
+                <template #default="{ row }">
+                  <span class="metric-main">{{ rabbitCount(rabbitQueueMessages(row).messages) }}</span>
+                  <span class="metric-sub">待消费 {{ rabbitCount(row.messages_ready) }} · 未确认 {{ rabbitCount(row.messages_unacknowledged) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="消费者" width="92" align="right"><template #default="{ row }">{{ rabbitCount(row.consumers) }}</template></el-table-column>
+              <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="rabbitQueueState(row).type" effect="light">{{ rabbitQueueState(row).label }}</el-tag></template></el-table-column>
+              <el-table-column label="操作" fixed="right" width="170" align="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openQueue(row)">查看</el-button>
+                  <el-button link type="primary" :disabled="!can('delete')" @click="purgeQueue(row)">清空</el-button>
+                  <el-button link type="danger" :disabled="!can('delete')" @click="deleteQueue(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <p class="result-note">共 {{ filteredQueues.length }} 个队列<span v-if="queueKeyword">（按名称过滤）</span><span v-if="vhost === rabbitAllVhosts"> · 跨全部虚拟主机</span></p>
+          </template>
+
+          <template v-else-if="tab === 'exchanges'">
+            <el-table :data="filterResources(exchanges)" :row-key="row => JSON.stringify([row.vhost, row.name])" empty-text="暂无交换机">
+              <el-table-column label="交换机" min-width="200">
+                <template #default="{ row }">
+                  <el-button link type="primary" class="resource-name" @click="openExchange(row)">{{ row.name || '(默认交换机)' }}</el-button>
+                  <span v-if="vhost === rabbitAllVhosts" class="resource-sub">{{ row.vhost }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="type" label="类型" width="110"/>
+              <el-table-column label="持久化" width="90"><template #default="{ row }">{{ row.durable ? '是' : '否' }}</template></el-table-column>
+              <el-table-column label="自动删除" width="95"><template #default="{ row }">{{ row.auto_delete ? '是' : '否' }}</template></el-table-column>
+              <el-table-column label="参数" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ rabbitArguments(row.arguments).map(item => `${item.key}=${item.value}`).join(' · ') || '—' }}</template></el-table-column>
+              <el-table-column label="操作" fixed="right" width="120" align="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openExchange(row)">详情</el-button>
+                  <el-button link type="danger" :disabled="!can('delete') || !row.name" @click="deleteExchange(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <p class="result-note">共 {{ exchanges.length }} 个交换机</p>
+          </template>
+
+          <template v-else-if="tab === 'connections'">
+            <el-table :data="filterResources(connections)" :row-key="row => JSON.stringify([row.vhost, row.name])" empty-text="暂无连接">
+              <el-table-column label="连接" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.name }}</span></template></el-table-column>
+              <el-table-column prop="user" label="用户" width="110"/>
+              <el-table-column label="客户端" min-width="130"><template #default="{ row }">{{ row.peer_host }}<span v-if="row.peer_port">:{{ row.peer_port }}</span></template></el-table-column>
+              <el-table-column prop="vhost" label="Virtual host" width="110"/>
+              <el-table-column label="状态" width="95"><template #default="{ row }"><el-tag size="small" :type="rabbitConnectionState(row.state).type" effect="light">{{ rabbitConnectionState(row.state).label }}</el-tag></template></el-table-column>
+              <el-table-column label="通道" width="80" align="right"><template #default="{ row }">{{ rabbitCount(row.channels) }}</template></el-table-column>
+              <el-table-column label="操作" fixed="right" width="110" align="right"><template #default="{ row }"><el-button link type="danger" :disabled="!can('delete')" @click="closeConnection(row)">关闭连接</el-button></template></el-table-column>
+            </el-table>
+            <p class="result-note">共 {{ connections.length }} 个连接 · 关闭连接会同时断开其通道与消费者</p>
+          </template>
+
+          <template v-else>
+            <el-table :data="filterResources(consumers)" empty-text="当前虚拟主机下暂无消费者">
+              <el-table-column prop="consumer_tag" label="消费者" min-width="200" show-overflow-tooltip/>
+              <el-table-column label="队列" min-width="190"><template #default="{ row }">{{ row.queue?.name || '—' }}</template></el-table-column>
+              <el-table-column label="连接" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.channel_details?.connection_name || '—' }}</span></template></el-table-column>
+              <el-table-column label="通道" width="80"><template #default="{ row }">{{ row.channel_details?.name ?? '—' }}</template></el-table-column>
+              <el-table-column label="消息确认" width="100"><template #default="{ row }">{{ row.ack_required ? '需要' : '自动' }}</template></el-table-column>
+              <el-table-column label="预取数量" width="95" align="right"><template #default="{ row }">{{ rabbitCount(row.prefetch_count) }}</template></el-table-column>
+            </el-table>
+            <p class="result-note">共 {{ consumers.length }} 个消费者 · 消费者随连接生命周期管理，可在“连接”页关闭对应连接</p>
+          </template>
+        </div>
+      </main>
+    </div>
+
+    <div v-else class="rmq-placeholder">请先选择 RabbitMQ 数据源</div>
+
+    <el-dialog v-model="queueDialog" title="创建队列" width="min(680px, 94vw)" :close-on-click-modal="false" class="rmq-dialog">
+      <el-form label-position="top" :disabled="actionBusy">
+        <div class="form-columns">
+          <el-form-item label="队列名称" required><el-input v-model="queueForm.name" placeholder="例如：order.created" maxlength="255"/></el-form-item>
+          <el-form-item label="Virtual host" required><el-input v-model="queueForm.vhost" placeholder="/" maxlength="255"/></el-form-item>
+        </div>
+        <div class="form-columns">
+          <el-form-item label="队列类型"><el-select v-model="queueForm.queueType"><el-option v-for="[value, label] in rabbitQueueTypeOptions" :key="value" :label="label" :value="value"/></el-select></el-form-item>
+          <el-form-item label="特性"><div class="switch-row"><el-checkbox v-model="queueForm.durable">持久化</el-checkbox><el-checkbox v-model="queueForm.autoDelete">自动删除</el-checkbox></div></el-form-item>
+        </div>
+        <el-form-item label="扩展参数（JSON）"><el-input v-model="queueForm.arguments" type="textarea" :rows="5" spellcheck="false" class="mono-input" placeholder='例如：{"x-max-length":1000,"x-message-ttl":60000}'/></el-form-item>
+      </el-form>
+      <p class="dialog-note">队列声明幂等：同名队列已存在且参数一致时不会重建；参数不一致会被服务端拒绝。</p>
+      <template #footer><el-button :disabled="actionBusy" @click="queueDialog = false">取消</el-button><el-button type="primary" :loading="actionBusy" @click="saveQueue">创建</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="exchangeDialog" title="创建交换机" width="min(680px, 94vw)" :close-on-click-modal="false" class="rmq-dialog">
+      <el-form label-position="top" :disabled="actionBusy">
+        <div class="form-columns">
+          <el-form-item label="交换机名称" required><el-input v-model="exchangeForm.name" placeholder="例如：order.events" maxlength="255"/></el-form-item>
+          <el-form-item label="Virtual host" required><el-input v-model="exchangeForm.vhost" placeholder="/" maxlength="255"/></el-form-item>
+        </div>
+        <div class="form-columns">
+          <el-form-item label="类型"><el-select v-model="exchangeForm.type"><el-option v-for="type in rabbitExchangeTypes" :key="type" :label="type" :value="type"/></el-select></el-form-item>
+          <el-form-item label="特性"><div class="switch-row"><el-checkbox v-model="exchangeForm.durable">持久化</el-checkbox><el-checkbox v-model="exchangeForm.autoDelete">自动删除</el-checkbox></div></el-form-item>
+        </div>
+        <el-form-item label="扩展参数（JSON）"><el-input v-model="exchangeForm.arguments" type="textarea" :rows="4" spellcheck="false" class="mono-input" placeholder="通常留空，alternate-exchange 等参数可在此填写"/></el-form-item>
+      </el-form>
+      <template #footer><el-button :disabled="actionBusy" @click="exchangeDialog = false">取消</el-button><el-button type="primary" :loading="actionBusy" @click="saveExchange">创建</el-button></template>
+    </el-dialog>
+
+
   </section>
 </template>
 
 <style scoped>
-.rmq-page{display:flex;flex-direction:column;gap:14px;height:calc(100vh - 190px);min-height:560px;color:var(--el-text-color-primary,#23364f)}
-.rmq-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px}
+.rmq-page{min-width:0;display:flex;flex-direction:column;gap:14px;height:calc(100vh - 190px);min-height:560px;color:var(--el-text-color-primary,#23364f)}
+.rmq-head{box-shadow:0 1px 2px #1d345b04;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px}
 .rmq-title{margin-right:auto;min-width:0}
 .rmq-title h1{margin:0;font-size:22px}
 .rmq-title p{margin:6px 0 0;font-size:14px;color:var(--el-text-color-secondary,#8795aa);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rmq-body{display:grid;grid-template-columns:268px minmax(0,1fr);gap:14px;flex:1;min-height:0}
-.rmq-side,.rmq-main{display:flex;flex-direction:column;min-height:0;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px;overflow:hidden}
+.rmq-body{display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;flex:1;min-height:0}
+.rmq-side,.rmq-main{min-width:0;display:flex;flex-direction:column;min-height:0;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px;overflow:hidden}
 .side-head{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 10px;font-size:15px;font-weight:600}
 .side-head em{font-style:normal;font-size:12px;font-weight:500;color:#8795aa;background:#f2f5fa;border-radius:9px;padding:1px 8px}
 .side-search{padding:0 12px 10px}
@@ -756,4 +764,9 @@ function back() { router.push('/assets/middleware/rabbitmq') }
   .vhost-list{max-height:260px}
   .meta-grid,.form-columns{grid-template-columns:1fr}
 }
+.rmq-page{gap:0;background:#fff;border:1px solid #e4eaf4;border-radius:10px;overflow:hidden;height:calc(100vh - 160px)}
+.rmq-head{border:0;border-bottom:1px solid #e4eaf4;border-radius:0;box-shadow:none;padding:16px 20px}.rmq-title h1{font-size:18px}.rmq-title p{font-size:12px;margin-top:4px}
+.rmq-body{gap:0;grid-template-columns:230px minmax(0,1fr)}.rmq-side,.rmq-main{border:0;border-radius:0}.rmq-side{background:#fafbfd;border-right:1px solid #e4eaf4}.rmq-main{padding:12px 20px 20px}.rmq-tabs{order:-1}.rmq-toolbar{margin:8px 0 16px}.stat-grid{gap:0;border:1px solid #e4eaf4;border-radius:4px}.stat-grid article{border:0;border-right:1px solid #e4eaf4;border-radius:0;background:none;padding:14px}.stat-grid strong{font-size:17px}
+.inline-detail{overflow:auto;min-height:0;flex:1;padding-top:12px}.detail-top{display:flex;gap:16px;align-items:flex-start;margin-bottom:20px}.detail-top span{font-size:12px;color:#8795aa}.detail-top h2{font:16px/1.6 Consolas,monospace;overflow-wrap:anywhere;margin:4px 0 0}.inline-footer{border-top:1px solid #e4eaf4;margin-top:20px;padding-top:16px}.resource-name{white-space:normal;text-align:left;height:auto;overflow-wrap:anywhere}.vhost-list li:focus-visible{outline:2px solid #409eff;outline-offset:-2px}
+@media(max-width:900px){.rmq-page{height:auto}.rmq-body{grid-template-columns:1fr}.rmq-side{max-height:240px;border-right:0;border-bottom:1px solid #e4eaf4}.inline-detail{max-height:none}}
 </style>

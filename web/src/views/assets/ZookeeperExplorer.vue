@@ -45,7 +45,7 @@ onMounted(() => {
 onUnmounted(() => { generation++; treeGeneration++; revealGeneration++; window.removeEventListener('ops-admin-permissions-changed', permissionsChanged) })
 
 function permissionsChanged() {
-  revision.value++
+  revision.value++;generation++;treeGeneration++;loading.value=false;current.value=null;editDialog.value=false;createDialog.value=false
   treeKey.value++
   revealGeneration++
   error.value = ''
@@ -74,6 +74,7 @@ async function loadTreeNode(node, resolve) {
     resolve(zkTreeNodes(data))
   } catch (e) {
     resolve([])
+    if(g!==treeGeneration)return
     if (node.level === 0) error.value = e.message || '读取根节点失败'
     else ElMessage.warning(e.message || `读取 ${path} 的子节点失败`)
   }
@@ -368,11 +369,11 @@ function back() { router.push('/assets/middleware/zookeeper') }
 </template>
 
 <style scoped>
-.zk-page{display:flex;flex-direction:column;gap:14px;height:calc(100vh - 190px);min-height:560px;color:var(--el-text-color-primary,#23364f)}
-.zk-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px}
+.zk-page{min-width:0;display:flex;flex-direction:column;gap:14px;height:calc(100vh - 190px);min-height:560px;color:var(--el-text-color-primary,#23364f)}
+.zk-head{box-shadow:0 1px 2px #1d345b04;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px}
 .zk-title{margin-right:auto;min-width:0}.zk-title h1{margin:0;font-size:22px}.zk-title p{margin:6px 0 0;font-size:14px;color:var(--el-text-color-secondary,#8795aa);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .zk-body{display:grid;grid-template-columns:360px minmax(0,1fr);gap:14px;flex:1;min-height:0}
-.zk-side,.zk-main{display:flex;flex-direction:column;min-height:0;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px;overflow:hidden}
+.zk-side,.zk-main{min-width:0;display:flex;flex-direction:column;min-height:0;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px;overflow:hidden}
 .zk-search{padding:12px;border-bottom:1px solid var(--el-border-color-lighter,#eef2f8)}
 .zk-search :deep(.el-input__inner){font-size:15px}
 .zk-head :deep(.el-button),.zk-detail-actions :deep(.el-button),.zk-value-foot :deep(.el-button){font-size:15px}

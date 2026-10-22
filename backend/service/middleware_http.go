@@ -27,13 +27,13 @@ type middlewareHTTP struct {
 }
 
 func (h *middlewareHTTP) request(method, path string, q url.Values, body any, form bool) (any, error) {
-	result, _, err := h.requestRaw(method, path, q, body, form)
+	result, _, err := h.requestRaw(method, path, q, body, form, false)
 	return result, err
 }
 
 // requestRaw also returns the response body. Nacos serves configuration content as
 // plain text, so callers that need the untouched payload (JSON or YAML) use this.
-func (h *middlewareHTTP) requestRaw(method, path string, q url.Values, body any, form bool) (any, string, error) {
+func (h *middlewareHTTP) requestRaw(method, path string, q url.Values, body any, form, rawContent bool) (any, string, error) {
 	if q == nil {
 		q = url.Values{}
 	}
@@ -81,6 +81,11 @@ func (h *middlewareHTTP) requestRaw(method, path string, q url.Values, body any,
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", middlewareHTTPError(resp.StatusCode)
+	}
+	// Nacos 2.x configuration content is user data rather than an API envelope.
+	// JSON fields such as code/error and even a literal false are valid content.
+	if rawContent {
+		return string(raw), string(raw), nil
 	}
 	if len(raw) == 0 {
 		return true, "", nil
@@ -220,6 +225,9 @@ func (h *middlewareHTTP) rabbit(r MiddlewareOperation) (any, error) {
 		path = "/api/" + kind + "/" + esc(v) + "/" + esc(p["name"])
 		if strings.HasSuffix(r.Operation, "bindings") {
 			path += "/bindings"
+			if kind == "exchanges" {
+				path += "/source"
+			}
 		}
 	case "queue.put", "queue.delete", "queue.purge", "exchange.put", "exchange.delete":
 		if err := requiredMiddleware(p, "name"); err != nil {
@@ -462,7 +470,7 @@ func (h *middlewareHTTP) nacos(version string, r MiddlewareOperation) (any, erro
 		body = q
 		q = nil
 	}
-	v, raw, e := h.requestRaw(method, path, q, body, true)
+	v, raw, e := h.requestRaw(method, path, q, body, true, version == "2" && r.Operation == "config.get")
 	if e != nil {
 		return nil, e
 	}
@@ -532,8 +540,21 @@ func (h *middlewareHTTP) etcd(r MiddlewareOperation) (any, error) {
 		body["key"] = enc(key)
 		body["limit"] = 200
 		if r.Operation == "keys" {
+			body["sort_order"] = "ASCEND"
+			body["sort_target"] = "KEY"
+			if p["keysOnly"] == "true" {
+				body["keys_only"] = true
+			}
+			if after := p["after"]; after != "" {
+				if !strings.HasPrefix(after, key) {
+					return nil, errors.New("分页游标不属于当前前缀")
+				}
+				body["key"] = enc(after + "\x00")
+			}
 			if key == "" {
-				body["key"] = enc(string([]byte{0}))
+				if p["after"] == "" {
+					body["key"] = enc(string([]byte{0}))
+				}
 				body["range_end"] = enc(string([]byte{0}))
 			} else {
 				body["range_end"] = base64.StdEncoding.EncodeToString(prefixEnd([]byte(key)))

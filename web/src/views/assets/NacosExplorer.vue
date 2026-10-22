@@ -34,6 +34,8 @@ const error = ref('')
 const tab = ref('configs')
 const namespacesRaw = ref([])
 const namespaceId = ref('public')
+const namespaceSearch = ref('')
+const filteredNamespaces = computed(() => namespaceOptions.value.filter(item => `${item.name} ${item.id}`.toLowerCase().includes(namespaceSearch.value.trim().toLowerCase())))
 const revision = ref(0)
 
 const configQuery = reactive({ dataId: '', group: nacosDefaultGroup })
@@ -114,7 +116,7 @@ onUnmounted(() => {
 })
 
 async function permissionsChanged() {
-  revision.value++
+  revision.value++;generation++;detailGeneration++;loading.value=false;configDrawer.value=false;serviceDrawer.value=false;editorDialog.value=false;namespaceDialog.value=false;configSelection.value=[];configContent.value='';configRow.value=null;instances.value=[];namespacesRaw.value=[];configs.value=[];services.value=[]
   error.value = ''
   if (!canRead.value) {
     configs.value = []; services.value = []
@@ -133,11 +135,12 @@ async function loadSource() {
 }
 
 async function loadNamespaces() {
+  const g=generation
   try {
     const data = await api('namespaces')
-    namespacesRaw.value = Array.isArray(data) ? data : (Array.isArray(data?.pageItems) ? data.pageItems : [])
+    if(g===generation)namespacesRaw.value = Array.isArray(data) ? data : (Array.isArray(data?.pageItems) ? data.pageItems : [])
   } catch {
-    namespacesRaw.value = []
+    if(g===generation)namespacesRaw.value = []
   }
 }
 
@@ -202,7 +205,11 @@ function searchServices() {
   reload()
 }
 
+async function refreshCurrent() { if (configDrawer.value && configRow.value) await openConfig(configRow.value); else if (serviceDrawer.value) await loadInstances(); else await reload() }
+function closeDetails() { detailGeneration++; configDrawer.value = false; serviceDrawer.value = false; configDetailLoading.value = false; instancesLoading.value = false }
+function selectNamespace(id) { if (namespaceId.value === id && tab.value !== 'namespaces') return; namespaceId.value = id; if (tab.value === 'namespaces') tab.value = 'configs'; onNamespaceChange() }
 function onNamespaceChange() {
+  closeDetails()
   configPage.value = 1
   servicePage.value = 1
   configs.value = []; services.value = []; configSelection.value = []
@@ -211,6 +218,7 @@ function onNamespaceChange() {
 }
 
 function changeTab() {
+  closeDetails()
   error.value = ''
   reload()
 }
@@ -476,16 +484,16 @@ function back() { router.push('/assets/middleware/nacos') }
       <el-button link type="primary" :icon="ArrowLeft" @click="back">数据源</el-button>
       <div class="nacos-title">
         <h1>{{ source?.name || 'Nacos' }}</h1>
-        <p>{{ source?.description || '统一管理配置、服务发现与命名空间，支持 Nacos 2.x / 3.x。' }}<span v-if="source?.version"> · {{ source.version }}.x</span></p>
+        <p>Nacos · 配置与服务管理<span v-if="source?.version"> · {{ source.version }}.x</span></p>
       </div>
-      <el-button :icon="Refresh" :loading="loading" :disabled="!canRead" @click="reload">刷新</el-button>
+      <el-button :icon="Refresh" :loading="loading" :disabled="!canRead" @click="refreshCurrent">刷新</el-button>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon/>
     <el-alert v-if="valid && !canRead" title="当前账号只有查看数据源的权限，浏览配置与服务需要额外授权。" type="info" :closable="false"/>
 
-    <div v-if="valid" class="nacos-main">
-      <div class="nacos-toolbar">
+    <div v-if="valid" class="nacos-workspace"><aside class="namespace-side"><div class="namespace-heading"><strong>命名空间</strong><span>{{ namespaceOptions.length }}</span></div><el-input v-model="namespaceSearch" :prefix-icon="Search" placeholder="搜索名称或 ID" aria-label="搜索命名空间" clearable/><nav aria-label="命名空间"><button v-for="item in filteredNamespaces" :key="item.id" :class="{ active: namespaceId === item.id }" :disabled="!canRead" @click="selectNamespace(item.id)"><strong>{{ item.name }}</strong><span>{{ item.id }}</span></button><p v-if="!filteredNamespaces.length">没有匹配的命名空间</p></nav><div class="namespace-context">当前空间：{{ namespaceLabel }}</div></aside><div class="nacos-main">
+      <div v-show="!configDrawer && !serviceDrawer" class="nacos-toolbar">
         <template v-if="tab === 'configs'">
           <el-button type="primary" :icon="Plus" :disabled="!can('write')" @click="openCreate">新建配置</el-button>
           <el-button :disabled="!can('delete') || !configSelection.length || busy" @click="removeSelectedConfigs">批量删除<span v-if="configSelection.length">（{{ configSelection.length }}）</span></el-button>
@@ -498,12 +506,7 @@ function back() { router.push('/assets/middleware/nacos') }
         </template>
 
         <div class="toolbar-right">
-          <el-select v-if="tab !== 'namespaces'" v-model="namespaceId" class="namespace-select" placeholder="命名空间" filterable :disabled="!canRead" @change="onNamespaceChange">
-            <el-option v-for="item in namespaceOptions" :key="item.id" :label="item.name" :value="item.id">
-              <span class="namespace-option">{{ item.name }}</span>
-              <span class="namespace-id">{{ item.id }}</span>
-            </el-option>
-          </el-select>
+
           <template v-if="tab === 'configs'">
             <el-input v-model="configQuery.dataId" :prefix-icon="Search" placeholder="Data ID" clearable aria-label="按 Data ID 查询" class="filter-input" @keyup.enter="searchConfigs"/>
             <el-input v-model="configQuery.group" placeholder="Group" clearable aria-label="按 Group 查询" class="filter-input group-input" @keyup.enter="searchConfigs"/>
@@ -522,7 +525,57 @@ function back() { router.push('/assets/middleware/nacos') }
         <el-tab-pane v-for="[key, label] in tabs" :key="key" :label="label" :name="key"/>
       </el-tabs>
 
-      <div v-loading="tableLoading" class="nacos-results">
+      <section v-if="configDrawer" class="inline-detail"><div class="detail-top"><el-button :icon="ArrowLeft" @click="closeDetails">返回列表</el-button><div><span>{{ namespaceLabel }}</span><h2>{{ configRow?.dataId || '配置详情' }}</h2></div></div>
+      <div v-loading="configDetailLoading" class="drawer-body">
+        <div class="drawer-tags">
+          <el-tag size="small" type="info" effect="plain">{{ configRow?.group || '—' }}</el-tag>
+          <el-tag size="small" effect="plain">{{ nacosFormatLabel(configRow?.type) }}</el-tag>
+          <el-tag v-if="configRow?.appName" size="small" type="success" effect="plain">{{ configRow.appName }}</el-tag>
+          <span class="drawer-meta">命名空间 {{ namespaceLabel }} · 更新于 {{ nacosTime(configRow?.gmtModified) }}</span>
+        </div>
+        <div class="content-block">
+          <pre>{{ shownContent || '（空配置）' }}</pre>
+          <div class="content-foot">
+            <span>{{ formatted ? '已格式化为缩进 JSON' : '' }}</span>
+            <div class="content-actions">
+              <el-button size="small" :disabled="!configContent" @click="copyContent">复制</el-button>
+              <el-button size="small" :disabled="!configContent" @click="toggleFormat">{{ formatted ? '还原' : '格式化' }}</el-button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="inline-footer">
+        <div class="drawer-foot">
+          <el-button :disabled="configDetailLoading" @click="closeDetails">返回列表</el-button>
+          <div class="drawer-actions">
+            <el-button type="primary" :disabled="!can('write') || !configRow" @click="openEdit(configRow)">编辑配置</el-button>
+            <el-button type="danger" plain :disabled="!can('delete') || !configRow" @click="deleteConfig(configRow)">删除配置</el-button>
+          </div>
+        </div>
+      </div>
+    </section>
+<section v-if="serviceDrawer" class="inline-detail"><div class="detail-top"><el-button :icon="ArrowLeft" @click="closeDetails">返回列表</el-button><div><span>{{ namespaceLabel }}</span><h2>{{ service?.name || '服务实例' }}</h2></div></div>
+      <div class="drawer-body">
+        <div class="drawer-tags">
+          <el-tag size="small" type="info" effect="plain">{{ service?.groupName || nacosDefaultGroup }}</el-tag>
+          <el-tag size="small" effect="plain">命名空间 {{ serviceNamespaceLabel }}</el-tag>
+          <span class="drawer-meta">共 {{ instances.length }} 个实例 · 健康 {{ instances.filter(item => item.healthy).length }} 个</span>
+          <el-button size="small" :icon="Refresh" :loading="instancesLoading" @click="loadInstances">刷新实例</el-button>
+        </div>
+        <el-table v-loading="instancesLoading" :data="instances" empty-text="该服务暂无实例">
+          <el-table-column label="IP" min-width="170"><template #default="{ row }"><span class="mono">{{ row.ip }}</span></template></el-table-column>
+          <el-table-column prop="port" label="端口" width="90" align="right"/>
+          <el-table-column label="集群" width="120"><template #default="{ row }">{{ row.clusterName || 'DEFAULT' }}</template></el-table-column>
+          <el-table-column label="健康" width="100"><template #default="{ row }"><el-tag size="small" :type="row.healthy ? 'success' : 'danger'" effect="light">{{ row.healthy ? '健康' : '异常' }}</el-tag></template></el-table-column>
+          <el-table-column label="启用" width="90"><template #default="{ row }"><el-switch :model-value="row.enabled !== false" :disabled="!can('write') || busy" size="small" @change="value => toggleInstance(row, value)"/></template></el-table-column>
+          <el-table-column label="权重" width="90" align="right"><template #default="{ row }">{{ row.weight ?? 1 }}</template></el-table-column>
+          <el-table-column label="临时实例" width="110"><template #default="{ row }">{{ row.ephemeral === false ? '否' : '是' }}</template></el-table-column>
+          <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button link type="danger" :disabled="!can('delete') || busy" @click="removeInstance(row)">移除</el-button></template></el-table-column>
+        </el-table>
+        <p class="result-note">实例上下线通过更新 enabled 与权重生效；临时实例由客户端心跳维持，可在客户端下线后自动摘除。</p>
+      </div>
+    </section>
+      <div v-show="!configDrawer && !serviceDrawer" v-loading="tableLoading" class="nacos-results">
         <template v-if="tab === 'configs'">
           <el-table :data="configs" :row-key="nacosConfigKey" empty-text="暂无配置，可调整命名空间或查询条件" @selection-change="onConfigSelection">
             <el-table-column type="selection" width="46"/>
@@ -575,37 +628,10 @@ function back() { router.push('/assets/middleware/nacos') }
       </div>
     </div>
 
+    </div>
     <div v-else class="nacos-placeholder">请先选择 Nacos 数据源</div>
 
-    <el-drawer v-model="configDrawer" :title="configRow?.dataId || '配置详情'" size="min(860px, 96vw)" class="nacos-drawer">
-      <div v-loading="configDetailLoading" class="drawer-body">
-        <div class="drawer-tags">
-          <el-tag size="small" type="info" effect="plain">{{ configRow?.group || '—' }}</el-tag>
-          <el-tag size="small" effect="plain">{{ nacosFormatLabel(configRow?.type) }}</el-tag>
-          <el-tag v-if="configRow?.appName" size="small" type="success" effect="plain">{{ configRow.appName }}</el-tag>
-          <span class="drawer-meta">命名空间 {{ namespaceLabel }} · 更新于 {{ nacosTime(configRow?.gmtModified) }}</span>
-        </div>
-        <div class="content-block">
-          <pre>{{ shownContent || '（空配置）' }}</pre>
-          <div class="content-foot">
-            <span>{{ formatted ? '已格式化为缩进 JSON' : '' }}</span>
-            <div class="content-actions">
-              <el-button size="small" :disabled="!configContent" @click="copyContent">复制</el-button>
-              <el-button size="small" :disabled="!configContent" @click="toggleFormat">{{ formatted ? '还原' : '格式化' }}</el-button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <div class="drawer-foot">
-          <el-button :disabled="configDetailLoading" @click="configDrawer = false">关闭</el-button>
-          <div class="drawer-actions">
-            <el-button type="primary" :disabled="!can('write') || !configRow" @click="openEdit(configRow)">编辑配置</el-button>
-            <el-button type="danger" plain :disabled="!can('delete') || !configRow" @click="deleteConfig(configRow)">删除配置</el-button>
-          </div>
-        </div>
-      </template>
-    </el-drawer>
+
 
     <el-dialog v-model="editorDialog" :title="editorMode === 'create' ? '新建配置' : `编辑配置 · ${editorForm.dataId}`" width="min(880px, 94vw)" top="5vh" :close-on-click-modal="false" class="nacos-dialog">
       <el-form v-loading="editorLoading" label-position="top" :disabled="busy">
@@ -644,38 +670,18 @@ function back() { router.push('/assets/middleware/nacos') }
       </template>
     </el-dialog>
 
-    <el-drawer v-model="serviceDrawer" :title="service?.name || '服务实例'" size="min(880px, 96vw)" class="nacos-drawer">
-      <div class="drawer-body">
-        <div class="drawer-tags">
-          <el-tag size="small" type="info" effect="plain">{{ service?.groupName || nacosDefaultGroup }}</el-tag>
-          <el-tag size="small" effect="plain">命名空间 {{ serviceNamespaceLabel }}</el-tag>
-          <span class="drawer-meta">共 {{ instances.length }} 个实例 · 健康 {{ instances.filter(item => item.healthy).length }} 个</span>
-          <el-button size="small" :icon="Refresh" :loading="instancesLoading" @click="loadInstances">刷新实例</el-button>
-        </div>
-        <el-table v-loading="instancesLoading" :data="instances" empty-text="该服务暂无实例">
-          <el-table-column label="IP" min-width="170"><template #default="{ row }"><span class="mono">{{ row.ip }}</span></template></el-table-column>
-          <el-table-column prop="port" label="端口" width="90" align="right"/>
-          <el-table-column label="集群" width="120"><template #default="{ row }">{{ row.clusterName || 'DEFAULT' }}</template></el-table-column>
-          <el-table-column label="健康" width="100"><template #default="{ row }"><el-tag size="small" :type="row.healthy ? 'success' : 'danger'" effect="light">{{ row.healthy ? '健康' : '异常' }}</el-tag></template></el-table-column>
-          <el-table-column label="启用" width="90"><template #default="{ row }"><el-switch :model-value="row.enabled !== false" :disabled="!can('write') || busy" size="small" @change="value => toggleInstance(row, value)"/></template></el-table-column>
-          <el-table-column label="权重" width="90" align="right"><template #default="{ row }">{{ row.weight ?? 1 }}</template></el-table-column>
-          <el-table-column label="临时实例" width="110"><template #default="{ row }">{{ row.ephemeral === false ? '否' : '是' }}</template></el-table-column>
-          <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button link type="danger" :disabled="!can('delete') || busy" @click="removeInstance(row)">移除</el-button></template></el-table-column>
-        </el-table>
-        <p class="result-note">实例上下线通过更新 enabled 与权重生效；临时实例由客户端心跳维持，可在客户端下线后自动摘除。</p>
-      </div>
-    </el-drawer>
+
   </section>
   </el-config-provider>
 </template>
 
 <style scoped>
-.nacos-page{display:flex;flex-direction:column;gap:14px;height:calc(100vh - 190px);min-height:560px;color:var(--el-text-color-primary,#23364f)}
-.nacos-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px}
+.nacos-page{min-width:0;display:flex;flex-direction:column;gap:14px;height:calc(100vh - 190px);min-height:560px;color:var(--el-text-color-primary,#23364f)}
+.nacos-head{box-shadow:0 1px 2px #1d345b04;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px}
 .nacos-title{margin-right:auto;min-width:0}
 .nacos-title h1{margin:0;font-size:22px}
 .nacos-title p{margin:6px 0 0;font-size:14px;color:var(--el-text-color-secondary,#8795aa);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.nacos-main{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px;padding:16px 20px 18px;overflow:hidden}
+.nacos-main{min-width:0;display:flex;flex-direction:column;flex:1;min-height:0;background:var(--el-bg-color,#fff);border:1px solid var(--el-border-color-light,#e4eaf4);border-radius:12px;padding:16px 20px 18px;overflow:hidden}
 .nacos-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:40px}
 .toolbar-label{font-size:15px;font-weight:600;color:#41546d}
 .toolbar-hint{font-size:13.5px;color:#8b98ab}
@@ -718,4 +724,8 @@ function back() { router.push('/assets/middleware/nacos') }
   .namespace-select,.filter-input,.group-input{width:100%;max-width:none}
   .form-columns{grid-template-columns:1fr}
 }
+.nacos-page{gap:0;background:#fff;border:1px solid #e4eaf4;border-radius:10px;overflow:hidden;height:calc(100vh - 160px)}.nacos-head{border:0;border-bottom:1px solid #e4eaf4;border-radius:0;box-shadow:none;padding:16px 20px}.nacos-title h1{font-size:18px}.nacos-title p{font-size:12px;margin-top:4px}
+.nacos-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);min-height:0;flex:1}.nacos-main{border:0;border-radius:0;padding:12px 20px 20px}.namespace-side{display:flex;flex-direction:column;min-height:0;background:#fafbfd;border-right:1px solid #e4eaf4;padding:16px 12px 0}.namespace-heading{display:flex;justify-content:space-between;margin-bottom:14px;font-size:13px;color:#52657e}.namespace-heading span{color:#8795aa}.namespace-side nav{overflow:auto;flex:1;margin-top:12px}.namespace-side nav button{display:flex;flex-direction:column;gap:5px;width:100%;border:0;border-radius:5px;padding:12px;text-align:left;background:transparent;color:#35465e;cursor:pointer;font:inherit}.namespace-side nav button:hover{background:#f0f4fa}.namespace-side nav button.active{background:#eaf2ff;color:#316db6}.namespace-side nav button:focus-visible{outline:2px solid #409eff;outline-offset:-2px}.namespace-side nav strong{font-size:13px;overflow-wrap:anywhere}.namespace-side nav span{font:11px/1.5 Consolas,monospace;color:#8795aa;overflow-wrap:anywhere}.namespace-side nav p,.namespace-context{font-size:12px;line-height:1.7;color:#8795aa;padding:12px 0}.namespace-context{border-top:1px solid #e4eaf4;overflow-wrap:anywhere}.nacos-tabs{order:-1}.nacos-toolbar{margin:8px 0 16px}.toolbar-right{margin-left:0}.filter-input{width:190px}.group-input{width:160px}
+.inline-detail{overflow:auto;min-height:0;flex:1;padding-top:12px}.detail-top{display:flex;align-items:flex-start;gap:16px;margin-bottom:20px}.detail-top span{font-size:12px;color:#8795aa}.detail-top h2{margin:4px 0 0;font:16px/1.6 Consolas,monospace;overflow-wrap:anywhere}.inline-footer{border-top:1px solid #e4eaf4;margin-top:20px;padding-top:16px}.content-block pre{background:#f7f9fc;min-height:300px;max-height:none;font-size:13px}.resource-name{white-space:normal;text-align:left;height:auto;overflow-wrap:anywhere}
+@media(max-width:900px){.nacos-page{height:auto}.nacos-workspace{grid-template-columns:1fr}.namespace-side{max-height:250px;border-right:0;border-bottom:1px solid #e4eaf4}.inline-detail{max-height:none}.namespace-side nav{min-height:80px}}
 </style>

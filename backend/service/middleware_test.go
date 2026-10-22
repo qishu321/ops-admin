@@ -309,6 +309,55 @@ func TestMiddlewareNacosV2ConfigContentKeepsJSONField(t *testing.T) {
 	}
 }
 
+func TestMiddlewareNacosV2ConfigContentIsNotAnAPIEnvelope(t *testing.T) {
+	for _, content := range []string{`{"code":500,"message":"business state"}`, `{"error":"business error value"}`, `false`, `{"code":0,"data":{"content":"business field"}}`, ""} {
+		t.Run(content, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = w.Write([]byte(content))
+			}))
+			defer server.Close()
+			d := model.MiddlewareDatasource{Type: "nacos", Version: "2", Endpoints: []string{server.URL}}
+			v, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "config.get", Params: map[string]string{"dataId": "app.json"}})
+			if err != nil || v != content {
+				t.Fatalf("configuration content changed or rejected: got %v, error %v", v, err)
+			}
+		})
+	}
+}
+
+func TestMiddlewareNacosConfigContentStillRejectsHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"code":403,"message":"forbidden"}`))
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "nacos", Version: "2", Endpoints: []string{server.URL}}
+	if _, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "config.get", Params: map[string]string{"dataId": "app.json"}}); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatal("HTTP error was returned as configuration content", err)
+	}
+}
+
+func TestMiddlewareRabbitExchangeBindingsUseSourceEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != "/api/exchanges/%2F/team%2Fexchange/bindings/source" {
+			t.Errorf("unexpected exchange bindings request: %s %s", r.Method, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"source":"team/exchange","destination":"orders","destination_type":"queue"}]`))
+	}))
+	defer server.Close()
+	d := model.MiddlewareDatasource{Type: "rabbitmq", Endpoints: []string{server.URL}}
+	v, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "exchange.bindings", Params: map[string]string{"name": "team/exchange", "vhost": "/"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows, ok := v.([]any); !ok || len(rows) != 1 {
+		t.Fatalf("exchange bindings missing: %v", v)
+	}
+}
+
 func TestMiddlewareMissingResourceMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }))
 	defer server.Close()
@@ -316,5 +365,39 @@ func TestMiddlewareMissingResourceMessage(t *testing.T) {
 	_, err := runMiddlewareHTTP(context.Background(), d, model.AssetCredential{}, MiddlewareOperation{Operation: "queue.get", Params: map[string]string{"name": "gone"}})
 	if err == nil || !strings.Contains(err.Error(), "资源不存在") {
 		t.Fatalf("expected not-found guidance, got %v", err)
+	}
+}
+
+func TestMiddlewareEtcdKeyPagination(t *testing.T) {
+	for _, prefix := range []string{"", "/registry/"} {
+		t.Run(prefix, func(t *testing.T) {
+			after := prefix + "last"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				decode := func(field string) string {
+					value, _ := body[field].(string)
+					raw, _ := base64.StdEncoding.DecodeString(value)
+					return string(raw)
+				}
+				if decode("key") != after+"\x00" {
+					t.Errorf("cursor must skip previous key: %v", body)
+				}
+				expectedEnd := "\x00"
+				if prefix != "" {
+					expectedEnd = string(prefixEnd([]byte(prefix)))
+				}
+				if decode("range_end") != expectedEnd || body["sort_order"] != "ASCEND" || body["keys_only"] != true {
+					t.Errorf("bad pagination range: %v", body)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"kvs":[],"more":false}`))
+			}))
+			defer server.Close()
+			_, err := runMiddlewareHTTP(context.Background(), model.MiddlewareDatasource{Type: "etcd", AuthType: "none", Endpoints: []string{server.URL}}, model.AssetCredential{}, MiddlewareOperation{Operation: "keys", Params: map[string]string{"key": prefix, "after": after, "keysOnly": "true"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

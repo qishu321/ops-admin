@@ -299,13 +299,18 @@ func kafkaClearTopic(ctx context.Context, c kafkaTopicAPI, name string) (any, er
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		md, err := c.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{name}})
-		gone := err != nil
-		if err == nil {
-			gone = true
-			for _, t := range md.Topics {
-				if t.Name == name && t.Error == nil {
-					gone = false
-				}
+		if err != nil {
+			return nil, fmt.Errorf("Topic 已提交删除，但无法确认删除完成，未尝试重建，请检查 Topic 状态：%w", err)
+		}
+		gone := true
+		for _, t := range md.Topics {
+			if t.Name != name {
+				continue
+			}
+			if t.Error == nil {
+				gone = false
+			} else if !errors.Is(t.Error, kafka.UnknownTopicOrPartition) {
+				return nil, fmt.Errorf("Topic 已提交删除，但无法确认删除完成，未尝试重建，请检查 Topic 状态：%w", t.Error)
 			}
 		}
 		if gone {

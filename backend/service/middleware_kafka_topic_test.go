@@ -338,3 +338,45 @@ func TestKafkaClearTopicRejectsInternalAndReportsRebuildFailure(t *testing.T) {
 		t.Fatal("rebuild failure hidden", e)
 	}
 }
+
+func TestKafkaClearTopicDoesNotRebuildWhenDeletionCannotBeConfirmed(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		err  error
+	}{
+		{name: "metadata transport failure", err: errors.New("connection reset")},
+		{name: "metadata authorization failure", err: kafka.TopicAuthorizationFailed},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			f := basicTopicFake()
+			initialMetadata := f.metadata
+			reads := 0
+			f.metadata = func(r *kafka.MetadataRequest) (*kafka.MetadataResponse, error) {
+				reads++
+				if reads == 1 {
+					return initialMetadata(r)
+				}
+				if errors.Is(failure.err, kafka.TopicAuthorizationFailed) {
+					return &kafka.MetadataResponse{Topics: []kafka.Topic{{Name: "orders", Error: failure.err}}}, nil
+				}
+				return nil, failure.err
+			}
+			f.configs = func(*kafka.DescribeConfigsRequest) (*kafka.DescribeConfigsResponse, error) {
+				return &kafka.DescribeConfigsResponse{Resources: []kafka.DescribeConfigResponseResource{{}}}, nil
+			}
+			deleted, created := false, false
+			f.deleteTopic = func(*kafka.DeleteTopicsRequest) (*kafka.DeleteTopicsResponse, error) {
+				deleted = true
+				return &kafka.DeleteTopicsResponse{Errors: map[string]error{"orders": nil}}, nil
+			}
+			f.createTopic = func(*kafka.CreateTopicsRequest) (*kafka.CreateTopicsResponse, error) {
+				created = true
+				return &kafka.CreateTopicsResponse{Errors: map[string]error{"orders": nil}}, nil
+			}
+			_, err := kafkaClearTopic(context.Background(), f, "orders")
+			if !deleted || created || !errors.Is(err, failure.err) || !strings.Contains(err.Error(), "无法确认删除完成") {
+				t.Fatalf("unconfirmed deletion continued: deleted %v, created %v, error %v", deleted, created, err)
+			}
+		})
+	}
+}

@@ -16,8 +16,8 @@ const messageFilter = ref(''), configFilter = ref(''), groupFilter = ref(''), co
 const messageTable = ref(null)
 const produceDialog = ref(false), configDialog = ref(false), partitionsDialog = ref(false), configEdit = reactive({})
 const production = reactive({ partition:'0', key:'', value:'', nullKey:true, tombstone:false, keyEncoding:'utf8', valueEncoding:'utf8', headers:'[]' })
-const newPartitions = ref(1), cursorHistory = ref([]), messageScope = ref(null), confirming = ref(false), clearing = ref(false)
-let generation = 0, messageRequest = 0, consumerRequest = 0
+const newPartitions = ref(1), cursorHistory = ref([]), messageScope = ref(null), confirming = ref(false), clearing = ref(false), expandedKeys = ref([])
+let generation = 0, baseRequest = 0, messageRequest = 0, consumerRequest = 0
 const can = action => { revision.value; return getUser().accountType === 'administrator' || getPermissions().includes(`assets:middleware:${action}`) }
 const partitions = computed(() => overview.value?.partitions || [])
 const replication = computed(() => [...new Set(partitions.value.map(p => p.replicas.length))].join(' / ') || '—')
@@ -28,12 +28,29 @@ const maxSpan = computed(() => partitions.value.reduce((max,p) => kafkaOffsetAtL
 const brokerStats = computed(() => { const stats = new Map(); for (const p of partitions.value) { for (const id of p.replicas) { if (!stats.has(id)) stats.set(id,{ id, leaders:0, replicas:0, isr:0 }); const b = stats.get(id); b.replicas++; if (p.leader === id) b.leaders++; if (p.isr.includes(id)) b.isr++ } }; return [...stats.values()].sort((a,b) => a.id-b.id) })
 function valid() { return Number.isSafeInteger(props.sourceId) && props.sourceId > 0 && Boolean(props.topic) }
 function api(operation, params = {}, action = 'query') { return operateMiddleware(props.sourceId,operation,{...params,name:props.topic},action,action !== 'query',operation === 'topic.clear' ? 60000 : 20000) }
-function reset() { saving.value=false; baseLoading.value=false;configLoading.value=false;messagesLoading.value=false;consumersLoading.value=false;generation++; messageRequest++; consumerRequest++; tab.value='overview'; overview.value=null; configs.value=[]; messages.value=null; consumers.value=null; cursorHistory.value=[]; Object.keys(errors).forEach(k=>errors[k]=''); Object.assign(query,{partition:'0',mode:'latest',offset:'0',timestamp:'',limit:'50'}); produceDialog.value=false; configDialog.value=false; partitionsDialog.value=false; loadBase() }
+function invalidateRequests() {
+ generation++; baseRequest++; messageRequest++; consumerRequest++
+ baseLoading.value=false; configLoading.value=false; messagesLoading.value=false; consumersLoading.value=false
+ if(confirming.value) ElMessageBox.close()
+ confirming.value=false; saving.value=false; clearing.value=false
+}
+function clearResults() {
+ overview.value=null; configs.value=[]; messages.value=null; consumers.value=null; consumerDetail.value=null
+ messageScope.value=null; cursorHistory.value=[]; expandedKeys.value=[]
+ produceDialog.value=false; configDialog.value=false; partitionsDialog.value=false
+ Object.keys(errors).forEach(k=>errors[k]='')
+}
+function reset() {
+ invalidateRequests(); clearResults(); tab.value='overview'
+ messageFilter.value=''; configFilter.value=''; groupFilter.value=''
+ Object.assign(query,{partition:'0',mode:'latest',offset:'0',timestamp:'',limit:'50'})
+ loadBase()
+}
 watch(() => [props.sourceId,props.topic],reset,{immediate:true})
-function permissionsChanged() { revision.value++; overview.value=null; configs.value=[]; messages.value=null; consumers.value=null; loadBase(); if (tab.value === 'messages') loadMessages(); if (tab.value === 'consumers') loadConsumers() }
+function permissionsChanged() { revision.value++; invalidateRequests(); clearResults(); loadBase(); if (tab.value === 'messages') loadMessages(); if (tab.value === 'consumers') loadConsumers() }
 window.addEventListener('ops-admin-permissions-changed',permissionsChanged)
-onUnmounted(()=>{generation++;messageRequest++;consumerRequest++;window.removeEventListener('ops-admin-permissions-changed',permissionsChanged)})
-async function loadBase() { if (!valid() || !can('query')) { errors.base = valid() ? '当前没有查询该数据源的权限。' : 'Topic 地址参数不正确。'; return }; const g=generation; baseLoading.value=true; configLoading.value=true; const results = await Promise.allSettled([api('topic.overview'),api('topic.configs')]); if(g!==generation)return; baseLoading.value=false;configLoading.value=false; const [a,b]=results;overview.value=a.status==='fulfilled'?a.value:null;errors.base=a.status==='rejected'?a.reason.message:'';configs.value=b.status==='fulfilled'?b.value:[];errors.configs=b.status==='rejected'?b.reason.message:'' }
+onUnmounted(()=>{invalidateRequests();window.removeEventListener('ops-admin-permissions-changed',permissionsChanged)})
+async function loadBase() { const g=generation,r=++baseRequest; if (!valid() || !can('query')) { baseLoading.value=false;configLoading.value=false;errors.base = valid() ? '当前没有查询该数据源的权限。' : 'Topic 地址参数不正确。'; return }; baseLoading.value=true; configLoading.value=true; const results = await Promise.allSettled([api('topic.overview'),api('topic.configs')]); if(g!==generation||r!==baseRequest)return; baseLoading.value=false;configLoading.value=false; const [a,b]=results;overview.value=a.status==='fulfilled'?a.value:null;errors.base=a.status==='rejected'?a.reason.message:'';configs.value=b.status==='fulfilled'?b.value:[];errors.configs=b.status==='rejected'?b.reason.message:'' }
 async function loadMessages(cursor) { if(!valid() || !can('query'))return; const g=generation,r=++messageRequest;messagesLoading.value=true;errors.messages='';expandedKeys.value=[]; const params={...(cursor!==undefined && messageScope.value ? messageScope.value : query)};if(cursor!==undefined){params.mode='offset';params.offset=cursor}; if(params.mode==='time'){const d=new Date(params.timestamp);if(Number.isNaN(d.getTime())){ElMessage.warning('请选择有效时间');messagesLoading.value=false;return};params.timestamp=d.toISOString()};try{const data=await api('topic.messages',params);if(g===generation&&r===messageRequest){messages.value=data;messageScope.value={...params}}}catch(e){if(g===generation&&r===messageRequest){errors.messages=e.message;messages.value=null}}finally{if(g===generation&&r===messageRequest)messagesLoading.value=false} }
 function searchMessages(){cursorHistory.value=[];loadMessages()}
 function nextMessages(){if(!messages.value?.hasMore)return;cursorHistory.value.push(messages.value.items?.[0]?.offset || query.offset);loadMessages(messages.value.nextOffset)}
@@ -42,7 +59,7 @@ async function loadConsumers(append=false){if(!valid() || !can('query'))return;c
 function changeTab(){if(tab.value==='messages'&&!messages.value)loadMessages();if(tab.value==='consumers'&&!consumers.value)loadConsumers()}
 function refresh(){if(tab.value==='messages')searchMessages();else if(tab.value==='consumers')loadConsumers();else loadBase()}
 function back(){router.push({path:'/assets/middleware/kafka',query:{sourceId:props.sourceId}})}
-async function confirm(label,description,confirmText='确认执行'){if(confirming.value||saving.value)return false;confirming.value=true;try{await ElMessageBox.confirm(description,`${label} · ${props.topic}`,{type:'warning',confirmButtonText:confirmText,cancelButtonText:'取消'});return true}catch{return false}finally{confirming.value=false}}
+async function confirm(label,description,confirmText='确认执行'){if(confirming.value||saving.value||clearing.value)return false;const g=generation;confirming.value=true;try{await ElMessageBox.confirm(description,`${label} · ${props.topic}`,{type:'warning',confirmButtonText:confirmText,cancelButtonText:'取消'});return g===generation}catch{return false}finally{if(g===generation)confirming.value=false}}
 function openProduce(){Object.assign(production,{partition:String(partitions.value[0]?.id??0),key:'',value:'',nullKey:true,tombstone:false,keyEncoding:'utf8',valueEncoding:'utf8',headers:'[]'});produceDialog.value=true}
 async function produce(){try{const h=JSON.parse(production.headers||'[]');if(!Array.isArray(h))throw new Error()}catch{ElMessage.warning('Headers 需要填写 JSON 数组');return};if(!await confirm('发送消息',`向分区 ${production.partition} 发送${production.tombstone?' Tombstone':'一条消息'}？`))return;const g=generation;saving.value=true;try{const data=await api('topic.produce',Object.fromEntries(Object.entries(production).map(([k,v])=>[k,String(v)])),'write');if(g!==generation)return;produceDialog.value=false;ElMessage.success(`发送成功：分区 ${data.partition}，Offset ${data.offset}`);messages.value=null;await loadBase()}finally{if(g===generation)saving.value=false}}
 function editConfig(c){Object.assign(configEdit,c);configDialog.value=true}
@@ -50,7 +67,6 @@ async function updateConfig(reset=false){if(!await confirm(reset?'恢复默认�
 async function increasePartitions(){if(!await confirm('增加分区',`将分区总数从 ${partitions.value.length} 增至 ${newPartitions.value}？分区不能减少，按 Key 路由的消息分配可能改变。`))return;const g=generation;saving.value=true;try{await api('topic.partitions',{partitions:String(newPartitions.value)},'write');if(g!==generation)return;partitionsDialog.value=false;ElMessage.success('分区扩容请求已完成');await loadBase()}finally{if(g===generation)saving.value=false}}
 function viewPartition(p){query.partition=String(p.id);query.mode='earliest';cursorHistory.value=[];tab.value='messages';loadMessages()}
 // 单击整行展开/收起消息内容；展开后整行高亮，行尾「查看 / 收起」给出明确入口。
-const expandedKeys = ref([])
 const isExpanded = row => expandedKeys.value.includes(kafkaMessageId(row))
 function toggleRow(row){messageTable.value?.toggleRowExpansion(row)}
 function onRowClick(row, column, event){if(event?.target?.closest?.('button, a, input, .el-table__expand-icon'))return;toggleRow(row)}

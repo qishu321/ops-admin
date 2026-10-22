@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AlertRuleTransfer from './AlertRuleTransfer.vue'
 import { queryNotifyRuleOptions } from '../../api/ops'
 import {
   batchUpdateMonitorAlertRules,
@@ -791,6 +792,7 @@ onMounted(async () => {
       </div>
       <div class="header-metrics"><span>本页启用 <b>{{ enabledOnPage }}</b></span><span>评估失败 <b :class="{ danger: failedOnPage }">{{ failedOnPage }}</b></span></div>
       <div class="header-actions">
+        <AlertRuleTransfer :selected-ids="selectedRuleIds" :filters="query" :datasources="datasourceOptions" :notifications="notifyRuleOptions" @imported="clearSelection(); loadData()"/>
         <el-button @click="openTemplateDialog"><el-icon><CollectionTag /></el-icon>从模板创建</el-button>
         <el-button type="primary" @click="openCreate"><el-icon><Plus /></el-icon>新增规则</el-button>
       </div>

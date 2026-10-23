@@ -1,8 +1,9 @@
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { queryOpsExecHistory, queryOpsExecHistoryDetail, retryOpsExecTask } from '../../api/ops'
+import { queryOpsExecHistory, queryOpsExecHistoryDetail } from '../../api/ops'
+
+import { useOpsTaskRetry } from '../../composables/useOpsTaskRetry'
 
 const route = useRoute()
 const loading = ref(false)
@@ -60,6 +61,7 @@ function changeTab(name, reload = true) {
 }
 
 async function openDetail(row) {
+  stopDetailPolling()
   detailVisible.value = true
   detailLoading.value = true
   try {
@@ -112,13 +114,30 @@ function formatExecutionTime(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-async function retryFailed(row) {
-  await ElMessageBox.confirm(`仅重新执行“${row.title}”中的失败或超时主机，是否继续？`, '重试失败目标', { type: 'warning' })
-  const data = await retryOpsExecTask(row.id)
-  ElMessage.success('重试任务已创建')
-  await loadData()
-  if (data?.task) await openDetail(data.task)
+let detailPoll = null
+function stopDetailPolling() { if (detailPoll) clearInterval(detailPoll); detailPoll = null }
+async function pollDetail() {
+  const id = detailTask.value?.id
+  if (!detailVisible.value || !id) return stopDetailPolling()
+  const data = await queryOpsExecHistoryDetail(id)
+  if (detailTask.value?.id !== id || !detailVisible.value) return
+  detailTask.value = data.task
+  detailResults.value = data.results || []
+  if (data.task?.status !== 'running') { stopDetailPolling(); void loadData() }
 }
+const { retrying, retryingResultId, retryableTask, canRetryRow, retry } = useOpsTaskRetry(computed(() => detailVisible.value ? detailTask.value : null), data => {
+  stopDetailPolling()
+  detailTask.value = data.task
+  detailResults.value = data.results || []
+  detailPoll = setInterval(() => { pollDetail().catch(() => {}) }, 1200)
+  void loadData()
+})
+async function retryFailed(row) {
+  await openDetail(row)
+  await retry()
+}
+watch(detailVisible, visible => { if (!visible) stopDetailPolling() })
+onBeforeUnmount(stopDetailPolling)
 
 function downloadExecutionResult() {
   if (!detailTask.value) return
@@ -192,7 +211,7 @@ watch(() => route.query.taskId, (value, previous) => {
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-          <el-button v-if="row.status !== 'running' && row.failedCount > 0 && row.taskType !== 'file'" link type="warning" @click="retryFailed(row)">重试失败</el-button>
+          <el-button v-if="row.status !== 'running' && row.failedCount > 0" link type="warning" :disabled="retrying" @click="retryFailed(row)">重试失败</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -211,6 +230,7 @@ watch(() => route.query.taskId, (value, previous) => {
     <el-drawer v-model="detailVisible" size="72%" title="执行详情">
       <div v-loading="detailLoading" class="detail-wrap">
         <div class="detail-actions">
+          <el-button v-if="retryableTask" type="primary" :loading="retrying && !retryingResultId" :disabled="retrying" @click="retry()">重试失败目标</el-button>
           <el-button :disabled="!detailTask" @click="downloadExecutionResult">下载完整结果</el-button>
         </div>
         <div v-if="detailTask" class="detail-summary">
@@ -234,6 +254,7 @@ watch(() => route.query.taskId, (value, previous) => {
           <el-table-column prop="stdout" label="标准输出" min-width="260" show-overflow-tooltip />
           <el-table-column prop="stderr" label="错误输出" min-width="220" show-overflow-tooltip />
           <el-table-column prop="errorText" label="错误信息" min-width="220" show-overflow-tooltip />
+          <el-table-column label="操作" width="100" fixed="right"><template #default="{ row }"><el-button v-if="canRetryRow(row)" link type="primary" :loading="retrying && retryingResultId === row.id" :disabled="retrying" @click="retry(row)">重试</el-button></template></el-table-column>
         </el-table>
       </div>
     </el-drawer>

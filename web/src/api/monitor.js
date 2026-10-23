@@ -11,7 +11,7 @@ export const deleteMonitorDatasource = (id) => http.delete('/api/v1/monitor/data
 export const testMonitorDatasource = (data) => http.post('/api/v1/monitor/datasource/test', data, { params: { id: data.id || 0 } })
 
 export const queryMonitorPrometheus = (data) => http.post('/api/v1/monitor/query/instant', data)
-export const queryMonitorPrometheusRange = (data) => http.post('/api/v1/monitor/query/range', data)
+export const queryMonitorPrometheusRange = (data, config) => http.post('/api/v1/monitor/query/range', data, config)
 export const queryMonitorLogs = (data) => http.post('/api/v1/monitor/logs/query', data)
 export const queryMonitorElasticsearchIndices = (params) => http.get('/api/v1/monitor/logs/indices', { params })
 export const queryMonitorVictoriaLogsStreams = (params) => http.get('/api/v1/monitor/logs/streams', { params })
@@ -72,7 +72,7 @@ export const saveMonitorDashboard = (data) => http.post('/api/v1/monitor/dashboa
 export const deleteMonitorDashboard = (id) => http.delete('/api/v1/monitor/dashboard/delete', { data: { id } })
 export const saveMonitorDashboardPanel = (data) => http.post('/api/v1/monitor/dashboard/panel/save', data)
 export const deleteMonitorDashboardPanel = (id) => http.delete('/api/v1/monitor/dashboard/panel/delete', { data: { id } })
-export const queryMonitorDashboardPanel = (payload) => http.post('/api/v1/monitor/dashboard/panel/query', typeof payload === 'object' ? payload : { id: payload })
+export const queryMonitorDashboardPanel = (payload, config) => http.post('/api/v1/monitor/dashboard/panel/query', typeof payload === 'object' ? payload : { id: payload }, config)
 export const runMonitorInspection = (data) => http.post('/api/v1/monitor/inspection/run', data)
 export const queryLatestMonitorInspectionRun = (dashboardId) => http.get('/api/v1/monitor/inspection/run/latest', { params: { dashboardId } })
 export const monitorInspectionRunInfo = (id) => http.get('/api/v1/monitor/inspection/run/info', { params: { id } })

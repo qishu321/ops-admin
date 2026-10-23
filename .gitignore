@@ -8,6 +8,8 @@ backend/runtime-backend.exe
 backend/runtime.stdout.log
 backend/runtime.stderr.log
 backend/uploads/temp/file-dispatch/
+backend/data/ops-retry/
+data/ops-retry/
 deploy/.env
 deploy/config.yaml
 .gopath/

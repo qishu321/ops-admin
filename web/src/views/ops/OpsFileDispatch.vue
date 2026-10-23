@@ -143,9 +143,19 @@ async function submit() {
   }
 }
 
+function handleRetried(data) {
+  stopPolling()
+  resultTask.value = data.task || null
+  resultRows.value = data.results || []
+  resultLoading.value = false
+  startPolling()
+}
+
 async function refreshTaskDetail() {
   if (!resultTask.value?.id) return
-  const data = await queryOpsExecHistoryDetail(resultTask.value.id)
+  const taskId = resultTask.value.id
+  const data = await queryOpsExecHistoryDetail(taskId)
+  if (resultTask.value?.id !== taskId) return
   resultTask.value = data.task || null
   resultRows.value = data.results || []
   resultLoading.value = false
@@ -252,6 +262,7 @@ onBeforeUnmount(stopPolling)
       :task="resultTask"
       :results="resultRows"
       @closed="handleResultClosed"
+      @retried="handleRetried"
     />
   </div>
 </template>

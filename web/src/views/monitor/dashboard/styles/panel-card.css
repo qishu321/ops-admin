@@ -1,0 +1,393 @@
+/* 面板卡片样式。历史的多次改版曾把覆盖规则不断追加到文件末尾，
+   导致同一选择器重复出现（.chart-panel / .panel-head / 拖拽手柄等）。
+   这里按选择器归并了一次，取值一律采用原文件中最后生效的声明，
+   因此渲染结果与合并前一致；同时删除了模板中已不存在的
+   .k8s-metric-panel / .k8s-dashboard-main 旧选择器。 */
+
+/* ── 容器与全屏底色 ───────────────────────────────────────── */
+.dashboard-main:is(:fullscreen, .is-presentation) .metric-panel {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(96, 165, 250, 0.28);
+  color: #dbeafe;
+}
+.metric-panel {
+  position: relative;
+  overflow: hidden;
+}
+.metric-panel.disabled {
+  opacity: 0.55;
+}
+
+/* ── 卡片主体 ─────────────────────────────────────────────── */
+.chart-panel {
+  display: flex;
+  flex-direction: column;
+  grid-column: span 2;
+  min-height: 250px;
+  padding: 0 0 10px;
+  border: 1px solid var(--dash-border);
+  border-radius: 9px;
+  background: var(--dash-surface);
+  box-shadow: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.chart-panel:hover {
+  border-color: var(--dash-border);
+  box-shadow: 0 5px 14px rgba(32, 61, 105, 0.07);
+}
+.chart-panel::before,
+.chart-panel .panel-glow {
+  display: none;
+}
+
+/* ── 卡片头部 ─────────────────────────────────────────────── */
+.panel-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.panel-head strong {
+  display: block;
+  color: var(--dash-text);
+  font-size: 16px;
+}
+.panel-head span {
+  display: block;
+  margin-top: 5px;
+  color: var(--dash-muted);
+  font-size: 12px;
+}
+.chart-panel .panel-head {
+  align-items: center;
+  min-height: 48px;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dash-border);
+  background: var(--dash-surface);
+}
+.chart-panel .panel-head span {
+  margin-top: 2px;
+  color: var(--dash-muted);
+  font-size: 11px;
+}
+.panel-identity {
+  min-width: 0;
+}
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.panel-title-row strong {
+  overflow: hidden;
+  color: var(--dash-text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-signal {
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: #3b82f6;
+}
+.chart-panel.panel-gauge .panel-signal { background: #f59e0b; }
+.chart-panel.panel-bar .panel-signal { background: #14b8a6; }
+.chart-panel.panel-table .panel-signal { background: #64748b; }
+
+/* ── 卡片动作区与状态 ─────────────────────────────────────── */
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  opacity: 1;
+}
+.chart-panel .panel-actions :deep(.el-button) {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.chart-panel:hover .panel-actions :deep(.el-button) {
+  opacity: 1;
+}
+.chart-panel .panel-actions .panel-state {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--dash-subtle);
+}
+.panel-state {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 5px;
+  margin: 0 5px 0 0 !important;
+  color: var(--dash-muted) !important;
+  white-space: nowrap;
+}
+.panel-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+.panel-state.is-warning i { background: #f59e0b; }
+.panel-state.is-danger i { background: #ef4444; }
+.k8s-value-badge {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 26px;
+  margin: 0 4px 0 0 !important;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: var(--dash-subtle);
+  color: #4169e8 !important;
+  font-size: 12px !important;
+  font-weight: 700;
+}
+
+/* ── 错误与空态 ───────────────────────────────────────────── */
+.panel-error {
+  padding: 12px;
+  border-radius: 10px;
+  color: #b91c1c;
+  background: var(--dash-subtle);
+  word-break: break-all;
+}
+.chart-panel .panel-error {
+  margin: 14px;
+}
+.chart-panel .el-empty {
+  padding: 24px 0;
+}
+
+/* ── 布局编辑手柄 ─────────────────────────────────────────── */
+.panel-drag-hint {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--dash-subtle);
+  color: var(--dash-accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.panel-move-handle,
+.panel-resize-handle {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--dash-accent);
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+.panel-move-handle {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: var(--dash-subtle);
+}
+.panel-move-handle:active,
+.panel-resize-handle:active { cursor: grabbing; }
+.panel-move-handle:focus-visible,
+.panel-resize-handle:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.panel-resize-handle {
+  position: absolute;
+  z-index: 5;
+  right: 3px;
+  bottom: 3px;
+  width: 36px;
+  height: 36px;
+  border-radius: 7px;
+  background: var(--dash-subtle);
+  cursor: nwse-resize;
+}
+.panel-move-handle[aria-disabled="true"],
+.panel-resize-handle[aria-disabled="true"] { cursor: wait; opacity: .55; }
+@media (pointer: coarse) {
+  .panel-move-handle,
+  .panel-resize-handle { width: 44px; height: 44px; }
+}
+.panel-grid.is-layout-editing > .chart-panel {
+  box-sizing: border-box;
+  min-height: 0;
+  outline: 1px dashed rgba(59, 130, 246, .42);
+  outline-offset: 3px;
+  user-select: none;
+}
+.panel-grid.is-layout-editing > .chart-panel:hover {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, .2), 0 10px 24px rgba(37, 99, 235, .12);
+}
+.panel-grid > .chart-panel.is-interacting {
+  z-index: 3;
+  opacity: .82;
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--dash-accent) 25%, transparent);
+  transition: none;
+  will-change: transform;
+}
+
+/* ── 全屏 / 演示态 ────────────────────────────────────────── */
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel {
+  min-height: 164px;
+  padding-bottom: 8px;
+  border-color: #283442;
+  background: #111923;
+  box-shadow: none;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel:hover {
+  border-color: #3b4c60;
+  box-shadow: none;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel .panel-head {
+  min-height: 40px;
+  padding: 6px 8px;
+  border-color: #283442;
+  background: #151e29;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .panel-title-row {
+  gap: 5px;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .panel-title-row strong {
+  color: #e5edf6;
+  font-size: 12px;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel .panel-actions :deep(.el-button) {
+  display: none;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .panel-error {
+  border: 1px solid rgba(239, 68, 68, 0.26);
+  background: rgba(127, 29, 29, 0.2);
+  color: #fca5a5;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel.panel-table {
+  grid-column: 1 / -1 !important;
+  min-height: 174px;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .panel-signal {
+  height: 13px;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .panel-identity > span {
+  display: none;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .panel-state {
+  margin-right: 0 !important;
+  font-size: 9px !important;
+}
+
+/* ── 网格列宽（默认布局） ─────────────────────────────────── */
+.panel-grid > .chart-panel:last-child:nth-child(3n + 1),
+.k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 1) {
+  grid-column: span 6;
+}
+.panel-grid > .chart-panel:nth-last-child(2):nth-child(3n + 1),
+.panel-grid > .chart-panel:last-child:nth-child(3n + 2),
+.k8s-panel-grid > .chart-panel:nth-last-child(2):nth-child(3n + 1),
+.k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 2) {
+  grid-column: span 3;
+}
+
+/* ── Kubernetes 大屏 ──────────────────────────────────────── */
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel,
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 1),
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel:nth-last-child(2):nth-child(3n + 1),
+.is-k8s-dashboard .k8s-panel-grid > .chart-panel:last-child:nth-child(3n + 2) {
+  grid-column: span 1;
+}
+.is-k8s-dashboard .k8s-panel-grid > .k8s-wide-panel,
+.is-k8s-dashboard .k8s-panel-grid > .panel-table {
+  grid-column: 1 / -1;
+}
+.is-k8s-dashboard .k8s-panel-grid:not(.is-custom-layout) > .chart-panel.k8s-wide-panel {
+  grid-column: 1 / -1 !important;
+  width: 100%;
+}
+.is-k8s-dashboard .chart-panel {
+  min-height: 340px;
+  border-color: var(--dash-border);
+  border-radius: 10px;
+  background: var(--dash-surface);
+}
+.is-k8s-dashboard .chart-panel .panel-head {
+  min-height: 58px;
+  padding: 11px 16px;
+  border-bottom-color: var(--dash-border);
+  background: var(--dash-surface);
+}
+.is-k8s-dashboard .chart-panel .panel-title-row strong {
+  color: var(--dash-text);
+  font-size: 15px;
+  font-weight: 700;
+}
+.is-k8s-dashboard .chart-panel .panel-identity > span {
+  display: none;
+}
+.is-k8s-dashboard .chart-panel .panel-signal {
+  width: 3px;
+  height: 17px;
+  background: #5b7cff;
+}
+.is-k8s-dashboard .chart-panel.panel-table {
+  min-height: 410px;
+}
+
+/* ── 自定义网格布局 ───────────────────────────────────────── */
+.panel-grid.is-custom-layout > .chart-panel {
+  min-height: 0;
+}
+@media (min-width: 761px) {
+  .panel-grid.is-custom-layout > .chart-panel {
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+  }
+}
+
+/* ── Kubernetes 全屏态 ────────────────────────────────────── */
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .chart-panel {
+  border-color: #283442;
+  background: #111923;
+  color: #d7e0ea;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .k8s-panel-grid > .chart-panel {
+  min-height: 0;
+  align-self: stretch;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .k8s-panel-grid > .chart-panel.panel-line {
+  min-height: 312px;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .chart-panel.panel-bar {
+  display: flex;
+  flex-direction: column;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .chart-panel .panel-head {
+  border-bottom-color: #283442;
+  background: #151e29;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .chart-panel .panel-title-row strong {
+  color: #e6eef8;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .chart-panel .panel-head span,
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .panel-state {
+  color: #9badc2;
+}
+.observability-canvas.is-k8s-dashboard:is(:fullscreen, .is-presentation) .k8s-panel-grid > .chart-panel:not(.k8s-wide-panel):not(.panel-table) {
+  grid-column: span 1 !important;
+}
+
+/* ── 响应式 ───────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .panel-grid > .chart-panel,
+  .k8s-panel-grid > .chart-panel { grid-column: span 1; }
+  .panel-grid > .chart-panel:last-child:nth-child(odd),
+  .k8s-panel-grid > .chart-panel:last-child:nth-child(odd) { grid-column: span 2; }
+}
+@media (max-width: 760px) {
+  .panel-grid > .chart-panel,
+  .k8s-panel-grid > .chart-panel { grid-column: span 1; }
+  .panel-grid.is-custom-layout:not(.is-layout-editing) > .chart-panel {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+    min-height: 260px;
+  }
+}

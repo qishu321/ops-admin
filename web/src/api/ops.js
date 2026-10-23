@@ -20,7 +20,7 @@ export const executeOpsFileDispatch = (data) =>
 
 export const queryOpsExecHistory = (params) => http.get('/api/v1/ops/exec/history', { params })
 export const queryOpsExecHistoryDetail = (id) => http.get('/api/v1/ops/exec/history/detail', { params: { id } })
-export const retryOpsExecTask = (taskId) => http.post('/api/v1/ops/exec/retry', { taskId })
+export const retryOpsExecTask = (taskId, resultId) => http.post('/api/v1/ops/exec/retry', { taskId, ...(resultId ? { resultId } : {}) })
 
 export const queryOpsScheduleTaskList = (params) => http.get('/api/v1/ops/schedule/task/list', { params })
 export const opsScheduleTaskInfo = (id) => http.get('/api/v1/ops/schedule/task/info', { params: { id } })

@@ -420,9 +420,9 @@ useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
     <section v-if="sessions.length" ref="terminalBoxRef" class="terminal-window" aria-label="SSH 终端">
       <div class="terminal-tabbar">
         <div class="terminal-tabs" role="tablist" aria-label="终端会话">
-          <button v-for="session in sessions" :key="session.id" :class="['terminal-tab', { active: session.id === activeSessionId }]" role="tab" :aria-selected="session.id === activeSessionId" @click="activateSession(session.id)">
+          <button v-for="session in sessions" :key="session.id" :class="['terminal-tab', { active: session.id === activeSessionId }]" role="tab" :aria-selected="session.id === activeSessionId" :title="[session.host.hostName, session.host.sshIp].filter(Boolean).join(' · ')" @click="activateSession(session.id)">
             <span :class="['connection-dot', session.status]" />
-            <span class="terminal-tab-label">{{ session.host.sshIp || session.host.hostName }}</span>
+            <span class="terminal-tab-label">{{ session.host.hostName || session.host.sshIp }}</span>
             <span class="terminal-tab-close" title="关闭终端" @click.stop="closeSession(session.id)">×</span>
           </button>
         </div>

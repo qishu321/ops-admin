@@ -144,6 +144,9 @@ type OpsExecTask struct {
 	ScriptVersion  int        `json:"scriptVersion" gorm:"default:0"`
 	TargetSnapshot string     `json:"targetSnapshot" gorm:"type:longtext"`
 	RetryOfTaskID  uint       `json:"retryOfTaskId" gorm:"index"`
+	RetryContext   string     `json:"-" gorm:"type:longtext"`
+	FileRetryUntil *time.Time `json:"fileRetryUntil,omitempty"`
+	RetrySupported bool       `json:"retrySupported" gorm:"-"`
 	StartedAt      *time.Time `json:"startedAt"`
 	FinishedAt     *time.Time `json:"finishedAt"`
 	CreatedAt      time.Time  `json:"createTime"`

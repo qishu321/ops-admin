@@ -351,3 +351,31 @@ web/src/views/monitor/dashboard/
 
 - 改动 `styles/panel-card.css`、`components/PanelContent.vue`、`components/charts/{TrendChart,GaugeChart,StatChart,BarChart,TableChart,PodResourceTable,HostResourceTable}.vue`、`styles/table-panel.css`、`components/PanelEditor.vue`（表格预览的 `.panel-body` 吃满 stage 高度）
 - 测试 `web/tests/monitor-dashboard.test.mjs`
+
+## 续轮：查询可靠性与趋势交互优化（2026-10-23 16:00）
+
+用户确认本轮先处理加载错误态、趋势悬浮性能、时间轴准确性与请求/缓存清理。
+
+### 实际完成
+
+- `composables/useDashboardLoader.js` / `MonitorDashboard.vue`：列表、详情加载失败有独立错误状态与重新加载入口；重试恢复此前请求的大屏，不再把失败解释为没有配置。初始化失败时停止后续加载链。
+- `composables/useTrendChart.js`：横坐标按真实时间戳绘制，优先使用接口返回的查询起止时间；tooltip 按同一目标时间取最近采样，缺采样段与序列覆盖范围外显示 `-`。图例开关不改变时间轴范围。
+- `components/charts/TrendChart.vue`：当前值与统计值使用 computed；鼠标移动通过 requestAnimationFrame 合并，每帧复用已计算的曲线、时间索引和分段信息。离开图表与卸载时取消待处理动画帧。
+- 趋势序列在取得 8 条（K8s 10 条）有效序列后停止处理后续行，避免先扫描所有序列再截断。
+- `composables/usePanelQueries.js`：缓存最多 128 项，查询时淘汰过期项；页面卸载取消进行中的请求、后续批次定时器并释放缓存，拒绝后续查询。原四路并发与过期响应隔离继续保留。
+- 刷新时间初始显示「尚未成功查询」，只有面板请求成功才更新时间；提示说明这是最近一次面板成功时间，不代表全屏都成功。失败不会伪造成功时间。
+
+### 验证证据
+
+- 修改前新增时间轴与刷新时间测试：两项均失败，既有 34 项通过；修改后监控回归 40 项全部通过。
+- 全前端回归：165 通过，0 失败，2 跳过（既有告警规则 JSON 缺失）。
+- npm run build：通过，9.32s；CSS 953.36 kB，JS 3933.62 kB。既有 VueUse PURE 注释与大 chunk 警告仍在。
+- 新增行为测试覆盖加载失败重试、卸载取消、缓存容量淘汰、真实时间间隔与缺采样、失败时间语义、达到序列上限后停止读取，以及 tooltip 不重建序列。
+- 本地浏览器冷加载：node 17 面板真实主机指标正常显示；曲线 DOM 未出现 NaN/Infinity；1367px 视口 body 无横向溢出。K8s 24 面板切到 15 分钟窗口，CPU Request tooltip 显示时间与 83.4% 的真实读数；两屏验证期间无新增 warning/error。
+- 截图：`docs/screenshots/monitor-dashboard-query-performance.png`。
+
+### 保留事项
+
+本轮未实施可视面板优先查询、后台标签页降频、顶部信息层次调整与全应用路由拆包。未量化整页 FPS/长任务分位数，不能据此承诺所有数据规模下均无卡顿。加载失败重试与中止通过可控单元场景验证，未对真实数据源注入故障。
+
+后端复核：在 backend 目录执行 go vet ./... 与 go test ./...，均通过；本轮未修改后端。

@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { useOpsTaskRetry } from '../../../composables/useOpsTaskRetry'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -8,7 +9,9 @@ const props = defineProps({
   results: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['update:modelValue', 'closed'])
+const emit = defineEmits(['update:modelValue', 'closed', 'retried'])
+const { retrying, retryingResultId, retryableTask, canRetryRow, retry } = useOpsTaskRetry(computed(() => props.modelValue ? props.task : null), data => emit('retried', data))
+const failedCount = computed(() => props.results.filter(row => ['failed', 'timeout'].includes(row.status)).length)
 
 function updateVisible(value) {
   emit('update:modelValue', value)
@@ -53,6 +56,9 @@ const progressPercent = computed(() => {
     @closed="handleClosed"
   >
     <div class="result-dialog">
+      <el-alert v-if="task?.id && task.retrySupported !== true" title="逐台失败重试需要更新并重启后端服务后启用。" type="info" :closable="false" />
+      <el-alert v-if="task?.retryOfTaskId" :title="`仅执行失败目标的重试任务，原任务 #${task.retryOfTaskId} 的成功主机不会重复执行。`" type="info" :closable="false" />
+      <el-alert v-if="task?.taskType === 'file' && task?.fileRetryUntil" title="文件重试副本保留24小时，过期后需要重新上传。" type="info" :closable="false" />
       <div v-if="task" class="task-summary">
         <div class="summary-card">
           <span>任务名称</span>
@@ -96,9 +102,16 @@ const progressPercent = computed(() => {
         <el-table-column prop="stdout" label="标准输出" min-width="280" show-overflow-tooltip />
         <el-table-column prop="stderr" label="错误输出" min-width="240" show-overflow-tooltip />
         <el-table-column prop="errorText" label="错误信息" min-width="240" show-overflow-tooltip />
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="canRetryRow(row)" link type="primary" :aria-label="`重试 ${row.hostName || row.sshIp}`" :loading="retrying && retryingResultId === row.id" :disabled="retrying" @click="retry(row)">重试</el-button>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
       </el-table>
     </div>
     <template #footer>
+      <el-button v-if="retryableTask && failedCount" type="primary" :loading="retrying && !retryingResultId" :disabled="retrying" @click="retry()">重试失败（{{ failedCount }}）</el-button>
       <el-button @click="updateVisible(false)">关闭</el-button>
     </template>
   </el-dialog>

@@ -9,7 +9,7 @@ import DashboardEditor from './components/DashboardEditor.vue'
 import PanelFocusDialog from './components/PanelFocusDialog.vue'
 import PanelEditor from './components/PanelEditor.vue'
 
-const { loading, isListLayout, isK8sDashboard, activeDashboard, panels, isDark, isFullscreen } = useMonitorDashboard()
+const { loadError, retryLoad, loading, isListLayout, isK8sDashboard, activeDashboard, panels, isDark, isFullscreen } = useMonitorDashboard()
 </script>
 
 <template>
@@ -18,7 +18,11 @@ const { loading, isListLayout, isK8sDashboard, activeDashboard, panels, isDark, 
     <main class="dashboard-main observability-canvas" :class="{ 'is-k8s-dashboard': isK8sDashboard, 'is-presentation': isFullscreen }" v-loading="loading">
       <DashboardToolbar />
       <DashboardSummary />
-      <el-empty v-if="!activeDashboard" :description="isListLayout ? '还没有巡检方案，请先新建一个' : '还没有监控大屏，请先创建一个'" />
+      <el-alert v-if="loadError" title="监控大屏加载失败" type="error" :closable="false" show-icon>
+        <p>{{ loadError }}</p>
+        <el-button :loading="loading" @click="retryLoad">重新加载</el-button>
+      </el-alert>
+      <el-empty v-else-if="!activeDashboard" :description="isListLayout ? '还没有巡检方案，请先新建一个' : '还没有监控大屏，请先创建一个'" />
       <el-empty v-else-if="!panels.length" :description="isListLayout ? '当前方案还没有巡检项，请先新增巡检项' : '当前大屏还没有面板，可以新增面板或使用模板创建'" />
       <InspectionView v-else-if="isListLayout" />
       <DashboardGrid v-else />

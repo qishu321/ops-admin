@@ -365,6 +365,83 @@ const sampleRow = (name, values, startAt = 0, step = 60) => ({
   values: values.map((value, index) => [startAt + index * step, String(value)]),
 })
 
+test('irregular samples use elapsed time and tooltip does not bridge missing data', () => {
+  const { trends, panel } = trendFixture([{ metric: { __name__: 'a' }, values: [[0, '1'], [60, '2'], [660, '3'], [720, '4']] }])
+  const series = trends.panelLineSeries(panel)
+  assert.ok(Math.abs(Number(series[0].points.split(' ')[1].split(',')[0]) - 100 / 12) < 0.001)
+  const container = { getBoundingClientRect: () => ({ left: 0, width: 100 }) }
+  trends.handleTrendPointer(panel, { currentTarget: container, clientX: 50 }, series)
+  assert.equal(trends.trendTooltips[panel.id].items[0].value, '-')
+})
+
+test('failed query never reports a successful refresh time', async () => {
+  const { query } = queryFixture(async () => { throw Error('offline') }, 1)
+  assert.equal(query.lastRefreshAt.value, null)
+  await query.refreshAllPanels()
+  assert.equal(query.lastRefreshAt.value, null)
+})
+
+test('unmount cancels in-flight queries and prevents queued or later work', async () => {
+  let dispose, calls = 0, signal
+  const panels = ref([{ id: 1, status: 1 }])
+  const query = load('usePanelQueries', {
+    onBeforeUnmount: callback => { dispose = callback },
+    queryMonitorDashboardPanel: (_, config) => {
+      calls++
+      signal = config.signal
+      return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(Error('cancelled'), { name: 'AbortError' }))))
+    },
+  })({ panels, activePanels: panels, selectedDatasourceId: ref(1), panelStateKey: () => 'healthy', isListLayout: ref(false), currentTimeBounds: () => ({ startAt: 0, endAt: 100 }), isPodDetailPanel: () => false, timeRangeOption: ref(100), timeRangeSeconds: ref(100) })
+  const pending = query.refreshAllPanels()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  dispose()
+  await pending
+  await query.refreshAllPanels()
+  assert.equal(signal.aborted, true)
+  assert.equal(calls, 1)
+  assert.equal(query.isRefreshing.value, false)
+})
+
+test('dashboard detail failure is explicit and retry restores the requested dashboard', async () => {
+  let fail = true
+  const activeDashboard = ref(null), loading = ref(false)
+  const loader = load('useDashboardLoader', {
+    queryMonitorDashboardList: async () => ({ list: [{ id: 1 }] }),
+    queryMonitorDatasourceOptions: async () => [{ id: 1, type: 'prometheus' }],
+    monitorDashboardInfo: async id => { if (fail) throw Error('offline'); return { dashboard: { id }, panels: [] } },
+  })({ dashboards: ref([]), datasourceOptions: ref([]), selectedDatasourceId: ref(1), visibleDashboards: ref([{ id: 1 }]), activeDashboardId: ref(1), activeDashboard, panels: ref([]), inspectionReport: ref(null), inspectionReportResults: ref([]), loading, inspectionFilter: ref('all'), layoutNeedsMigration: ref(false), preparePanelGrid() {}, exitLayoutEditing() {}, layoutLocked: ref(false), invalidateQueries() {}, panelResults: {}, panelPending: {}, isListLayout: ref(false), refreshAllPanels() {} })
+  await loader.loadDashboard(1)
+  assert.equal(loader.loadError.value, 'offline')
+  assert.equal(loading.value, false)
+  fail = false
+  await loader.retryLoad()
+  assert.equal(loader.loadError.value, '')
+  assert.equal(activeDashboard.value.id, 1)
+})
+
+test('bounded query cache evicts old ranges instead of retaining every visited window', async () => {
+  let calls = 0
+  const { query, timeRangeSeconds } = queryFixture(async () => { calls++; return { result: [] } }, 1)
+  for (let range = 1; range <= 129; range++) {
+    timeRangeSeconds.value = range
+    await query.loadPanel({ id: 1 }, { force: false })
+  }
+  timeRangeSeconds.value = 1
+  await query.loadPanel({ id: 1 }, { force: false })
+  assert.equal(calls, 130)
+})
+
+test('series cap stops reading excess rows and prepared tooltip never rebuilds series', () => {
+  const rows = Array.from({ length: 8 }, (_, index) => sampleRow(String(index), [1, 2, 3]))
+  rows.push({ get values() { throw Error('unnecessary high-cardinality scan') } })
+  const { trends, panel } = trendFixture(rows)
+  const series = trends.panelLineSeries(panel)
+  assert.equal(series.length, 8)
+  rows.splice(0, rows.length, { get values() { throw Error('tooltip rebuilt data') } })
+  trends.handleTrendPointer(panel, { currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 100 }) }, clientX: 50 }, series)
+  assert.equal(trends.trendTooltips[panel.id].items[0].value, '2%')
+})
+
 test('a sampling hole splits the trend line instead of bridging it', () => {
   const { trends, panel } = trendFixture([
     sampleRow('a', [10, 20, 30]),
@@ -387,14 +464,14 @@ test('hiding a legend entry drops the series but keeps every colour stable', () 
     sampleRow('a', [10, 20]), sampleRow('b', [30, 40]), sampleRow('c', [50, 60]),
   ])
   const before = trends.panelLegendSeries(panel)
-  assert.deepEqual(before.map(item => item.hidden), [false, false, false])
+  assert.deepEqual(Array.from(before, item => item.hidden), [false, false, false])
   assert.equal(trends.panelLineSeries(panel).length, 3)
   trends.toggleTrendSeries(panel, 'a')
   const after = trends.panelLegendSeries(panel)
   assert.equal(after[0].hidden, true)
-  assert.deepEqual(after.map(item => item.color), before.map(item => item.color))
+  assert.deepEqual(Array.from(after, item => item.color), Array.from(before, item => item.color))
   const visible = trends.panelLineSeries(panel)
-  assert.deepEqual(visible.map(item => item.name), ['b', 'c'])
+  assert.deepEqual(Array.from(visible, item => item.name), ['b', 'c'])
   // Colours follow the legend position, not the surviving order.
   assert.equal(visible[0].color, before[1].color)
   trends.toggleTrendSeries(panel, 'a')

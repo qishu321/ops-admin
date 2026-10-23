@@ -9,7 +9,7 @@ const TREND_GAP_FACTOR = 2.5
 const TREND_MAX_SERIES = 8
 const TREND_MAX_SERIES_K8S = 10
 
-export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rangeEndText }) {
+export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rangeEndText, panelResults = {} }) {
   const trendTooltips = reactive({})
   const hiddenSeries = reactive({})
 
@@ -128,20 +128,29 @@ export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rang
 
   /** Candidate series in display order; colours stay stable when one is hidden. */
   function panelTrendSeries(panel) {
-    return panelRows(panel)
-      .map((row) => {
-        const samples = (row.values || [])
-          .map((item) => ({ timestamp: item?.[0], value: Number(item?.[1]) }))
-          .filter((item) => Number.isFinite(item.value))
-        return {
-          name: metricName(row.metric) === 'metric' ? trendSeriesName(panel) : metricName(row.metric),
-          samples,
-          values: samples.map((item) => item.value),
-          timestamps: samples.map((item) => item.timestamp)
-        }
+    const result = []
+    for (const row of panelRows(panel)) {
+      const samples = (row.values || [])
+        .map(item => ({ timestamp: item?.[0], value: Number(item?.[1]) }))
+        .filter(item => Number.isFinite(item.value) && Number.isFinite(sampleMilliseconds(item.timestamp)))
+        .sort((a, b) => sampleMilliseconds(a.timestamp) - sampleMilliseconds(b.timestamp))
+      if (!samples.length) continue
+      result.push({
+        name: metricName(row.metric) === 'metric' ? trendSeriesName(panel) : metricName(row.metric),
+        samples, values: samples.map(item => item.value), timestamps: samples.map(item => item.timestamp)
       })
-      .filter((item) => item.values.length)
-      .slice(0, seriesCap())
+      if (result.length === seriesCap()) break
+    }
+    return result
+  }
+
+  function seriesTimeBounds(series, panel) {
+    const timestamps = series.flatMap(item => item.timestamps.map(sampleMilliseconds))
+    const data = panelResults[panel.id]
+    const start = sampleMilliseconds(data?.startAt)
+    const end = sampleMilliseconds(data?.endAt)
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) return { start, end }
+    return { start: Math.min(...timestamps), end: Math.max(...timestamps) }
   }
 
   function panelLegendSeries(panel) {
@@ -153,7 +162,9 @@ export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rang
   }
 
   function panelLineSeries(panel) {
-    const series = panelTrendSeries(panel)
+    const candidates = panelTrendSeries(panel)
+    const timeBounds = seriesTimeBounds(candidates, panel)
+    const series = candidates
       .map((item, index) => ({ ...item, color: lineColors[index % lineColors.length] }))
       .filter((item) => !isTrendSeriesHidden(panel, item.name))
     const allValues = series.flatMap((item) => item.values)
@@ -166,17 +177,41 @@ export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rang
     const range = max - min || 1
     return series.map((item) => ({
       ...item,
-      points: trendPoints(item.values, min, max),
+      timeBounds,
+      timeValues: item.timestamps.map(sampleMilliseconds),
+      segments: trendSegments(item.samples),
+      points: item.values.map((value, index) => `${timeX(item.timestamps[index], timeBounds)},${48 - ((value - min) / range) * 40}`).join(' '),
       segmentPoints: trendSegments(item.samples).map(({ start, end }) => {
         const pairs = []
-        const lastIndex = Math.max(item.values.length - 1, 1)
         for (let index = start; index <= end; index++) {
-          const x = item.values.length === 1 ? 100 : (index / lastIndex) * 100
+          const x = timeX(item.timestamps[index], timeBounds)
           pairs.push(`${x},${48 - ((item.values[index] - min) / range) * 40}`)
         }
         return pairs.join(' ')
       })
     }))
+  }
+
+  function timeX(timestamp, { start, end }) {
+    return end > start ? (sampleMilliseconds(timestamp) - start) / (end - start) * 100 : 100
+  }
+
+  // Only interpolate the selection within a contiguous segment. A missing
+  // scrape window must not show an unrelated old value under the crosshair.
+  function sampleAtTime(series, target) {
+    const times = series.timeValues || series.timestamps.map(sampleMilliseconds)
+    if (!times.length || target < times[0] || target > times[times.length - 1]) return null
+    let low = 0, high = times.length - 1
+    while (low < high) {
+      const mid = (low + high) >> 1
+      if (times[mid] < target) low = mid + 1
+      else high = mid
+    }
+    if (times[low] === target) return { value: series.values[low] }
+    const segments = series.segments || trendSegments(series.samples)
+    if (!segments.some(segment => segment.start <= low - 1 && segment.end >= low)) return null
+    const index = target - times[low - 1] < times[low] - target ? low - 1 : low
+    return { value: series.values[index] }
   }
 
   function trendSeriesName(panel) {
@@ -216,8 +251,8 @@ export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rang
     return new Date(milliseconds).toLocaleTimeString('zh-CN', { hour12: false })
   }
 
-  function handleTrendPointer(panel, event) {
-    const series = panelLineSeries(panel)
+  function handleTrendPointer(panel, event, preparedSeries) {
+    const series = preparedSeries || panelLineSeries(panel)
     const sampleCount = Math.max(...series.map((item) => item.values.length), 0)
     if (!sampleCount) return
 
@@ -230,8 +265,8 @@ export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rang
     const plotBounds = plot ? plot.getBoundingClientRect() : bounds
     const plotWidth = plotBounds.width || bounds.width || 1
     const ratio = Math.min(1, Math.max(0, (event.clientX - plotBounds.left) / plotWidth))
-    const sampleIndex = Math.round(ratio * Math.max(sampleCount - 1, 0))
-    const firstSample = trendSample(series[0], sampleIndex, sampleCount)
+    const { start, end } = series[0].timeBounds
+    const target = start + ratio * (end - start)
     const offset = plotBounds.left - bounds.left + ratio * plotWidth
     const half = Math.min(120, bounds.width / 2)
 
@@ -239,9 +274,9 @@ export function useTrendChart({ isHostDashboard, panelRows, isK8sDashboard, rang
       x: `${offset}px`,
       left: `${Math.min(Math.max(offset, half), Math.max(bounds.width - half, half))}px`,
       ratio,
-      time: trendTooltipTime(firstSample?.timestamp),
+      time: new Date(target).toLocaleTimeString('zh-CN', { hour12: false }),
       items: series.map((item) => {
-        const sample = trendSample(item, sampleIndex, sampleCount)
+        const sample = sampleAtTime(item, target)
         return {
           name: item.name,
           color: item.color,

@@ -205,7 +205,7 @@ func resourceRouteFor(method, path string) resourceRoute {
 			permission = "ops:quickexec:file:execute"
 		}
 		if strings.HasSuffix(path, "/retry") {
-			return resourceRoute{Kind: "host", Action: "execute", Permissions: []string{"ops:quickexec:command:execute", "ops:quickexec:script:execute"}}
+			return resourceRoute{Kind: "host", Action: "execute", Permissions: []string{"ops:quickexec:command:execute", "ops:quickexec:script:execute", "ops:quickexec:file:execute"}}
 		}
 		return resourceRoute{Kind: "host", Action: action, Permissions: []string{permission}}
 	}

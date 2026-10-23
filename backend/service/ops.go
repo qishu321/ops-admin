@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"ops-admin/backend/internal/access"
 	"ops-admin/backend/model"
 
 	"golang.org/x/crypto/ssh"
@@ -115,6 +114,7 @@ func (upload *OpsFileDispatchUpload) Cleanup() {
 
 type OpsExecRetryPayload struct {
 	TaskID   uint   `json:"taskId"`
+	ResultID uint   `json:"resultId"`
 	Operator string `json:"-"`
 	SourceIP string `json:"-"`
 }
@@ -552,6 +552,10 @@ func (s *Service) ExecuteOpsScript(payload OpsExecScriptPayload) (map[string]any
 	if err != nil {
 		return nil, err
 	}
+	retryContext, err := encodeOpsRetryContext(opsRetryContext{Script: script, Variables: variables})
+	if err != nil {
+		return nil, err
+	}
 	timeoutSeconds := payload.TimeoutSeconds
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = script.TimeoutSeconds
@@ -572,6 +576,7 @@ func (s *Service) ExecuteOpsScript(payload OpsExecScriptPayload) (map[string]any
 		Source:         opsTaskSource(payload.Source),
 		RiskLevel:      riskLevel,
 		ScriptVersion:  script.CurrentVersion,
+		RetryContext:   retryContext,
 		TargetSnapshot: opsTargetSnapshot(hosts),
 		RetryOfTaskID:  payload.RetryOfTaskID,
 	}
@@ -639,6 +644,16 @@ func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, upload 
 		stagedPath = tempPath
 		cleanup = func() { _ = os.Remove(tempPath) }
 	}
+	defer cleanup()
+	retryPath, expiresAt, err := retainOpsRetryFile(stagedPath)
+	if err != nil {
+		return nil, err
+	}
+	retryContext, err := encodeOpsRetryContext(opsRetryContext{FilePath: retryPath, Overwrite: payload.Overwrite})
+	if err != nil {
+		_ = os.Remove(retryPath)
+		return nil, err
+	}
 
 	task := model.OpsExecTask{
 		TaskType:       "file",
@@ -649,6 +664,8 @@ func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, upload 
 		SourcePath:     strings.TrimSpace(payload.SourcePath),
 		TargetPath:     targetPath,
 		FileName:       fileName,
+		RetryContext:   retryContext,
+		FileRetryUntil: &expiresAt,
 		Concurrency:    normalizeOpsConcurrency(payload.Concurrency),
 		TimeoutSeconds: normalizeOpsTimeout(payload.TimeoutSeconds),
 		Status:         "running",
@@ -661,10 +678,10 @@ func (s *Service) ExecuteOpsFileDispatch(payload OpsFileDispatchPayload, upload 
 		TargetSnapshot: opsTargetSnapshot(hosts),
 	}
 	result, err := s.runOpsTaskAsyncWithFinalizer(task, hosts, func(host model.AssetHost) model.OpsExecTargetResult {
-		return s.dispatchFileFromPath(host, fileName, targetPath, stagedPath, payload.Overwrite, task.TimeoutSeconds)
-	}, cleanup)
+		return s.dispatchFileFromPath(host, fileName, targetPath, retryPath, payload.Overwrite, task.TimeoutSeconds)
+	}, nil)
 	if err != nil {
-		cleanup()
+		_ = os.Remove(retryPath)
 	}
 	return result, err
 }
@@ -727,6 +744,7 @@ func (s *Service) GetOpsExecTaskDetail(id uint) (map[string]any, error) {
 	if err := s.db.First(&task, id).Error; err != nil {
 		return nil, err
 	}
+	task.RetrySupported = true
 	var results []model.OpsExecTargetResult
 	if err := s.db.Where("task_id = ?", id).Order("id ASC").Find(&results).Error; err != nil {
 		return nil, err
@@ -735,45 +753,6 @@ func (s *Service) GetOpsExecTaskDetail(id uint) (map[string]any, error) {
 		"task":    task,
 		"results": results,
 	}, nil
-}
-
-func (s *Service) RetryFailedOpsExecTask(payload OpsExecRetryPayload) (map[string]any, error) {
-	var task model.OpsExecTask
-	if err := s.db.First(&task, payload.TaskID).Error; err != nil {
-		return nil, err
-	}
-	if p := s.resourcePolicy(); p != nil && !p.Has("ops:quickexec:"+task.TaskType+":execute") {
-		return nil, access.ErrDenied
-	}
-	if task.Status == "running" {
-		return nil, errors.New("任务仍在执行中，暂不能重试")
-	}
-	if task.TaskType == "file" {
-		return nil, errors.New("文件内容不会长期保存在平台，请复制原文件分发任务后重新上传")
-	}
-	var failedResults []model.OpsExecTargetResult
-	if err := s.db.Where("task_id = ? AND status <> ?", task.ID, "success").Find(&failedResults).Error; err != nil {
-		return nil, err
-	}
-	if len(failedResults) == 0 {
-		return nil, errors.New("当前任务没有失败或超时主机")
-	}
-	hostIDs := make([]uint, 0, len(failedResults))
-	for _, result := range failedResults {
-		hostIDs = append(hostIDs, result.HostID)
-	}
-	if task.TaskType == "command" {
-		return s.ExecuteOpsCommand(OpsExecCommandPayload{
-			Title: task.Title + "（失败重试）", CommandText: task.CommandText, Parameters: task.Parameters,
-			HostIDs: hostIDs, Concurrency: task.Concurrency, TimeoutSeconds: task.TimeoutSeconds,
-			RiskConfirmed: true, Operator: payload.Operator, SourceIP: payload.SourceIP, Source: "retry", RetryOfTaskID: task.ID,
-		})
-	}
-	return s.ExecuteOpsScript(OpsExecScriptPayload{
-		Title: task.Title + "（失败重试）", ScriptID: task.ScriptID, Parameters: task.Parameters,
-		HostIDs: hostIDs, Concurrency: task.Concurrency, TimeoutSeconds: task.TimeoutSeconds,
-		RiskConfirmed: true, Operator: payload.Operator, SourceIP: payload.SourceIP, Source: "retry", RetryOfTaskID: task.ID,
-	})
 }
 
 func opsTaskTitle(title string, fallback string) string {
@@ -892,24 +871,24 @@ func (s *Service) runOpsTaskAsync(task model.OpsExecTask, hosts []model.AssetHos
 }
 
 func (s *Service) runOpsTaskAsyncWithFinalizer(task model.OpsExecTask, hosts []model.AssetHost, runner func(host model.AssetHost) model.OpsExecTargetResult, finalizer func()) (map[string]any, error) {
+	task.RetrySupported = true
 	now := time.Now()
 	task.StartedAt = &now
-	if err := s.db.Create(&task).Error; err != nil {
-		return nil, err
-	}
 	pendingRows := make([]model.OpsExecTargetResult, 0, len(hosts))
-	for _, host := range hosts {
-		pendingRows = append(pendingRows, model.OpsExecTargetResult{
-			TaskID:    task.ID,
-			HostID:    host.ID,
-			HostName:  host.HostName,
-			GroupName: host.Group.Name,
-			SSHIP:     host.SSHIP,
-			Status:    "running",
-		})
-	}
-	if len(pendingRows) > 0 {
-		_ = s.db.Create(&pendingRows).Error
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&task).Error; err != nil {
+			return err
+		}
+		for _, host := range hosts {
+			pendingRows = append(pendingRows, model.OpsExecTargetResult{TaskID: task.ID, HostID: host.ID, HostName: host.HostName, GroupName: host.Group.Name, SSHIP: host.SSHIP, Status: "running"})
+		}
+		if len(pendingRows) > 0 {
+			return tx.Create(&pendingRows).Error
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	go func() {
 		s.processOpsTask(task, hosts, runner)
@@ -917,7 +896,9 @@ func (s *Service) runOpsTaskAsyncWithFinalizer(task model.OpsExecTask, hosts []m
 			finalizer()
 		}
 	}()
-	return s.GetOpsExecTaskDetail(task.ID)
+	// Creation is already committed. A transient read failure must not make the
+	// caller delete the staged file of a task that is now executing.
+	return map[string]any{"task": task, "results": pendingRows}, nil
 }
 
 func (s *Service) processOpsTask(task model.OpsExecTask, hosts []model.AssetHost, runner func(host model.AssetHost) model.OpsExecTargetResult) {

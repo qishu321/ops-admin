@@ -22,7 +22,7 @@ const { isDark } = useDashboardDomain('theme')
 
       <div class="workspace-status">
         <span :class="isListLayout ? 'sync-idle' : `sync-${syncStatus.type}`" role="status"><i class="health-dot"></i>{{ isListLayout ? (inspectionReport ? `报告 #${inspectionReport.id}` : '等待巡检') : syncStatus.text }}</span>
-        <small v-if="!isListLayout" title="最近查询完成时间">{{ lastRefreshText }}</small>
+        <small v-if="!isListLayout" title="最近一次面板查询成功时间（不代表所有面板均成功）">{{ lastRefreshText }}</small>
         <el-button :icon="Refresh" :loading="loading || (!isListLayout && isRefreshing)" @click="isListLayout ? loadLatestInspectionReport() : refreshAllPanels()">{{ isListLayout ? '刷新报告' : '刷新' }}</el-button>
         <el-dropdown :popper-class="isDark ? 'monitor-dark-popper' : ''" v-if="activeDashboard" trigger="click" @command="handleDashboardManageCommand">
           <el-button :icon="Setting" :aria-label="isListLayout ? '巡检方案设置' : '大屏设置'" />

@@ -39,7 +39,7 @@ export function useMonitorDashboard() {
     panelTrend: panel => trends.panelTrend(panel),
     barRows: panel => bars.barRows(panel),
   })
-  const trends = useTrendChart({ ...selection, ...display, ...time })
+  const trends = useTrendChart({ ...selection, ...display, ...time, panelResults: queries.panelResults })
   const bars = useBarChart({ ...selection, ...display })
   const grid = useGridLayout({ ...selection, ...fullscreen })
   const allowNavigation = () => {
@@ -90,7 +90,7 @@ export function useMonitorDashboard() {
   })
 
   onMounted(async () => {
-    await loader.loadBase()
+    if (!await loader.loadBase()) return
     view.applySharedView()
     await loader.loadDashboard(selection.activeDashboardId.value)
     view.restorePanelFocus()
@@ -101,9 +101,9 @@ export function useMonitorDashboard() {
     selection.activeDashboardId.value = undefined
     selection.activeDashboard.value = null
     selection.panels.value = []
-    await loader.loadBase()
+    if (!await loader.loadBase()) return
     await loader.loadDashboard(selection.activeDashboardId.value)
   })
 
-  return { ...selection, ...theme, isFullscreen: fullscreen.isFullscreen }
+  return { ...selection, ...theme, loadError: loader.loadError, retryLoad: loader.retryLoad, isFullscreen: fullscreen.isFullscreen }
 }

@@ -1,4 +1,4 @@
-import { reactive, ref, computed } from 'vue'
+import { reactive, ref, computed, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { queryMonitorDashboardPanel } from '../../../../api/monitor'
 
@@ -19,7 +19,9 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
     return empty ? { text: `${empty} 个面板无数据`, type: 'idle' } : { text: '数据已同步', type: 'success' }
   })
 
-  const lastRefreshAt = ref(new Date())
+  const lastRefreshAt = ref(null)
+  let disposed = false
+  let remainingTimer = null
 
   let panelRefreshVersion = 0
   let activeRequests = 0
@@ -41,6 +43,8 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
   }
   function invalidateQueries() {
     panelRefreshVersion++
+    if (remainingTimer !== null) window.clearTimeout(remainingTimer)
+    remainingTimer = null
     // Abort in-flight requests so a slow older window stops occupying one of the
     // four concurrency slots while the new window is already being fetched.
     cancelAllPanelRequests()
@@ -72,10 +76,17 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
   const PANEL_QUERY_CONCURRENCY = 4
 
   const PANEL_CACHE_TTL = 15 * 1000
+  const CACHE_LIMIT = 128
+  onBeforeUnmount(() => {
+    disposed = true
+    invalidateQueries()
+    panelResultCache.clear()
+    requestVersions.clear()
+  })
 
   const podResourceNamespace = ref('')
 
-  const lastRefreshText = computed(() => lastRefreshAt.value.toLocaleTimeString('zh-CN', { hour12: false }))
+  const lastRefreshText = computed(() => lastRefreshAt.value ? lastRefreshAt.value.toLocaleTimeString('zh-CN', { hour12: false }) : '尚未成功查询')
 
   function handlePodNamespaceChange(panel) {
     panelResultCache.delete(panelCacheKey(panel))
@@ -88,7 +99,6 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
       return
     }
     await loadPanel(row, { force: true })
-    lastRefreshAt.value = new Date()
   }
 
   async function refreshProblemPanels() {
@@ -97,7 +107,6 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
     invalidateQueries()
     const version = panelRefreshVersion
     await runPanelQueue(items, version, true)
-    if (version === panelRefreshVersion) lastRefreshAt.value = new Date()
   }
 
   function panelQueryPayload(panel) {
@@ -120,6 +129,10 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
   }
 
   async function loadPanel(panel, { force = true, version = panelRefreshVersion } = {}) {
+    if (disposed) return
+    for (const [cacheKey, entry] of panelResultCache) {
+      if (entry.expiresAt <= Date.now()) panelResultCache.delete(cacheKey)
+    }
     const key = panelCacheKey(panel)
     const cached = panelResultCache.get(key)
     if (!force && cached && cached.expiresAt > Date.now()) {
@@ -147,7 +160,10 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
       const data = await queryMonitorDashboardPanel(panelQueryPayload(panel), controller ? { signal: controller.signal } : undefined)
       if (!current()) return
       panelResults[panel.id] = data
+      lastRefreshAt.value = new Date()
+      panelResultCache.delete(key)
       panelResultCache.set(key, { data, expiresAt: Date.now() + PANEL_CACHE_TTL })
+      while (panelResultCache.size > CACHE_LIMIT) panelResultCache.delete(panelResultCache.keys().next().value)
     } catch (error) {
       // A cancelled request is not a failure: never surface it as a panel error.
       if (abortError(error) || !current()) return
@@ -172,6 +188,7 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
   }
 
   async function refreshAllPanels({ progressive = false, force = true } = {}) {
+    if (disposed) return
     if (!selectedDatasourceId.value) {
       const message = '请先在数据源管理中配置 Prometheus 或 VictoriaMetrics 数据源'
       for (const panel of panels.value.filter((item) => item.status === 1)) panelResults[panel.id] = { error: message }
@@ -184,22 +201,18 @@ export function usePanelQueries({ selectedDatasourceId, activePanels, panelState
     const remainingPanels = enabledPanels.slice(6)
     const loadRemaining = async () => {
       await runPanelQueue(remainingPanels, version, force)
-      if (version === panelRefreshVersion) lastRefreshAt.value = new Date()
     }
 
     if (progressive) {
       await runPanelQueue(firstScreenPanels, version, force)
       if (version === panelRefreshVersion && remainingPanels.length) {
-        window.setTimeout(() => { void loadRemaining() }, 0)
-      } else if (version === panelRefreshVersion) {
-        lastRefreshAt.value = new Date()
+        remainingTimer = window.setTimeout(() => { remainingTimer = null; void loadRemaining() }, 0)
       }
       return
     }
 
     await runPanelQueue(firstScreenPanels, version, force)
     if (version === panelRefreshVersion) await loadRemaining()
-    if (version === panelRefreshVersion) lastRefreshAt.value = new Date()
   }
 
   async function handleDatasourceChange() {

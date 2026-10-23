@@ -80,6 +80,7 @@ func New(db *gorm.DB) *Service {
 	svc.dnsManager = dnsserver.NewManager(db)
 	svc.ensureDefaultEnvironments()
 	svc.initOpsScheduler()
+	svc.initOpsRetryCleanup()
 	svc.initHTTPProbeLogCleanup()
 	svc.initK8sScalingScheduler()
 	svc.initMonitorScheduler()

@@ -1,7 +1,7 @@
 <script setup>
 import { useDashboardDomain } from '../../context'
 import { CircleCheck } from '@element-plus/icons-vue'
-import { computed, ref, useId } from 'vue'
+import { computed, ref, useId, onBeforeUnmount } from 'vue'
 import { smoothPath, areaPath } from '../../utils/curve'
 
 const { trendCurrentLabel, panelStats, panelLineSeries, panelLegendSeries, toggleTrendSeries, handleTrendPointer, hideTrendTooltip, trendTooltips } = useDashboardDomain('trends')
@@ -10,6 +10,26 @@ const { isK8sDashboard } = useDashboardDomain('selection')
 const { rangeStartText, rangeEndText } = useDashboardDomain('time')
 const gradientId = 'trend-area-' + useId()
 const props = defineProps({ panel: { type: Object, required: true } })
+
+const stats = computed(() => panelStats(props.panel))
+const currentValue = computed(() => panelDisplayValue(props.panel))
+let pointerFrame = null
+let pendingPointer
+function onPointer(event) {
+  pendingPointer = { currentTarget: event.currentTarget, clientX: event.clientX }
+  if (pointerFrame !== null) return
+  pointerFrame = requestAnimationFrame(() => {
+    pointerFrame = null
+    handleTrendPointer(props.panel, pendingPointer, series.value)
+  })
+}
+function clearPointer() {
+  if (pointerFrame !== null) cancelAnimationFrame(pointerFrame)
+  pointerFrame = null
+  pendingPointer = null
+  hideTrendTooltip(props.panel)
+}
+onBeforeUnmount(clearPointer)
 
 const LEGEND_PREVIEW = 4
 const legendExpanded = ref(false)
@@ -28,19 +48,19 @@ const series = computed(() => panelLineSeries(props.panel).map(item => ({
 <div class="trend-summary">
               <div class="trend-current">
                 <span>{{ trendCurrentLabel(panel) }}</span>
-                <strong>{{ panelDisplayValue(panel) }}</strong>
+                <strong>{{ currentValue }}</strong>
               </div>
               <div class="trend-stats">
-                <span>最小 <b>{{ panelStats(panel).min }}</b></span>
-                <span>平均 <b>{{ panelStats(panel).avg }}</b></span>
-                <span>最大 <b>{{ panelStats(panel).max }}</b></span>
+                <span>最小 <b>{{ stats.min }}</b></span>
+                <span>平均 <b>{{ stats.avg }}</b></span>
+                <span>最大 <b>{{ stats.max }}</b></span>
               </div>
             </div>
             <div
               v-if="series.length"
               class="trend-chart"
-              @mousemove="handleTrendPointer(panel, $event)"
-              @mouseleave="hideTrendTooltip(panel)"
+              @mousemove="onPointer"
+              @mouseleave="clearPointer"
             >
               <svg class="sparkline" viewBox="0 0 100 52" preserveAspectRatio="none">
                 <defs>

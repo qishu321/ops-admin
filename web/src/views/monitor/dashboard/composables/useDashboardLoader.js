@@ -1,25 +1,42 @@
+import { ref, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { queryMonitorDashboardList, queryMonitorDatasourceOptions, monitorDashboardInfo } from '../../../../api/monitor'
 
 export function useDashboardLoader({ dashboards, datasourceOptions, selectedDatasourceId, visibleDashboards, activeDashboardId, activeDashboard, panels, inspectionReport, inspectionReportResults, loading, inspectionFilter, layoutNeedsMigration, initializePanelGrid, preparePanelGrid, exitLayoutEditing, layoutLocked, invalidateQueries, panelResults, panelPending, isListLayout, loadLatestInspectionReport, refreshAllPanels }) {
   let loadVersion = 0
+  let requestedId
+  const loadError = ref('')
+  onBeforeUnmount(() => { loadVersion++ })
   async function loadBase() {
-    const [dashboardData, datasources] = await Promise.all([
-      queryMonitorDashboardList({ pageNum: 1, pageSize: 100 }),
-      queryMonitorDatasourceOptions()
-    ])
-    dashboards.value = dashboardData.list || []
-    datasourceOptions.value = (datasources || []).filter((item) => ['prometheus', 'victoriametrics'].includes(item.type))
-    if (!datasourceOptions.value.some((item) => item.id === selectedDatasourceId.value)) {
-      selectedDatasourceId.value = datasourceOptions.value.find((item) => item.isDefault)?.id || datasourceOptions.value[0]?.id
+    loadError.value = ''
+    try {
+      const [dashboardData, datasources] = await Promise.all([
+        queryMonitorDashboardList({ pageNum: 1, pageSize: 100 }),
+        queryMonitorDatasourceOptions()
+      ])
+      dashboards.value = dashboardData.list || []
+      datasourceOptions.value = (datasources || []).filter((item) => ['prometheus', 'victoriametrics'].includes(item.type))
+      if (!datasourceOptions.value.some((item) => item.id === selectedDatasourceId.value)) {
+        selectedDatasourceId.value = datasourceOptions.value.find((item) => item.isDefault)?.id || datasourceOptions.value[0]?.id
+      }
+      if (!visibleDashboards.value.some((item) => item.id === activeDashboardId.value)) {
+        activeDashboardId.value = visibleDashboards.value[0]?.id
+      }
+      return true
+    } catch (error) {
+      loadError.value = error.message || '大屏列表加载失败'
+      return false
     }
-    if (!visibleDashboards.value.some((item) => item.id === activeDashboardId.value)) {
-      activeDashboardId.value = visibleDashboards.value[0]?.id
-    }
+  }
+
+  async function retryLoad() {
+    if (await loadBase()) await loadDashboard(requestedId || activeDashboardId.value)
   }
 
   async function loadDashboard(id = activeDashboardId.value) {
     if (layoutLocked.value) { ElMessage.warning('请等待布局保存或恢复完成'); return }
+    requestedId = id
+    loadError.value = ''
     exitLayoutEditing()
     invalidateQueries()
     const version = ++loadVersion
@@ -49,12 +66,16 @@ export function useDashboardLoader({ dashboards, datasourceOptions, selectedData
         // last persisted report and never query metrics on page entry.
         void refreshAllPanels({ progressive: true, force: false })
       }
+    } catch (error) {
+      if (version === loadVersion) loadError.value = error.message || '大屏详情加载失败'
     } finally {
       if (version === loadVersion) loading.value = false
     }
   }
 
   return {
+    loadError,
+    retryLoad,
     loadBase,
     loadDashboard,
   }

@@ -1,0 +1,43 @@
+/* 大屏外壳（页面容器 + 画布）。历史版本在这里为 dashboard-grid-toolbar、
+   hero-actions、status-chip、layout-hint、dashboard-context、k8s-metric-panel
+   等已经不在模板中的类保留了大量规则，这些规则从未命中任何元素；
+   这里只留下实际渲染的 .dashboard-page / .dashboard-main / .observability-canvas，
+   其余布局与配色都交给各自的组件。数值取原文件最后生效声明。 */
+
+.dashboard-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: calc(100vh - 170px);
+  background: var(--dash-canvas);
+}
+.dashboard-main {
+  position: relative;
+  padding: 22px;
+  min-height: 760px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(37, 99, 235, 0.14), transparent 28%),
+    linear-gradient(180deg, var(--dash-subtle) 0%, var(--dash-subtle) 100%);
+  box-shadow: 0 12px 30px rgba(36, 54, 90, 0.08);
+  overflow: visible;
+}
+.dashboard-main:is(:fullscreen, .is-presentation) {
+  border-radius: 0;
+  background: #07111f;
+  padding: 28px;
+}
+.observability-canvas {
+  padding: 12px;
+  border: 1px solid var(--dash-border);
+  border-radius: 10px;
+  background: var(--dash-canvas);
+  box-shadow: none;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) {
+  padding: 8px;
+  border: 0;
+  border-radius: 0;
+  background: #0b1017;
+  color: #d7e0ea;
+}

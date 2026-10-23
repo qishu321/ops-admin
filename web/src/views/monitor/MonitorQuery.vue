@@ -1,8 +1,10 @@
 <script setup>
+import { useRoute } from 'vue-router'
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { queryMonitorDatasourceOptions, queryMonitorPrometheus, queryMonitorPrometheusRange, queryMonitorQueryHistoryList } from '../../api/monitor'
 
+const route = useRoute()
 const loading = ref(false)
 const datasourceOptions = ref([])
 const datasourceId = ref()
@@ -171,7 +173,7 @@ async function loadChart() {
   chartLoading.value = true
   try {
     const endAt = Math.floor(Date.now() / 1000)
-    const duration = { '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800 }[chartRange.value] || 3600
+    const duration = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800 }[chartRange.value] || 3600
     const data = await queryMonitorPrometheusRange({ datasourceId: datasourceId.value, query: promql.value, startAt: endAt - duration, endAt, stepSeconds: Math.max(15, Math.ceil(duration / 120)) })
     chartResult.value = data.result || []
     chartHover.value = null
@@ -231,6 +233,10 @@ function useHistory(row) {
 
 onMounted(async () => {
   await loadOptions()
+  if (typeof route.query.query === 'string') promql.value = route.query.query
+  if (datasourceOptions.value.some(item => item.id === Number(route.query.datasourceId))) datasourceId.value = Number(route.query.datasourceId)
+  const sharedRange = { 900: '15m', 3600: '1h', 21600: '6h', 86400: '24h' }[Number(route.query.range)]
+  if (sharedRange) chartRange.value = sharedRange
   if (!datasourceId.value) ElMessage.warning('请先在数据源管理中配置 Prometheus 或 VictoriaMetrics 数据源')
 })
 </script>
@@ -275,7 +281,7 @@ onMounted(async () => {
     </div>
 
     <section v-if="resultView === 'chart'" class="instant-chart-panel" v-loading="chartLoading || loading">
-      <div class="instant-chart-head"><div><h3>指标趋势</h3><p>Prometheus / VictoriaMetrics 时间序列</p></div><div class="chart-actions"><el-select v-model="chartRange" size="small" style="width: 110px" @change="loadChart"><el-option label="最近 1 小时" value="1h" /><el-option label="最近 6 小时" value="6h" /><el-option label="最近 24 小时" value="24h" /><el-option label="最近 7 天" value="7d" /></el-select><el-button size="small" @click="loadChart">刷新图表</el-button></div></div>
+      <div class="instant-chart-head"><div><h3>指标趋势</h3><p>Prometheus / VictoriaMetrics 时间序列</p></div><div class="chart-actions"><el-select v-model="chartRange" size="small" style="width: 110px" @change="loadChart"><el-option label="最近 15 分钟" value="15m" /><el-option label="最近 1 小时" value="1h" /><el-option label="最近 6 小时" value="6h" /><el-option label="最近 24 小时" value="24h" /><el-option label="最近 7 天" value="7d" /></el-select><el-button size="small" @click="loadChart">刷新图表</el-button></div></div>
       <template v-if="chartSeries.length">
         <div class="line-chart-wrap">
           <svg class="line-chart" viewBox="0 0 1000 260" preserveAspectRatio="none" role="img" aria-label="Metric trend" @mousemove="updateChartHover" @mouseleave="chartHover = null">

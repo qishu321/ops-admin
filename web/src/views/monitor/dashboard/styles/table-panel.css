@@ -1,0 +1,33 @@
+/* 表格类面板的公共样式。Pod / 主机 / 通用表格三个组件都用 scoped 方式引入，
+   这样每条规则都会带上所属组件的作用域标记，不会因为拆分成子组件而失效。 */
+
+/* 卡片被拉高（编辑布局拉伸、全屏铺满）时表格要跟着长，所以统一由一层
+   flex 容器给出确定高度，el-table 通过 height="100%" 跟随；
+   容器里的工具条保持原高，表格吃掉剩余空间。 */
+.table-panel-body,
+.pod-resource-table-body,
+.host-resource-table-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.pod-resource-toolbar,
+.host-resource-toolbar {
+  flex: 0 0 auto;
+}
+.chart-panel.panel-table .el-table {
+  padding: 10px 12px 0;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel .el-table {
+  --el-table-bg-color: #111923;
+  --el-table-tr-bg-color: #111923;
+  --el-table-header-bg-color: #151e29;
+  --el-table-border-color: #283442;
+  --el-table-text-color: #c7d2df;
+  --el-table-header-text-color: #8fa0b5;
+}
+.observability-canvas:is(:fullscreen, .is-presentation) .chart-panel.panel-table .el-table {
+  padding: 5px 7px 0;
+  font-size: 10px;
+}

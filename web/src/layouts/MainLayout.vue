@@ -161,9 +161,11 @@ function isPinnedTag(tag) {
 function trimTagViews(tags, protectedPath = '') {
   const result = [...tags]
   while (result.length > MAX_TAG_VIEWS) {
-    let removeIndex = result.findIndex((item) => !isPinnedTag(item) && item.path !== protectedPath)
+    // A cached terminal owns live SSH connections; opening another page must
+    // not trigger its explicit tab-close cleanup through automatic eviction.
+    let removeIndex = result.findIndex((item) => !isPinnedTag(item) && item.path !== '/assets/terminal' && item.path !== protectedPath)
     if (removeIndex === -1) {
-      removeIndex = result.findIndex((item) => !isPinnedTag(item))
+      removeIndex = result.findIndex((item) => !isPinnedTag(item) && item.path !== '/assets/terminal')
     }
     if (removeIndex === -1) {
       break

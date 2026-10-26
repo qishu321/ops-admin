@@ -4,7 +4,8 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, 
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { ElMessage } from 'element-plus'
-import { Download, Folder, Monitor, Refresh, UploadFilled } from '@element-plus/icons-vue'
+import { Download, Folder, Monitor, Promotion, Refresh, UploadFilled } from '@element-plus/icons-vue'
+import TerminalBroadcastDialog from './terminal/TerminalBroadcastDialog.vue'
 import { queryAssetHostGroupList, queryAssetHostList, uploadAssetTerminalFile, downloadAssetTerminalFile, queryAssetTerminalFiles } from '../../api/asset'
 import { getToken } from '../../utils/auth'
 
@@ -16,27 +17,60 @@ const sessions = ref([])
 const activeSessionId = ref()
 const query = reactive({ keyword: '' })
 const uploadDialogVisible = ref(false)
+const uploadSessionId = ref()
 const uploadDirectory = ref('~')
 const uploadFile = ref()
 const uploadInputRef = ref()
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const downloadDialogVisible = ref(false)
+const downloadSessionId = ref()
 const downloadDirectory = ref('~')
 const downloadParent = ref('')
 const downloadItems = ref([])
 const downloadLoading = ref(false)
 const downloading = ref(false)
 const MAX_UPLOAD_SIZE = 500 * 1024 * 1024
+const broadcastDialogVisible = ref(false)
+const broadcastSending = ref(false)
 
 // xterm and WebSocket instances must stay outside Vue reactivity. Each opened
-// host has an independent runtime, so switching a tab never disconnects it.
+// session has an independent runtime, including sessions on the same host.
 const runtimes = new Map()
 const terminalElements = new Map()
+const sessionNumbers = new Map()
 let resizeObserver
 let resizeFrame
+let downloadRequestVersion = 0
 
 const activeSession = computed(() => sessions.value.find((item) => item.id === activeSessionId.value))
+const broadcastTargets = computed(() => connectedTerminalSessions().map(session => ({ id: session.id, label: sessionLabel(session) })))
+
+function connectedTerminalSessions() {
+  return sessions.value.filter(session => session.status === 'connected' && runtimes.get(session.id)?.socket?.readyState === WebSocket.OPEN)
+}
+function openBroadcastDialog() {
+  if (!connectedTerminalSessions().length) return ElMessage.warning('没有已连接的终端会话')
+  broadcastDialogVisible.value = true
+}
+function sendBroadcastCommand(command) {
+  if (!broadcastDialogVisible.value || broadcastSending.value || !command.trim()) return
+  const targets = connectedTerminalSessions()
+  if (!targets.length) return ElMessage.warning('没有已连接的终端会话')
+  // Match terminal Enter, including pasted multi-line commands, without
+  // introducing a second execution API or bypassing the SSH command filter.
+  const input = command.replace(/\r\n?/g, '\n').replace(/\n+$/, '').replace(/\n/g, '\r') + '\r'
+  let sent = 0
+  broadcastSending.value = true
+  try {
+    for (const session of targets) {
+      try { if (sendTerminalInput(runtimes.get(session.id), input)) sent++ } catch { /* Continue delivering to other independent sockets. */ }
+    }
+    if (sent) broadcastDialogVisible.value = false
+    if (sent === targets.length) ElMessage.success(`已发送到 ${sent} 个会话`)
+    else ElMessage.warning(`已发送到 ${sent} 个会话，${targets.length - sent} 个会话未发送，请检查对应终端`)
+  } finally { broadcastSending.value = false }
+}
 
 let treeVersion = 0
 async function loadTree() {
@@ -84,14 +118,19 @@ function handleNodeClick(node) {
   if (node.type === 'host') openHost(node.host)
 }
 
-function getSessionId(host) { return `host-${host.id}` }
+function sessionLabel(session) {
+  return session ? `${session.host.hostName || session.host.sshIp} -${session.number}` : ''
+}
 
 async function openHost(host) {
-  const id = getSessionId(host)
-  if (sessions.value.some((item) => item.id === id)) return activateSession(id)
-  sessions.value.push({ id, host, status: 'connecting' })
+  const number = (sessionNumbers.get(host.id) || 0) + 1
+  sessionNumbers.set(host.id, number)
+  const id = `host-${host.id}-session-${number}`
+  sessions.value.push({ id, number, host, status: 'connecting' })
   activeSessionId.value = id
   await nextTick()
+  // A tab may be explicitly closed before its DOM has finished mounting.
+  if (!sessions.value.some((session) => session.id === id)) return
   bindTerminalResize()
   createTerminal(id)
   connectSocket(id)
@@ -118,17 +157,20 @@ function createTerminal(id) {
   const runtime = { term, socket: undefined, inputDisposable: undefined, commandLine: '', promptBuffer: '', currentDirectory: '~' }
   runtimes.set(id, runtime)
   term.open(element)
-  runtime.inputDisposable = term.onData((data) => {
-    if (runtime.socket?.readyState !== WebSocket.OPEN) return
-    if (shouldBlockZmodemCommand(runtime, data)) {
-      runtime.socket.send('\x15')
-      runtime.term.writeln('\r\n\x1b[33mWeb 终端不支持 rz / sz 命令，请使用上传文件或下载文件功能。\x1b[0m')
-      return
-    }
-    runtime.socket.send(data)
-  })
+  runtime.inputDisposable = term.onData((data) => sendTerminalInput(runtime, data))
   term.focus()
   scheduleTerminalSizeSync()
+}
+
+function sendTerminalInput(runtime, data) {
+  if (runtime?.socket?.readyState !== WebSocket.OPEN) return false
+  if (shouldBlockZmodemCommand(runtime, data)) {
+    runtime.socket.send('\x15')
+    runtime.term.writeln('\r\n\x1b[33mWeb 终端不支持 rz / sz 命令，请使用上传文件或下载文件功能。\x1b[0m')
+    return false
+  }
+  runtime.socket.send(data)
+  return true
 }
 
 function shouldBlockZmodemCommand(runtime, data) {
@@ -212,11 +254,14 @@ function connectSocket(id) {
       : 'SSH 连接失败，请检查主机、端口、认证凭据或服务端日志。'
     runtime.term.writeln(`\r\n\x1b[31m${message}\x1b[0m`)
   }
-  currentSocket.onclose = () => {
+  currentSocket.onclose = (event) => {
     if (runtime.socket !== currentSocket) return
     runtime.socket = undefined
     updateSession(id, { status: 'disconnected' })
-    runtime.term.writeln('\r\n\x1b[33m连接已断开。\x1b[0m')
+    const message = event?.code === 4001
+      ? '终端连续 60 分钟没有输入或输出，连接已自动断开，请点击重新连接。'
+      : '连接已断开。'
+    runtime.term.writeln(`\r\n\x1b[33m${message}\x1b[0m`)
   }
 }
 
@@ -252,6 +297,8 @@ function clearTerminal() { if (activeSession.value) runtimes.get(activeSession.v
 function openUploadDialog() {
   const runtime = activeSessionId.value && runtimes.get(activeSessionId.value)
   if (!activeSession.value || !runtime?.socket || runtime.socket.readyState !== WebSocket.OPEN) return ElMessage.warning('请先连接 SSH 终端')
+  if (uploading.value) return ElMessage.warning('请等待当前文件上传完成')
+  uploadSessionId.value = activeSessionId.value
   uploadDirectory.value = currentTerminalDirectory(runtime)
   uploadFile.value = undefined
   uploadProgress.value = 0
@@ -260,6 +307,7 @@ function openUploadDialog() {
 async function openDownloadDialog() {
   const runtime = activeSessionId.value && runtimes.get(activeSessionId.value)
   if (!activeSession.value || !runtime?.socket || runtime.socket.readyState !== WebSocket.OPEN) return ElMessage.warning('请先连接 SSH 终端')
+  downloadSessionId.value = activeSessionId.value
   downloadDirectory.value = currentTerminalDirectory(runtime)
   downloadParent.value = ''
   downloadItems.value = []
@@ -275,35 +323,46 @@ function handleUploadFileChange(event) {
 }
 function formatFileSize(size = 0) { if (!size) return '0 B'; return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(2)} MB` : `${Math.max(1, Math.ceil(size / 1024))} KB` }
 async function submitUpload() {
+  const session = sessions.value.find((item) => item.id === uploadSessionId.value)
+  const runtime = session && runtimes.get(session.id)
+  if (!session || !runtime) return ElMessage.warning('该终端会话已关闭，请重新打开上传窗口')
+  if (uploading.value) return
   if (!uploadFile.value) return ElMessage.warning('请选择一个文件')
   if (!isSafeTerminalDirectory(uploadDirectory.value)) return ElMessage.error('目标目录格式异常，请填写绝对路径或以 ~/ 开头的路径')
-  const form = new FormData(); form.append('hostId', String(activeSession.value.host.id)); form.append('directory', uploadDirectory.value); form.append('file', uploadFile.value)
+  const directory = uploadDirectory.value
+  const form = new FormData(); form.append('hostId', String(session.host.id)); form.append('directory', directory); form.append('file', uploadFile.value)
   uploading.value = true; uploadProgress.value = 0
   try {
     const result = await uploadAssetTerminalFile(form, (event) => { if (event.total) uploadProgress.value = Math.round(event.loaded * 100 / event.total) })
-    const runtime = runtimes.get(activeSessionId.value)
-    runtime?.term.writeln(`\r\n\x1b[32m上传完成：${result.filename} → ${result.destination || uploadDirectory.value}\x1b[0m`)
-    uploadDialogVisible.value = false; ElMessage.success('文件已上传')
+    if (runtimes.get(session.id) === runtime) runtime.term.writeln(`\r\n\x1b[32m上传完成：${result.filename} → ${result.destination || directory}\x1b[0m`)
+    if (uploadSessionId.value === session.id) uploadDialogVisible.value = false
+    ElMessage.success('文件已上传')
   } finally { uploading.value = false }
 }
 async function loadDownloadDirectory(directory = downloadDirectory.value) {
-  if (!activeSession.value || !directory) return
+  const session = sessions.value.find((item) => item.id === downloadSessionId.value)
+  if (!session || !directory) return
+  const version = ++downloadRequestVersion
   downloadLoading.value = true
   try {
-    const result = await queryAssetTerminalFiles(activeSession.value.host.id, directory)
+    const result = await queryAssetTerminalFiles(session.host.id, directory)
+    if (version !== downloadRequestVersion || downloadSessionId.value !== session.id) return
     downloadDirectory.value = result.path
     downloadParent.value = result.parent || ''
     downloadItems.value = result.items || []
-  } finally { downloadLoading.value = false }
+  } finally { if (version === downloadRequestVersion) downloadLoading.value = false }
 }
 function openDownloadEntry(entry) {
   if (entry.directory) loadDownloadDirectory(entry.path)
 }
 async function submitDownload(entry) {
   if (!entry || entry.directory) return
+  const session = sessions.value.find((item) => item.id === downloadSessionId.value)
+  const runtime = session && runtimes.get(session.id)
+  if (!session || !runtime) return ElMessage.warning('该终端会话已关闭，请重新打开下载窗口')
   downloading.value = true
   try {
-    const response = await downloadAssetTerminalFile(activeSession.value.host.id, entry.path)
+    const response = await downloadAssetTerminalFile(session.host.id, entry.path)
     // Empty files are valid downloads. The backend validates the remote target
     // before it writes attachment headers, so an error is returned as HTTP 400
     // instead of being saved by the browser as a fake 0 B download.
@@ -313,8 +372,7 @@ async function submitDownload(entry) {
     link.href = url
     link.download = entry.name || 'download'
     document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url)
-    const runtime = runtimes.get(activeSessionId.value)
-    runtime?.term.writeln(`\r\n\x1b[32m已开始下载：${entry.path}\x1b[0m`)
+    if (runtimes.get(session.id) === runtime) runtime.term.writeln(`\r\n\x1b[32m已开始下载：${entry.path}\x1b[0m`)
     ElMessage.success(`已开始下载 ${entry.name}`)
   } finally { downloading.value = false }
 }
@@ -324,6 +382,7 @@ function closeSession(id = activeSessionId.value) {
   if (index < 0) return
   disposeRuntime(id)
   sessions.value.splice(index, 1)
+  if (!sessions.value.length) broadcastDialogVisible.value = false
   if (activeSessionId.value === id) {
     activeSessionId.value = sessions.value[index]?.id || sessions.value[index - 1]?.id
     nextTick(() => {
@@ -341,6 +400,11 @@ function closeOtherSessions() {
 }
 
 function disposeRuntime(id) {
+  if (uploadSessionId.value === id) { uploadDialogVisible.value = false; uploadSessionId.value = undefined }
+  if (downloadSessionId.value === id) {
+    downloadDialogVisible.value = false; downloadSessionId.value = undefined
+    downloadRequestVersion++; downloadLoading.value = false
+  }
   const runtime = runtimes.get(id)
   if (!runtime) return
   disconnectSession(id, false)
@@ -351,6 +415,7 @@ function disposeRuntime(id) {
 }
 
 function closeAllSessions() {
+  broadcastDialogVisible.value = false
   sessions.value.forEach((item) => disposeRuntime(item.id))
   sessions.value = []
   activeSessionId.value = undefined
@@ -411,7 +476,7 @@ useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
           <span :class="['tree-node', data.type, { active: data.type === 'host' && activeSession?.host.id === data.host?.id }]">
             <el-icon v-if="data.type === 'group'"><Folder /></el-icon>
             <el-icon v-else><Monitor /></el-icon>
-            <span>{{ data.label }}</span>
+            <span :title="data.type === 'host' ? '点击新建独立终端会话' : data.label">{{ data.label }}</span>
           </span>
         </template>
       </el-tree>
@@ -420,19 +485,21 @@ useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
     <section v-if="sessions.length" ref="terminalBoxRef" class="terminal-window" aria-label="SSH 终端">
       <div class="terminal-tabbar">
         <div class="terminal-tabs" role="tablist" aria-label="终端会话">
-          <button v-for="session in sessions" :key="session.id" :class="['terminal-tab', { active: session.id === activeSessionId }]" role="tab" :aria-selected="session.id === activeSessionId" :title="[session.host.hostName, session.host.sshIp].filter(Boolean).join(' · ')" @click="activateSession(session.id)">
+          <button v-for="session in sessions" :key="session.id" :class="['terminal-tab', { active: session.id === activeSessionId }]" role="tab" :aria-selected="session.id === activeSessionId" :title="[sessionLabel(session), session.host.sshIp].filter(Boolean).join(' · ')" @click="activateSession(session.id)">
             <span :class="['connection-dot', session.status]" />
-            <span class="terminal-tab-label">{{ session.host.hostName || session.host.sshIp }}</span>
+            <span class="terminal-tab-label">{{ sessionLabel(session) }}</span>
             <span class="terminal-tab-close" title="关闭终端" @click.stop="closeSession(session.id)">×</span>
           </button>
         </div>
+        <button type="button" class="terminal-broadcast-button" :disabled="!broadcastTargets.length" @click="openBroadcastDialog"><el-icon><Promotion /></el-icon>发送命令到所有会话</button>
         <el-dropdown class="terminal-session-menu" trigger="click" @command="(command) => command === 'closeOthers' && closeOtherSessions()">
           <button type="button" class="terminal-menu" aria-label="终端会话操作">•••</button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item command="closeOthers" :disabled="sessions.length < 2">关闭其他会话</el-dropdown-item></el-dropdown-menu></template>
         </el-dropdown>
       </div>
+      <TerminalBroadcastDialog v-model="broadcastDialogVisible" :targets="broadcastTargets" :sending="broadcastSending" @confirm="sendBroadcastCommand" />
       <div class="terminal-toolbar">
-        <span class="active-host">{{ activeSession?.host.hostName || activeSession?.host.sshIp }}</span>
+        <span class="active-host">{{ sessionLabel(activeSession) }}</span>
         <div class="terminal-transfer-actions"><button type="button" class="terminal-transfer-button" @click="openUploadDialog"><el-icon><UploadFilled /></el-icon>上传文件</button><button type="button" class="terminal-transfer-button" @click="openDownloadDialog"><el-icon><Download /></el-icon>下载文件</button></div>
         <div class="terminal-actions">
           <el-button size="small" color="#00d084" plain @click="reconnect">重新连接</el-button>
@@ -466,7 +533,7 @@ useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
       </div>
     </section>
 
-    <section v-else class="terminal-empty"><div><h2>终端登录</h2><p>在左侧资产分组中选择主机即可新开终端会话；已打开的会话会保留在上方标签中，方便同时查看多台服务器。</p></div></section>
+    <section v-else class="terminal-empty"><div><h2>终端登录</h2><p>点击左侧主机即可新建终端；重复点击同一台主机可开启多个独立会话，标签中的编号用于区分各个会话。</p></div></section>
   </div>
 </template>
 
@@ -479,6 +546,7 @@ useAccessRefresh(async () => { groupTree.value = []; await loadTree() })
 .terminal-window { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-radius: 12px 12px 0 0; background: #20384c; box-shadow: 0 22px 48px rgba(7, 20, 35, .28); }
 .terminal-tabbar { display: flex; flex: 0 0 auto; min-width: 0; min-height: 44px; border-bottom: 1px solid rgba(111, 140, 164, .35); background: #172b3a; }
 .terminal-session-menu { flex: 0 0 auto; align-self: center; margin: 0 10px 0 6px; }
+.terminal-broadcast-button { display: inline-flex; flex: 0 0 auto; align-self: center; align-items: center; gap: 5px; height: 30px; padding: 0 9px; border: 1px solid rgba(0, 208, 132, .45); border-radius: 6px; background: transparent; color: #b9e8d6; cursor: pointer; font-size: 12px; }.terminal-broadcast-button:hover:enabled { border-color: #00d084; color: #00ff88; }.terminal-broadcast-button:disabled { opacity: .45; cursor: not-allowed; }
 .terminal-menu { width: 32px; height: 30px; border: 1px solid rgba(157, 176, 193, .45); border-radius: 6px; background: transparent; color: #c7d4dc; cursor: pointer; font-weight: 700; letter-spacing: 1px; }.terminal-menu:hover { border-color: #00d084; color: #00ff88; }
 .terminal-tabs { display: flex; flex: 1; min-width: 0; min-height: 44px; gap: 4px; overflow-x: auto; padding: 6px 10px 0; }
 .terminal-tab { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; max-width: 240px; padding: 0 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; background: transparent; color: #aabac7; cursor: pointer; font-size: 13px; }.terminal-tab:hover { background: rgba(0, 208, 132, .08); color: #ecf6f1; }.terminal-tab.active { border-color: rgba(0, 208, 132, .55); background: #20384c; color: #f4fffa; }.terminal-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -77,8 +77,7 @@ func (ctl *Controller) RefreshToken(c *gin.Context) {
 	}
 	data, nextRefreshToken, err := ctl.service.RefreshSession(refreshToken, reportedAt)
 	if err != nil {
-		clearRefreshCookie(c)
-		httpx.Failed(c, http.StatusUnauthorized, "登录已过期，请重新登录")
+		writeRefreshSessionError(c, err)
 		return
 	}
 	setRefreshCookie(c, nextRefreshToken, sessionCookieMaxAge(data))
@@ -853,9 +852,15 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	defer conn.Close()
 
 	commandFilter := ctl.service.NewTerminalCommandFilter()
+	activity := newAssetTerminalActivity()
+	stopMaintenance := startAssetTerminalMaintenance(conn, activity, defaultAssetTerminalTiming, func() error {
+		_, _, err := terminal.Client.SendRequest("keepalive@openssh.com", true, nil)
+		return err
+	}, func() { _ = terminal.Client.Close() })
+	defer stopMaintenance()
 	var writeMu sync.Mutex
 	writePipe := func(reader io.Reader) {
-		if err := writeAssetTerminalOutput(conn, &writeMu, reader, commandFilter.ObserveOutput); err != nil {
+		if err := writeAssetTerminalOutput(conn, &writeMu, reader, commandFilter.ObserveOutput, activity.observe); err != nil {
 			// Unblock the input reader so the handler releases the SSH session.
 			_ = conn.Close()
 		}
@@ -872,6 +877,7 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 		if err != nil {
 			return
 		}
+		activity.observe(message)
 		notices, err := commandFilter.WriteInput(message, terminal.Stdin)
 		if err != nil {
 			return

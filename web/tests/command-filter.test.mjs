@@ -24,6 +24,6 @@ test('SSH filtering is wired on backend input while Pod terminal stays unfiltere
   const controller = read('../../backend/controller/controller.go')
   const ssh = controller.slice(controller.indexOf('func (ctl *Controller) AssetTerminalWS'), controller.indexOf('func (ctl *Controller) UploadAssetTerminalFile'))
   assert.match(ssh, /commandFilter.WriteInput\(message, terminal.Stdin\)/)
-  assert.match(ssh, /writeAssetTerminalOutput\(conn, &writeMu, reader, commandFilter.ObserveOutput\)/)
+  assert.match(ssh, /writeAssetTerminalOutput\(conn, &writeMu, reader, commandFilter.ObserveOutput(?:, [^)]*)?\)/)
   assert.doesNotMatch(read('../../backend/service/k8s_terminal.go'), /NewTerminalCommandFilter|CheckCommandFilters/)
 })

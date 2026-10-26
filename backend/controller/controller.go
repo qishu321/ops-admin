@@ -853,9 +853,15 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	defer conn.Close()
 
 	commandFilter := ctl.service.NewTerminalCommandFilter()
+	activity := newAssetTerminalActivity()
+	stopMaintenance := startAssetTerminalMaintenance(conn, activity, defaultAssetTerminalTiming, func() error {
+		_, _, err := terminal.Client.SendRequest("keepalive@openssh.com", true, nil)
+		return err
+	}, func() { _ = terminal.Client.Close() })
+	defer stopMaintenance()
 	var writeMu sync.Mutex
 	writePipe := func(reader io.Reader) {
-		if err := writeAssetTerminalOutput(conn, &writeMu, reader, commandFilter.ObserveOutput); err != nil {
+		if err := writeAssetTerminalOutput(conn, &writeMu, reader, commandFilter.ObserveOutput, activity.observe); err != nil {
 			// Unblock the input reader so the handler releases the SSH session.
 			_ = conn.Close()
 		}
@@ -872,6 +878,7 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 		if err != nil {
 			return
 		}
+		activity.observe(message)
 		notices, err := commandFilter.WriteInput(message, terminal.Stdin)
 		if err != nil {
 			return

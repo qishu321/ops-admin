@@ -212,11 +212,14 @@ function connectSocket(id) {
       : 'SSH 连接失败，请检查主机、端口、认证凭据或服务端日志。'
     runtime.term.writeln(`\r\n\x1b[31m${message}\x1b[0m`)
   }
-  currentSocket.onclose = () => {
+  currentSocket.onclose = (event) => {
     if (runtime.socket !== currentSocket) return
     runtime.socket = undefined
     updateSession(id, { status: 'disconnected' })
-    runtime.term.writeln('\r\n\x1b[33m连接已断开。\x1b[0m')
+    const message = event?.code === 4001
+      ? '终端连续 60 分钟没有输入或输出，连接已自动断开，请点击重新连接。'
+      : '连接已断开。'
+    runtime.term.writeln(`\r\n\x1b[33m${message}\x1b[0m`)
   }
 }
 

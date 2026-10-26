@@ -155,6 +155,98 @@ func TestAssetTerminalHeartbeatsDoNotExtendIdleSession(t *testing.T) {
 	}
 }
 
+func TestAssetTerminalContinuousIOOutlivesOriginalIdleDeadline(t *testing.T) {
+	for _, mode := range []string{"input", "output"} {
+		t.Run(mode, func(t *testing.T) {
+			const idle = 200 * time.Millisecond
+			timing := assetTerminalTiming{idle: idle, heartbeat: 20 * time.Millisecond, peerTimeout: time.Second, sshTimeout: 100 * time.Millisecond}
+			serverErr := make(chan error, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+				if err != nil {
+					serverErr <- err
+					return
+				}
+				defer conn.Close()
+				activity := newAssetTerminalActivity()
+				stop := startAssetTerminalMaintenance(conn, activity, timing, func() error { return nil }, func() {})
+				defer stop()
+				reader, writer := io.Pipe()
+				defer reader.Close()
+				defer writer.Close()
+				var writeMu sync.Mutex
+				go func() { _ = writeAssetTerminalOutput(conn, &writeMu, reader, activity.observe) }()
+				if mode == "output" {
+					go func() {
+						defer writer.Close()
+						for i := 0; i < 20; i++ {
+							if _, err := writer.Write([]byte("output\r\n")); err != nil {
+								return
+							}
+							time.Sleep(30 * time.Millisecond)
+						}
+					}()
+				}
+				for {
+					_, data, err := conn.ReadMessage()
+					if err != nil {
+						serverErr <- nil
+						return
+					}
+					activity.observe(data)
+				}
+			}))
+			defer server.Close()
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			start := time.Now()
+			inputErr := make(chan error, 1)
+			if mode == "input" {
+				go func() {
+					for i := 0; i < 20; i++ {
+						if err := conn.WriteMessage(websocket.BinaryMessage, []byte("x")); err != nil {
+							inputErr <- err
+							return
+						}
+						time.Sleep(30 * time.Millisecond)
+					}
+					inputErr <- nil
+				}()
+			}
+			var output int
+			for {
+				_, data, err := conn.ReadMessage() // Also handles Ping/Pong.
+				output += len(data)
+				if err == nil {
+					continue
+				}
+				var closed *websocket.CloseError
+				if !errors.As(err, &closed) || closed.Code != assetTerminalIdleCloseCode {
+					t.Fatalf("unexpected close: %v", err)
+				}
+				if elapsed := time.Since(start); elapsed < 3*idle {
+					t.Fatalf("active %s closed at original deadline: %v", mode, elapsed)
+				}
+				break
+			}
+			if mode == "input" {
+				if err := <-inputErr; err != nil {
+					t.Fatal(err)
+				}
+			} else if output != 20*len("output\r\n") {
+				t.Fatalf("lost real terminal output: %d bytes", output)
+			}
+			if err := <-serverErr; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestAssetTerminalBlockedSSHHeartbeatClosesOwnedTransport(t *testing.T) {
 	release := make(chan struct{})
 	finished := make(chan struct{})

@@ -93,10 +93,19 @@ async function renewAccessToken(force = false) {
     }).then((response) => {
       const payload = response.data
       if (payload?.code !== 200 || !payload.data?.token) {
-        throw new Error(payload?.message || 'token refresh failed')
+        const error = new Error(payload?.message || 'token refresh failed')
+        error.response = response
+        throw error
       }
       setToken(payload.data.token, payload.data.accessTokenExpiresAt, payload.data.sessionExpiresAt)
       return payload.data.token
+    }).catch((error) => {
+      // Only a rejected refresh credential proves that the login has ended.
+      // A timeout/5xx at hourly renewal must not unmount active terminals.
+      if (error.response?.status === 401 || error.response?.data?.code === 401) {
+        expireLocalSession(error.response?.data?.message)
+      }
+      throw error
     }).finally(() => {
       refreshPromise = null
     })
@@ -133,9 +142,9 @@ http.interceptors.response.use(
         config.headers = config.headers || {}
         config.headers.Authorization = `Bearer ${token}`
         return http(config)
-      } catch {
-        expireLocalSession()
-        return Promise.reject(new Error(res?.message || '登录已过期'))
+      } catch (refreshError) {
+        if (getToken() && !config.silent) ElMessage.error('登录续期暂时失败，请稍后重试')
+        return Promise.reject(refreshError)
       }
     }
     if (res?.code === 401) expireLocalSession(res.message)
@@ -152,7 +161,9 @@ if (typeof window !== 'undefined') {
     if (getSessionExpiresAt() && Date.now() >= getSessionExpiresAt()) {
       expireLocalSession()
     } else if (getToken()) {
-      renewAccessToken().catch(() => expireLocalSession())
+      // Retry on the next tick/request after a temporary transport failure.
+      // renewAccessToken handles definitive authentication rejection itself.
+      renewAccessToken().catch(() => {})
     }
   }, 60 * 1000)
 }

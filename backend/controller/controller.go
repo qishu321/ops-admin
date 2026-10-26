@@ -77,8 +77,7 @@ func (ctl *Controller) RefreshToken(c *gin.Context) {
 	}
 	data, nextRefreshToken, err := ctl.service.RefreshSession(refreshToken, reportedAt)
 	if err != nil {
-		clearRefreshCookie(c)
-		httpx.Failed(c, http.StatusUnauthorized, "登录已过期，请重新登录")
+		writeRefreshSessionError(c, err)
 		return
 	}
 	setRefreshCookie(c, nextRefreshToken, sessionCookieMaxAge(data))

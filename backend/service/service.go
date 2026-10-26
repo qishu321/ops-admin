@@ -387,13 +387,20 @@ func (s *Service) Login(req LoginRequest, ip string, browser string, osName stri
 	}, refreshToken, nil
 }
 
+// ErrRefreshSessionRejected marks a definitive credential/session rejection.
+// Storage outages must remain retryable and must not destroy the refresh cookie.
+var ErrRefreshSessionRejected = errors.New("登录会话无效")
+
 func (s *Service) RefreshSession(refreshToken string, reportedActivityAt time.Time) (map[string]any, string, error) {
 	if strings.TrimSpace(refreshToken) == "" {
-		return nil, "", errors.New("刷新凭证缺失")
+		return nil, "", fmt.Errorf("%w: 刷新凭证缺失", ErrRefreshSessionRejected)
 	}
 	var session model.AuthSession
 	if err := s.db.Where("refresh_token_hash = ?", auth.HashOpaqueToken(refreshToken)).First(&session).Error; err != nil {
-		return nil, "", errors.New("登录会话无效")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "", ErrRefreshSessionRejected
+		}
+		return nil, "", fmt.Errorf("load refresh session: %w", err)
 	}
 	now := time.Now()
 	lastActivityAt := session.LastActivityAt
@@ -401,12 +408,18 @@ func (s *Service) RefreshSession(refreshToken string, reportedActivityAt time.Ti
 		lastActivityAt = reportedActivityAt
 	}
 	if session.RevokedAt != nil || auth.SessionExpired(now, lastActivityAt, session.ExpiresAt, session.RememberLogin) {
-		return nil, "", errors.New("登录已过期")
+		return nil, "", fmt.Errorf("%w: 登录已过期", ErrRefreshSessionRejected)
 	}
 
 	var admin model.Admin
-	if err := s.db.First(&admin, session.AdminID).Error; err != nil || admin.Status != 1 {
-		return nil, "", errors.New("账号不可用")
+	if err := s.db.First(&admin, session.AdminID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "", fmt.Errorf("%w: 账号不可用", ErrRefreshSessionRejected)
+		}
+		return nil, "", fmt.Errorf("load refresh account: %w", err)
+	}
+	if admin.Status != 1 {
+		return nil, "", fmt.Errorf("%w: 账号不可用", ErrRefreshSessionRejected)
 	}
 	if err := s.db.Model(&model.AuthSession{}).Where("id = ? AND revoked_at IS NULL", session.ID).Updates(map[string]any{
 		"last_activity_at": lastActivityAt,

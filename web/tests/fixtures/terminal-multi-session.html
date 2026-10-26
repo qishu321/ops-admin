@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>终端多会话回归验证</title>
+<style>
+body { margin: 0; background: #edf2f8; font-family: Arial, sans-serif; }
+.fixture-banner { height: 48px; box-sizing: border-box; padding: 14px 20px; color: #274563; background: white; font-size: 14px; }
+#app { display: flex; min-height: 0; height: calc(100vh - 48px); padding: 18px; box-sizing: border-box; }
+</style>
+<header class="fixture-banner">终端多会话回归验证 · 真实页面组件 / 模拟传输 · 不连接实际服务器</header>
+<div id="app"></div>
+<script type="module">
+import { createApp, h } from 'vue'
+import ElementPlus from 'element-plus'
+import 'element-plus/dist/index.css'
+import '/src/style.css'
+import axios from 'axios'
+
+// This fixture can be opened through Vite at /tests/fixtures/terminal-multi-session.html.
+// All API calls and terminal sockets are intercepted in this document only.
+axios.defaults.adapter = async config => {
+  let list
+  if (config.url === '/api/v1/asset/hostGroup/list') list = [{id:1,name:'测试分组'}]
+  else if (config.url === '/api/v1/asset/host/list') list = [{id:1,hostName:'192.168.171.57',sshIp:'192.168.171.57',groupId:1}]
+  else throw new Error(`Unexpected fixture request: ${config.url}`)
+  return {config,status:200,statusText:'OK',headers:{},data:{code:200,data:{list}}}
+}
+let number = 0
+class FixtureSocket {
+  static OPEN = 1
+  readyState = 0
+  binaryType = 'arraybuffer'
+  command = ''
+  constructor() {
+    this.number = ++number
+    setTimeout(() => {
+      if (this.readyState === 3) return
+      this.readyState = 1
+      this.onopen?.()
+      this.output(`\r\n独立模拟连接 ${this.number}\r\nroot@demo:/data/session-${this.number}# `)
+    }, 20)
+  }
+  output(text) { this.onmessage?.({data:new TextEncoder().encode(text).buffer}) }
+  send(data) {
+    for (const character of data) {
+      if (character === '\r' || character === '\n') {
+        this.output(`\r\n[连接 ${this.number}] ${this.command}\r\nroot@demo:/data/session-${this.number}# `)
+        this.command = ''
+      } else {
+        this.command += character
+        this.output(character)
+      }
+    }
+  }
+  close() { this.readyState = 3; this.onclose?.({code:1000}) }
+}
+window.WebSocket = FixtureSocket
+// Match the app entry's import order (http and router share module bindings).
+await import('/src/router/index.js')
+const { default: TerminalPage } = await import('/src/views/assets/Terminal.vue')
+createApp({render:() => h(TerminalPage)}).use(ElementPlus).mount('#app')
+</script>
+</html>

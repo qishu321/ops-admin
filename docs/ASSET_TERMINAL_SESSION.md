@@ -73,3 +73,29 @@
 - 配色由组件自身变量限定，并处理项目全局弹窗/输入框样式的覆盖，不影响其他业务弹窗。输入区支持多行行号及滚动同步，保留原输入、取消和发送逻辑。
 - 验证页同时加载 `web/src/style.css` 与真实组件，核对实际全局样式下效果；三条模拟连接均收到hostname和uptime，未连接真实服务器。桌面无横向溢出，弹窗完整可见，无控制台错误。
 - 最终效果截图：`.tmp/asset-terminal-broadcast-redesign.png`。终端相关14项回归通过，发送逻辑未改动。
+
+## 2026-10-26：Vim 输入延迟与 SSH 窗口尺寸
+
+本轮按用户要求只修复问题1、2；保留5000行历史缓存和现有输出写入路径，输出超过5000行后的异常另行排查。
+
+### 原因与修复
+
+- Vim卡顿：`TerminalCommandFilter` 将方向键、Tab等标记为等待Shell回显，后续输入等待最长500ms；Vim界面不会提供普通Shell提示符。回归用例在旧实现中复现501ms等待。现在解析服务端DEC alternate-screen模式47/1047/1049（含分片和组合参数），全屏模式按键原样传递，切换模式时清除旧输入状态，退出后恢复Shell命令、历史回显与补全过滤。原始SSH输出字节不变。
+- 底部留白：旧实现仅调整浏览器xterm行列数，未通知远程PTY，且建连可能先使用34行×150列默认值。现在建连前先测量屏幕字符尺寸并适配容器，扣除滚动条宽度；窗口/容器变化、标签切换、重新激活时将当前会话行列数同步到该会话的SSH `WindowChange`。
+- 自动适配验证还覆盖了动画帧回调参数：`requestAnimationFrame` 通过闭包调用尺寸同步，不把回调时间戳误当成会话ID。该用例也经过先失败后通过验证。
+- 避免未显示的会话被适配为0行0列；相同尺寸不重复发送，重新连接清除协商/尺寸缓存。尺寸控制不计入真实终端输入，不延长60分钟空闲期限。
+
+### 消息兼容与文件
+
+- 新前端请求 `protocol=2`，收到服务端文本ready确认后才发送文本resize控制消息；输入始终为UTF-8二进制帧，粘贴JSON也不会被当成控制消息。服务端校验rows/cols范围，调用该连接拥有的SSH Session；控制消息不进入stdin或命令过滤。
+- 老前端仍可连接新后端，保留原始输入协议。新前端连接老后端时没有ready确认，不发送控制JSON，二进制输入仍兼容；实时PTY调整需要更新后端。
+- 未强制使用WebSocket subprotocol请求头，避免旧服务端不返回该头时浏览器拒绝握手，参见 [WebSockets Standard 的握手检查](https://websockets.spec.whatwg.org/#the-websocket-protocol)。
+- 涉及：`backend/service/terminal_command_filter.go`、`terminal_command_screen.go`；`backend/controller/controller.go`、新增 `asset_terminal_input.go`；`web/src/views/assets/Terminal.vue`。
+
+### 验证与生效
+
+- 前端全量191项：189通过、0失败、2项既有告警规则数据缺失跳过；`npm run build`通过。构建保留既有VueUse注释和大chunk警告。
+- `go test ./...`、`go vet ./...`、`go build ./...`通过。历史/补全过滤测试仍通过；新增Vim输入、离开全屏恢复过滤、分片/组合模式、控制帧校验与JSON字面输入测试。
+- 使用本机临时监听的真实加密SSH连接，验证WebSocket尺寸消息被转换为48×123、72×160的SSH window-change请求，控制内容没有混入stdin。测试不连接用户服务器。
+- 浏览器使用真实xterm组件和模拟PTY：可用高度变化使PTY在49×124与39×124之间同步；编辑状态栏距终端底部约25px（padding及不足一行的空间），没有三分之一留白；切换同主机两个会话后分别适配，不修改其他会话的窗口。截图：`.tmp/asset-terminal-vim-resize-fixed.png`。
+- 浏览器测试是模拟编辑界面；未在真实服务器上启动Vim编辑用户文件。本轮没有主动重启运行中的后端，以免断开现有SSH会话。完整修复需更新前端、重启后端，并新建终端连接后启用；已有连接不能热更新后台过滤器。

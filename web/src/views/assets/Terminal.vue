@@ -31,6 +31,7 @@ const downloadItems = ref([])
 const downloadLoading = ref(false)
 const downloading = ref(false)
 const MAX_UPLOAD_SIZE = 500 * 1024 * 1024
+const TERMINAL_PROTOCOL = 'ops-admin-terminal-v2'
 const broadcastDialogVisible = ref(false)
 const broadcastSending = ref(false)
 
@@ -157,6 +158,7 @@ function createTerminal(id) {
   const runtime = { term, socket: undefined, inputDisposable: undefined, commandLine: '', promptBuffer: '', currentDirectory: '~' }
   runtimes.set(id, runtime)
   term.open(element)
+  runtime.resizeDisposable = term.onResize(() => sendTerminalResize(runtime))
   runtime.inputDisposable = term.onData((data) => sendTerminalInput(runtime, data))
   term.focus()
   scheduleTerminalSizeSync()
@@ -164,13 +166,18 @@ function createTerminal(id) {
 
 function sendTerminalInput(runtime, data) {
   if (runtime?.socket?.readyState !== WebSocket.OPEN) return false
-  if (shouldBlockZmodemCommand(runtime, data)) {
-    runtime.socket.send('\x15')
+  if (runtime.term.buffer?.active?.type !== 'alternate' && shouldBlockZmodemCommand(runtime, data)) {
+    sendSocketInput(runtime.socket, '\x15')
     runtime.term.writeln('\r\n\x1b[33mWeb 终端不支持 rz / sz 命令，请使用上传文件或下载文件功能。\x1b[0m')
     return false
   }
-  runtime.socket.send(data)
+  sendSocketInput(runtime.socket, data)
   return true
+}
+
+function sendSocketInput(socket, data) {
+  // Binary input also works with the legacy backend, even before v2 is ready.
+  socket.send(new TextEncoder().encode(data))
 }
 
 function shouldBlockZmodemCommand(runtime, data) {
@@ -217,10 +224,13 @@ function connectSocket(id) {
   const runtime = runtimes.get(id)
   if (!session || !runtime) return
   disconnectSession(id, false)
+  runtime.lastSentSize = undefined
+  runtime.protocol = ''
+  syncTerminalSize(id)
   updateSession(id, { status: 'connecting' })
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const token = encodeURIComponent(getToken())
-  const url = `${protocol}://${window.location.host}/api/v1/asset/terminal/ws?hostId=${session.host.id}&rows=${runtime.term.rows || 34}&cols=${runtime.term.cols || 150}&token=${token}`
+  const url = `${protocol}://${window.location.host}/api/v1/asset/terminal/ws?hostId=${session.host.id}&rows=${runtime.term.rows || 34}&cols=${runtime.term.cols || 150}&token=${token}&protocol=2`
   const currentSocket = new WebSocket(url)
   currentSocket.binaryType = 'arraybuffer'
   // Keep decoder state across frames, but never across SSH connections.
@@ -231,6 +241,8 @@ function connectSocket(id) {
     if (runtime.socket !== currentSocket) return
     socketOpened = true
     updateSession(id, { status: 'connected' })
+    syncTerminalSize(id)
+    sendTerminalResize(runtime)
     runtime.term.writeln(`\x1b[32m欢迎使用 SSH 终端，正在连接 ${session.host.sshIp || session.host.hostName} ...\x1b[0m`)
     if (activeSessionId.value === id) {
       scheduleTerminalSizeSync()
@@ -239,6 +251,16 @@ function connectSocket(id) {
   }
   currentSocket.onmessage = (event) => {
     if (runtime.socket === currentSocket) {
+      if (typeof event.data === 'string' && !runtime.protocol) {
+        let control
+        try { control = JSON.parse(event.data) } catch { /* Legacy text output. */ }
+        if (control?.type === 'ready' && control.protocol === TERMINAL_PROTOCOL) {
+          runtime.protocol = TERMINAL_PROTOCOL
+          syncTerminalSize(id)
+          sendTerminalResize(runtime)
+          return
+        }
+      }
       const output = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data
       const promptText = typeof output === 'string' ? output : outputDecoder.decode(output, { stream: true })
       trackPromptDirectory(runtime, promptText)
@@ -409,6 +431,7 @@ function disposeRuntime(id) {
   if (!runtime) return
   disconnectSession(id, false)
   runtime.inputDisposable?.dispose()
+  runtime.resizeDisposable?.dispose()
   runtime.term?.dispose()
   runtimes.delete(id)
   terminalElements.delete(id)
@@ -428,23 +451,38 @@ function bindTerminalResize() {
 }
 function scheduleTerminalSizeSync() {
   cancelAnimationFrame(resizeFrame)
-  resizeFrame = requestAnimationFrame(syncTerminalSize)
+  resizeFrame = requestAnimationFrame(() => syncTerminalSize())
 }
-function syncTerminalSize() {
-  const id = activeSessionId.value
+function syncTerminalSize(id = activeSessionId.value) {
   const runtime = id && runtimes.get(id)
   const element = id && terminalElements.get(id)
-  if (!runtime || !element) return
+  if (!runtime || !element?.clientWidth || !element?.clientHeight) return
   const style = window.getComputedStyle(element)
-  const width = element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+  const viewport = element.querySelector('.xterm-viewport')
+  const scrollbar = viewport ? Math.max(0, viewport.offsetWidth - viewport.clientWidth) : 0
+  const width = element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - scrollbar
   const height = element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
-  if (!width || !height) return
+  if (width <= 0 || height <= 0) return
   const screen = element.querySelector('.xterm-screen')
-  const cellWidth = screen?.clientWidth ? screen.clientWidth / runtime.term.cols : 8.2
-  const cellHeight = screen?.clientHeight ? screen.clientHeight / runtime.term.rows : 18
-  const cols = Math.max(80, Math.floor(width / cellWidth))
-  const rows = Math.max(20, Math.floor(height / cellHeight))
+  // Use xterm's measured screen, never a guessed font/line height.
+  if (!screen?.clientWidth || !screen?.clientHeight) return
+  const cellWidth = screen.clientWidth / runtime.term.cols
+  const cellHeight = screen.clientHeight / runtime.term.rows
+  const cols = Math.min(1000, Math.max(2, Math.floor(width / cellWidth)))
+  const rows = Math.min(1000, Math.max(1, Math.floor(height / cellHeight)))
   if (runtime.term.cols !== cols || runtime.term.rows !== rows) runtime.term.resize(cols, rows)
+  sendTerminalResize(runtime)
+}
+function sendTerminalResize(runtime) {
+  const socket = runtime.socket
+  if (socket?.readyState !== WebSocket.OPEN || runtime.protocol !== TERMINAL_PROTOCOL) return
+  const { rows, cols } = runtime.term
+  const size = `${rows}x${cols}`
+  if (runtime.lastSentSize === size) return
+  try {
+    socket.send(JSON.stringify({ type: 'resize', rows, cols }))
+    runtime.lastSentSize = size
+  } catch { /* A closing socket will be handled by onclose; retry on the next fit. */ }
 }
 
 function handleTabClosed(event) { if (event.detail?.path === '/assets/terminal') closeAllSessions() }

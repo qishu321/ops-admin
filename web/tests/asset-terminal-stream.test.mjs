@@ -22,6 +22,7 @@ function connect() {
     activeSessionId: { value: null },
     window: { location: { protocol: 'http:', host: 'localhost' } },
     getToken: () => 'test-token', disconnectSession: () => {}, updateSession: () => {},
+    TERMINAL_PROTOCOL:'ops-admin-terminal-v2', syncTerminalSize() {}, sendTerminalResize() {},
     trackPromptDirectory: (_, output) => prompts.push(output)
   })
   vm.runInContext(`${connectSocket}\nconnectSocket('host-1')`, context)

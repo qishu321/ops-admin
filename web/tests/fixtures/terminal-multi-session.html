@@ -5,9 +5,11 @@
 <style>
 body { margin: 0; background: #edf2f8; font-family: Arial, sans-serif; }
 .fixture-banner { height: 48px; box-sizing: border-box; padding: 14px 20px; color: #274563; background: white; font-size: 14px; }
+.fixture-banner { display:flex; align-items:center; justify-content:space-between; gap:12px; }.fixture-banner button { border:1px solid #9bacbe; border-radius:4px; background:white; padding:4px 8px; cursor:pointer; }#pty-status { font-size:12px; }
 #app { display: flex; min-height: 0; height: calc(100vh - 48px); padding: 18px; box-sizing: border-box; }
+#app.compact { height:calc(100vh - 208px); }
 </style>
-<header class="fixture-banner">终端多会话回归验证 · 真实页面组件 / 模拟传输 · 不连接实际服务器</header>
+<header class="fixture-banner"><span>真实终端组件 / 模拟传输，不连接实际服务器</span><span id="pty-status"></span><button id="toggle-size">切换可用高度</button></header>
 <div id="app"></div>
 <script type="module">
 import { createApp, h } from 'vue'
@@ -26,24 +28,47 @@ axios.defaults.adapter = async config => {
   return {config,status:200,statusText:'OK',headers:{},data:{code:200,data:{list}}}
 }
 let number = 0
+const sockets=[]
+function showSizes() { document.querySelector('#pty-status').textContent=sockets.map(socket=>`会话${socket.number} PTY ${socket.rows}×${socket.cols}`).join(' · ') }
+document.querySelector('#toggle-size').addEventListener('click',()=>document.querySelector('#app').classList.toggle('compact'))
 class FixtureSocket {
   static OPEN = 1
   readyState = 0
   binaryType = 'arraybuffer'
   command = ''
-  constructor() {
+  constructor(url) {
     this.number = ++number
+    this.rows=Number(new URL(url).searchParams.get('rows'));this.cols=Number(new URL(url).searchParams.get('cols'))
+    sockets.push(this)
     setTimeout(() => {
       if (this.readyState === 3) return
       this.readyState = 1
       this.onopen?.()
+      this.onmessage?.({data:JSON.stringify({type:'ready',protocol:'ops-admin-terminal-v2'})})
+      showSizes()
       this.output(`\r\n独立模拟连接 ${this.number}\r\nroot@demo:/data/session-${this.number}# `)
     }, 20)
   }
   output(text) { this.onmessage?.({data:new TextEncoder().encode(text).buffer}) }
+  drawEditor() {
+    this.output(`\x1b[2J\x1b[HapiVersion: v1\r\nkind: ConfigMap\r\nmetadata:\r\n  name: terminal-size-regression\x1b[${this.rows};1Hfixture.yaml  1,1  All | PTY ${this.rows} x ${this.cols}`)
+  }
   send(data) {
+    if (typeof data==='string') {
+      const control=JSON.parse(data)
+      if (control.type!=='resize') throw new Error('unexpected control frame')
+      this.rows=control.rows;this.cols=control.cols;showSizes()
+      if(this.editor) this.drawEditor()
+      return
+    }
+    data=new TextDecoder().decode(data)
+    if(this.editor) {
+      if(data.includes(':q!\r')) {this.editor=false;this.output('\x1b[?1049l\r\nroot@demo:~# ')}
+      return
+    }
     for (const character of data) {
       if (character === '\r' || character === '\n') {
+        if(this.command.startsWith('vim ')) {this.command='';this.editor=true;this.output('\x1b[?1049h');this.drawEditor();continue}
         this.output(`\r\n[连接 ${this.number}] ${this.command}\r\nroot@demo:/data/session-${this.number}# `)
         this.command = ''
       } else {

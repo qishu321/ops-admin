@@ -17,26 +17,36 @@ const renderer = createRenderer({
 function mountTerminal(adapters = {}) {
   const events = new EventTarget()
   events.location = { protocol: 'http:', host: 'localhost' }
+  events.getComputedStyle = () => ({paddingLeft:'12px',paddingRight:'12px',paddingTop:'10px',paddingBottom:'10px'})
   let closes = 0, creates = 0, state
   class Socket {
     static OPEN = 1
     readyState = 1
     sent = []
-    constructor() { creates++ }
-    send(data) { this.sent.push(data) }
+    rawSent = []
+    constructor(url) { creates++; this.url = url }
+    send(data) { this.rawSent.push(data); this.sent.push(typeof data === 'string' ? data : new TextDecoder().decode(data)) }
     close() { closes++; this.readyState = 3 }
   }
   class Xterm {
     rows = 30; cols = 120
     writes = []
-    open() {} focus() {} dispose() { this.disposed = true }
+    open(element) {
+      if (adapters.geometry) {
+        Object.defineProperties(element, {clientWidth:{get:()=>adapters.geometry.width},clientHeight:{get:()=>adapters.geometry.height}})
+        element.querySelector = selector => selector === '.xterm-screen' ? {clientWidth:this.cols*8,clientHeight:this.rows*16} : selector === '.xterm-viewport' ? {offsetWidth:adapters.geometry.width-24,clientWidth:adapters.geometry.width-36} : null
+      }
+    }
+    resize(cols,rows) {this.cols=cols;this.rows=rows;this.onSize?.({cols,rows})}
+    focus() {} dispose() { this.disposed = true }
     writeln(data) { this.writes.push(data) } write(data) { this.writes.push(data) }
     clear() { this.writes = [] }
+    onResize(fn) { this.onSize = fn; return { dispose: () => { this.onSize = undefined } } }
     onData(fn) { this.input = fn; return { dispose: () => { this.input = undefined } } }
   }
   const context = vm.createContext({
     computed, ref, reactive, nextTick, onActivated, onMounted, onBeforeUnmount,
-    window: events, WebSocket: Socket, Terminal: Xterm, TextDecoder, ArrayBuffer, Uint8Array, FormData,
+    window: events, WebSocket: Socket, Terminal: Xterm, TextEncoder, TextDecoder, ArrayBuffer, Uint8Array, FormData,
     getToken: () => 'test-token', useAccessRefresh() {},
     ElMessage: { warning() {}, error() {}, success() {} },
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
@@ -45,7 +55,7 @@ function mountTerminal(adapters = {}) {
     ...adapters,
   })
   const TerminalPage = defineComponent({setup() {
-    state = vm.runInContext(`${setup}; ({sessions, activeSessionId, runtimes, openHost, setTerminalElement, activateSession, closeSession, closeOtherSessions, reconnect, disconnect, clearTerminal, currentTerminalDirectory, openUploadDialog, uploadFile, uploadDirectory, submitUpload, openDownloadDialog, downloadDirectory, downloadItems, sessionLabel, openBroadcastDialog, sendBroadcastCommand, broadcastDialogVisible, broadcastTargets})`, context)
+    state = vm.runInContext(`${setup}; ({sessions, activeSessionId, runtimes, openHost, setTerminalElement, activateSession, closeSession, closeOtherSessions, reconnect, disconnect, clearTerminal, currentTerminalDirectory, openUploadDialog, uploadFile, uploadDirectory, submitUpload, openDownloadDialog, downloadDirectory, downloadItems, sessionLabel, openBroadcastDialog, sendBroadcastCommand, broadcastDialogVisible, broadcastTargets, syncTerminalSize})`, context)
     return () => h('div', null, state.sessions.value.map(session => h('div', {key:session.id, ref:el => state.setTerminalElement(session.id, el)})))
   }})
   const visible = ref(true)
@@ -254,4 +264,34 @@ test('empty or cancelled broadcast never sends and unsupported transfers use the
   view.state.sendBroadcastCommand('rz')
   assert.deepEqual(runtime.socket.sent, ['\x15'])
   assert.match(runtime.term.writes.at(-1), /Web 终端不支持 rz \/ sz/)
+})
+
+test('connect fits before SSH startup and resize controls wait for server readiness, resetting on reconnect', async (t) => {
+  const geometry={width:1024,height:800}
+  const view=mountTerminal({geometry})
+  t.after(()=>view.app.unmount())
+  await view.state.openHost({id:1,hostName:'host'})
+  const runtime=[...view.state.runtimes.values()][0]
+  const url=new URL(runtime.socket.url)
+  assert.equal(url.searchParams.get('rows'),'48')
+  assert.equal(url.searchParams.get('cols'),'123')
+  assert.equal(url.searchParams.get('protocol'),'2')
+  runtime.socket.onopen()
+  assert.equal(runtime.socket.sent.length,0,'no control JSON before the backend acknowledges v2')
+  runtime.socket.onmessage({data:JSON.stringify({type:'ready',protocol:'ops-admin-terminal-v2'})})
+  assert.deepEqual(JSON.parse(runtime.socket.sent[0]),{type:'resize',rows:48,cols:123})
+  assert.equal(runtime.term.writes.length,1,'ready frame must not appear in the terminal')
+  geometry.height=500
+  view.state.syncTerminalSize()
+  assert.deepEqual(JSON.parse(runtime.socket.sent[1]),{type:'resize',rows:30,cols:123})
+  view.state.syncTerminalSize()
+  assert.equal(runtime.socket.sent.length,2,'unchanged dimensions are not resent')
+  runtime.term.input('{"type":"resize"}\r')
+  assert.equal(runtime.socket.sent[2],'{"type":"resize"}\r')
+  assert.ok(runtime.socket.rawSent[2] instanceof Uint8Array,'pasted JSON must remain binary input, never a control frame')
+  view.state.reconnect()
+  assert.equal(runtime.protocol,'')
+  runtime.socket.onopen()
+  runtime.socket.onmessage({data:JSON.stringify({type:'ready',protocol:'ops-admin-terminal-v2'})})
+  assert.deepEqual(JSON.parse(runtime.socket.sent[0]),{type:'resize',rows:30,cols:123})
 })

@@ -52,6 +52,9 @@ func (f *TerminalCommandFilter) reset() {
 func (f *TerminalCommandFilter) Feed(input []byte) ([]byte, []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.screen.alternate {
+		return append([]byte(nil), input...), nil
+	}
 	f.syncRemoteLine()
 
 	out := []byte{}
@@ -231,7 +234,13 @@ func (f *TerminalCommandFilter) ObserveOutput(data []byte) {
 	defer f.mu.Unlock()
 	f.observed = true
 	f.lastOutputAt = time.Now()
+	modeVersion := f.screen.modeVersion
 	f.screen.observe(data)
+	if modeVersion != f.screen.modeVersion {
+		// Do not carry a shell recall/paste into Vim, or editor text back into
+		// the shell. The normal filter resumes as soon as the server exits TUI.
+		f.reset()
+	}
 	if f.remotePending {
 		_, _, ok := f.screen.command()
 		f.remoteReady = ok
@@ -257,7 +266,7 @@ func (f *TerminalCommandFilter) waitRemoteLine() {
 	defer deadline.Stop()
 	for {
 		f.mu.Lock()
-		if !f.remotePending || !f.observed {
+		if f.screen.alternate || !f.remotePending || !f.observed {
 			f.mu.Unlock()
 			return
 		}

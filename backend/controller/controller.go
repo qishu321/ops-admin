@@ -851,6 +851,14 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
+	protocol := ""
+	if c.Query("protocol") == "2" {
+		protocol = assetTerminalProtocolV2
+		if err := conn.WriteJSON(map[string]string{"type": "ready", "protocol": protocol}); err != nil {
+			return
+		}
+	}
+
 	commandFilter := ctl.service.NewTerminalCommandFilter()
 	activity := newAssetTerminalActivity()
 	stopMaintenance := startAssetTerminalMaintenance(conn, activity, defaultAssetTerminalTiming, func() error {
@@ -873,9 +881,16 @@ func (ctl *Controller) AssetTerminalWS(c *gin.Context) {
 	}()
 
 	for {
-		_, message, err := conn.ReadMessage()
+		kind, message, err := conn.ReadMessage()
 		if err != nil {
 			return
+		}
+		message, err = assetTerminalInput(kind, message, protocol, terminal.Session.WindowChange)
+		if err != nil {
+			return
+		}
+		if len(message) == 0 {
+			continue
 		}
 		activity.observe(message)
 		notices, err := commandFilter.WriteInput(message, terminal.Stdin)

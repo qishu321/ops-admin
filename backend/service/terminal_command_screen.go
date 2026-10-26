@@ -11,11 +11,13 @@ import (
 // word. Observe the server's echo, not just the client's arrow/tab bytes.
 // This is a bounded single logical line renderer, not a terminal emulator.
 type terminalCommandScreen struct {
-	line      []rune
-	cursor    int
-	escape    string
-	unicode   []byte
-	promptEnd int
+	line        []rune
+	cursor      int
+	escape      string
+	unicode     []byte
+	promptEnd   int
+	alternate   bool
+	modeVersion uint64
 }
 
 var terminalPromptEnd = regexp.MustCompile(`^[^\r\n]*?[$#>%] `)
@@ -47,6 +49,11 @@ func (s *terminalCommandScreen) observe(data []byte) {
 			if len(s.escape) > 128 {
 				s.escape = ""
 			}
+			continue
+		}
+		// Full-screen applications use their own input grammar. Keep parsing
+		// escape sequences so leaving the alternate screen is detected.
+		if s.alternate && b != 27 {
 			continue
 		}
 		switch b {
@@ -98,6 +105,20 @@ func (s *terminalCommandScreen) put(r rune) {
 func (s *terminalCommandScreen) csi(sequence string) {
 	final := sequence[len(sequence)-1]
 	raw := sequence[:len(sequence)-1]
+	if strings.HasPrefix(raw, "?") && (final == 'h' || final == 'l') {
+		for _, mode := range strings.Split(raw[1:], ";") {
+			if mode != "47" && mode != "1047" && mode != "1049" {
+				continue
+			}
+			if enabled := final == 'h'; enabled != s.alternate {
+				s.alternate = enabled
+				s.modeVersion++
+				s.line, s.unicode = nil, nil
+				s.cursor, s.promptEnd = 0, 0
+			}
+		}
+		return
+	}
 	if strings.ContainsAny(raw, "?<>=!") {
 		return
 	}

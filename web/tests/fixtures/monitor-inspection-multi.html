@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多数据源巡检验证</title>
+<style>
+.fixture-banner { padding:12px 20px; background:#e7effa; color:#244264; font:13px "Microsoft YaHei",sans-serif; }
+#app { padding:18px; }
+</style>
+<div class="fixture-banner">真实巡检页面组件 / 模拟数据源与报告接口，不查询实际监控系统</div>
+<div id="app"></div>
+<script type="module">
+import { createApp } from 'vue'
+import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
+import ElementPlus from 'element-plus'
+import 'element-plus/dist/index.css'
+import '/src/style.css'
+import axios from 'axios'
+import { boardSources, boardPanels, createBoardReport } from './inspection-board-data.mjs'
+
+const scenario = new URLSearchParams(location.search)
+const board = scenario.has('board')
+const dashboard={id:10,name:'生产环境基础巡检',layout:'list',status:1,panelCount:board ? 17 : 2,description:'对多个集群执行同一套巡检规则，结果按数据源分别记录。'}
+const sources=board ? boardSources : [{id:1,name:'上海集群 · Prometheus',type:'prometheus',isDefault:true,status:1},{id:2,name:'东京集群 · VictoriaMetrics',type:'victoriametrics',status:1}]
+const panels=board ? boardPanels : [{id:11,title:'CPU 使用率',promql:'avg(cpu_usage_percent)',unit:'%',category:'主机资源'},{id:12,title:'内存使用率',promql:'avg(memory_usage_percent)',unit:'%',category:'主机资源'}].map(panel=>({...panel,dashboardId:10,datasourceId:1,sort:panel.id,status:1,chartType:'stat',inspectionKind:'rule',reducer:'max',operator:'gte',warningValue:80,criticalValue:90,noDataState:'warning'}))
+let latest={run:null,results:[]}
+let latestReads = 0
+if (board && scenario.has('saved')) {
+  const endAt = Math.floor(Date.now() / 1000)
+  latest = createBoardReport({ datasourceIds: [1, 2, 3], startAt: endAt - 3600, endAt }, scenario.has('error'))
+}
+axios.defaults.adapter=async config=>{
+  let data
+  if(config.url==='/api/v1/monitor/dashboard/list') data={list:[dashboard],total:1}
+  else if(config.url==='/api/v1/monitor/datasource/options') data=sources
+  else if(config.url==='/api/v1/monitor/dashboard/info') data={dashboard,panels}
+  else if(config.url==='/api/v1/monitor/inspection/run/latest') {
+    latestReads++
+    if (scenario.has('refresherror') && latestReads > 1) throw new Error('模拟报告读取失败')
+    data=latest
+  }
+  else if(config.url==='/api/v1/monitor/inspection/run') {
+    const payload=typeof config.data==='string'?JSON.parse(config.data):config.data
+    if (board) {
+      data=latest=createBoardReport(payload, scenario.has('error'))
+      return {config,status:200,statusText:'OK',headers:{},data:{code:200,data}}
+    }
+    const ids=payload.datasourceIds
+    const results=ids.flatMap(id=>panels.map(panel=>({id:id*100+panel.id,runId:88,panelId:panel.id,title:panel.title,promql:panel.promql,unit:panel.unit,category:panel.category,inspectionKind:panel.inspectionKind,reducer:panel.reducer,operator:panel.operator,warningValue:80,criticalValue:90,datasourceId:id,datasourceName:sources.find(item=>item.id===id).name,status:id===1?'healthy':panel.id===11?'danger':'warning',valueText:id===1?'42%':panel.id===11?'95%':'无数据',seriesCount:id===2&&panel.id===12?0:3})))
+    const run={id:88,dashboardId:10,dashboardName:dashboard.name,datasourceId:ids[0],datasourceName:sources.find(item=>item.id===ids[0]).name,datasourceIds:ids,datasourceNames:ids.map(id=>sources.find(item=>item.id===id).name),startAt:new Date(payload.startAt*1000).toISOString(),endAt:new Date(payload.endAt*1000).toISOString(),completedAt:new Date().toISOString(),durationMs:850,totalCount:results.length,healthyCount:results.filter(item=>item.status==='healthy').length,warningCount:results.filter(item=>item.status==='warning').length,dangerCount:results.filter(item=>item.status==='danger').length}
+    data=latest={run,results}
+  } else throw new Error(`Unexpected inspection fixture API: ${config.url}`)
+  return {config,status:200,statusText:'OK',headers:{},data:{code:200,data}}
+}
+// Import in app order to keep the shared http/router module bindings valid.
+await import('/src/router/index.js')
+const {default:InspectionPage}=await import('/src/views/monitor/dashboard/MonitorDashboard.vue')
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/monitor/inspections',component:InspectionPage}]})
+await router.push('/monitor/inspections')
+createApp(RouterView).use(router).use(ElementPlus).mount('#app')
+</script>
+</html>

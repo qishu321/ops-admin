@@ -332,24 +332,26 @@ func (MonitorDashboardPanel) TableName() string {
 // captured when the user explicitly executes an inspection; opening a scheme
 // never changes an existing report.
 type MonitorInspectionRun struct {
-	ID             uint       `json:"id" gorm:"primaryKey"`
-	DashboardID    uint       `json:"dashboardId" gorm:"index;not null"`
-	DashboardName  string     `json:"dashboardName" gorm:"size:128"`
-	DatasourceID   uint       `json:"datasourceId" gorm:"index;not null"`
-	DatasourceName string     `json:"datasourceName" gorm:"size:128"`
-	StartAt        time.Time  `json:"startAt" gorm:"index"`
-	EndAt          time.Time  `json:"endAt"`
-	Status         string     `json:"status" gorm:"size:24;index"`
-	TotalCount     int        `json:"totalCount"`
-	HealthyCount   int        `json:"healthyCount"`
-	WarningCount   int        `json:"warningCount"`
-	DangerCount    int        `json:"dangerCount"`
-	NoDataCount    int        `json:"noDataCount"`
-	DurationMs     int64      `json:"durationMs"`
-	Error          string     `json:"error" gorm:"type:text"`
-	CompletedAt    *time.Time `json:"completedAt"`
-	CreatedAt      time.Time  `json:"createTime"`
-	UpdatedAt      time.Time  `json:"updateTime"`
+	ID              uint       `json:"id" gorm:"primaryKey"`
+	DashboardID     uint       `json:"dashboardId" gorm:"index;not null"`
+	DashboardName   string     `json:"dashboardName" gorm:"size:128"`
+	DatasourceID    uint       `json:"datasourceId" gorm:"index;not null"`
+	DatasourceName  string     `json:"datasourceName" gorm:"size:128"`
+	DatasourceIDs   []uint     `json:"datasourceIds" gorm:"serializer:json;type:text"`
+	DatasourceNames []string   `json:"datasourceNames" gorm:"serializer:json;type:text"`
+	StartAt         time.Time  `json:"startAt" gorm:"index"`
+	EndAt           time.Time  `json:"endAt"`
+	Status          string     `json:"status" gorm:"size:24;index"`
+	TotalCount      int        `json:"totalCount"`
+	HealthyCount    int        `json:"healthyCount"`
+	WarningCount    int        `json:"warningCount"`
+	DangerCount     int        `json:"dangerCount"`
+	NoDataCount     int        `json:"noDataCount"`
+	DurationMs      int64      `json:"durationMs"`
+	Error           string     `json:"error" gorm:"type:text"`
+	CompletedAt     *time.Time `json:"completedAt"`
+	CreatedAt       time.Time  `json:"createTime"`
+	UpdatedAt       time.Time  `json:"updateTime"`
 }
 
 func (MonitorInspectionRun) TableName() string { return "monitor_inspection_run" }
@@ -358,6 +360,8 @@ type MonitorInspectionResult struct {
 	ID             uint      `json:"id" gorm:"primaryKey"`
 	RunID          uint      `json:"runId" gorm:"index;not null"`
 	PanelID        uint      `json:"panelId" gorm:"index;not null"`
+	DatasourceID   uint      `json:"datasourceId" gorm:"index;default:0"`
+	DatasourceName string    `json:"datasourceName" gorm:"size:128"`
 	Title          string    `json:"title" gorm:"size:128"`
 	Category       string    `json:"category" gorm:"size:64"`
 	InspectionKind string    `json:"inspectionKind" gorm:"size:24"`

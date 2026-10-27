@@ -73,6 +73,6 @@ export const deleteMonitorDashboard = (id) => http.delete('/api/v1/monitor/dashb
 export const saveMonitorDashboardPanel = (data) => http.post('/api/v1/monitor/dashboard/panel/save', data)
 export const deleteMonitorDashboardPanel = (id) => http.delete('/api/v1/monitor/dashboard/panel/delete', { data: { id } })
 export const queryMonitorDashboardPanel = (payload, config) => http.post('/api/v1/monitor/dashboard/panel/query', typeof payload === 'object' ? payload : { id: payload }, config)
-export const runMonitorInspection = (data) => http.post('/api/v1/monitor/inspection/run', data)
+export const runMonitorInspection = (data, config = {}) => http.post('/api/v1/monitor/inspection/run', data, { timeout: 60000, ...config })
 export const queryLatestMonitorInspectionRun = (dashboardId) => http.get('/api/v1/monitor/inspection/run/latest', { params: { dashboardId } })
 export const monitorInspectionRunInfo = (id) => http.get('/api/v1/monitor/inspection/run/info', { params: { id } })

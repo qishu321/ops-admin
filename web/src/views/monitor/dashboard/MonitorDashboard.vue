@@ -5,6 +5,7 @@ import DashboardToolbar from './components/DashboardToolbar.vue'
 import DashboardSummary from './components/DashboardSummary.vue'
 import DashboardGrid from './components/DashboardGrid.vue'
 import InspectionView from './components/InspectionView.vue'
+import InspectionToolbar from './components/inspection/InspectionToolbar.vue'
 import DashboardEditor from './components/DashboardEditor.vue'
 import PanelFocusDialog from './components/PanelFocusDialog.vue'
 import PanelEditor from './components/PanelEditor.vue'
@@ -13,12 +14,13 @@ const { loadError, retryLoad, loading, isListLayout, isK8sDashboard, activeDashb
 </script>
 
 <template>
-  <div class="dashboard-page" :class="{ 'is-dark': isDark }">
-    <DashboardWorkspace />
+  <div class="dashboard-page" :class="{ 'is-dark': isDark, 'is-inspection-page': isListLayout }">
+    <DashboardWorkspace v-if="!isListLayout || !isFullscreen" />
     <main class="dashboard-main observability-canvas" :class="{ 'is-k8s-dashboard': isK8sDashboard, 'is-presentation': isFullscreen }" v-loading="loading">
-      <DashboardToolbar />
+      <InspectionToolbar v-if="isListLayout && !isFullscreen" />
+      <DashboardToolbar v-else-if="!isListLayout" />
       <DashboardSummary />
-      <el-alert v-if="loadError" title="监控大屏加载失败" type="error" :closable="false" show-icon>
+      <el-alert v-if="loadError" :title="isListLayout ? '巡检方案加载失败' : '监控大屏加载失败'" type="error" :closable="false" show-icon>
         <p>{{ loadError }}</p>
         <el-button :loading="loading" @click="retryLoad">重新加载</el-button>
       </el-alert>
@@ -35,3 +37,4 @@ const { loadError, retryLoad, loading, isListLayout, isK8sDashboard, activeDashb
 
 <style scoped src="./styles/workspace.css"></style>
 <style src="./styles/theme.css"></style>
+<style src="./styles/inspection.css"></style>

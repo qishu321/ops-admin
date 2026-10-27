@@ -38,6 +38,7 @@ const { isDark } = useDashboardDomain('theme')
             :key="item.id"
             class="dashboard-item"
             :class="{ active: item.id === activeDashboardId }"
+            :aria-pressed="item.id === activeDashboardId"
             @click="loadDashboard(item.id)"
           >
             <span class="dashboard-item-icon"><el-icon><DataLine /></el-icon></span>
@@ -294,5 +295,21 @@ const { isDark } = useDashboardDomain('theme')
   .workspace-status { justify-content: flex-start; flex-wrap: wrap; }
   .dashboard-switcher { align-items: stretch; flex-direction: column; }
   .dashboard-switcher .create-screen-btn { width: auto; }
+}
+/* The inspection scheme switcher is navigation, secondary to the report below. */
+.is-inspection-workspace { box-shadow: none; border-radius: 10px; }
+.is-inspection-workspace .dashboard-switcher { background: transparent; padding: 0; }
+.is-inspection-workspace .dashboard-list { min-height: 42px; }
+.is-inspection-workspace .dashboard-item { min-width: 220px; flex: 0 0 auto; grid-template-columns: 24px minmax(80px, 1fr) auto; padding: 7px 10px; }
+.is-inspection-workspace .dashboard-item-arrow { display: none; }
+.is-inspection-workspace .dashboard-item-icon { width: 24px; height: 24px; color: var(--dash-accent) !important; background: transparent; }
+.is-inspection-workspace .dashboard-item.active { background: var(--inspect-accent-soft); border-color: transparent; box-shadow: none; }
+.is-inspection-workspace .dashboard-item.active::after { display: none; }
+.is-inspection-workspace .dashboard-switcher .create-screen-btn { min-width: 0; height: 34px; margin: 4px; background: transparent; border-color: var(--dash-border); color: var(--dash-accent); font-size: 12px; }
+@media (max-width: 760px) {
+  .is-inspection-workspace { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .is-inspection-workspace .workspace-status { grid-column: 1; grid-row: 2; padding: 0 4px 4px; }
+  .is-inspection-workspace .dashboard-switcher { grid-row: 1; }
+  .is-inspection-workspace .dashboard-item { min-width: 200px; }
 }
 </style>

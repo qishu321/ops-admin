@@ -37,7 +37,8 @@ export function useFullscreen() {
   }
 
   function onKeydown(event) {
-    if (event.key === 'Escape') exitPresentation()
+    // Let an open dialog/drawer consume Escape before leaving presentation mode.
+    if (event.key === 'Escape' && !event.defaultPrevented && !event.target?.closest?.('[role="dialog"]')) exitPresentation()
   }
 
   onMounted(() => {

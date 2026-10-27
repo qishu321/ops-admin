@@ -108,6 +108,7 @@ func riskLevel(path string, method string) string {
 		return "high"
 	}
 	highRiskPaths := []string{
+		"/k8s/deploy/start", "/k8s/deploy/stop",
 		"/database/sql", "/database/export", "/database/import", "/k8s/yaml", "/k8s/workload/images",
 		"/ops/quick", "/ops/job", "/ops/schedule", "/ops/application/pipeline/run",
 	}

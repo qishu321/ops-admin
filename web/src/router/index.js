@@ -33,6 +33,9 @@ import Gateway from '../views/assets/Gateway.vue'
 import TerminalLogin from '../views/assets/Terminal.vue'
 import K8s from '../views/assets/K8s.vue'
 import K8sClusterManage from '../views/assets/K8sClusterManage.vue'
+const K8sDeployList = () => import('../views/assets/k8s-deploy/K8sDeployList.vue')
+const K8sDeployWizard = () => import('../views/assets/k8s-deploy/K8sDeployWizard.vue')
+const K8sDeployDetail = () => import('../views/assets/k8s-deploy/K8sDeployDetail.vue')
 import K8sScalingPolicies from '../views/assets/K8sScalingPolicies.vue'
 import K8sPodTerminal from '../views/assets/K8sPodTerminal.vue'
 import AssetApplication from '../views/assets/Application.vue'
@@ -281,6 +284,10 @@ const routes = [
       { path: '/containers/services/logs', component: AssetServiceWorkloadLogs, meta: { title: '查看日志', app: 'containers', summary: '查看服务工作负载中 Pod 的 Kubernetes 日志。' } },
       { path: '/assets/services/:pathMatch(.*)*', redirect: (to) => `/containers/services/${to.params.pathMatch || ''}` },
       { path: '/containers/k8s', redirect: '/containers/k8s/clusters' },
+      { path: '/containers/k8s-deployments', component: K8sDeployList, meta: { title: 'K8s 部署', app: 'containers', adminOnly: true } },
+      { path: '/containers/k8s-deployments/create', component: K8sDeployWizard, meta: { title: '新建集群部署', app: 'containers', adminOnly: true } },
+      { path: '/containers/k8s-deployments/:id/edit', component: K8sDeployWizard, meta: { title: '配置集群部署', app: 'containers', adminOnly: true } },
+      { path: '/containers/k8s-deployments/:id', component: K8sDeployDetail, meta: { title: '部署详情', app: 'containers', adminOnly: true } },
       { path: '/containers/k8s/clusters', component: K8sClusterManage, meta: { title: '集群管理', app: 'containers' } },
       { path: '/containers/k8s/clusters/:id/detail', name: 'K8sClusterDetail', component: AssetDetail, props: { resourceType: 'k8s' }, meta: { title: '集群详情', app: 'containers' } },
       { path: '/containers/k8s/overview', component: K8s, meta: { title: '集群概览', app: 'containers' } },

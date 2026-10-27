@@ -165,7 +165,8 @@ export const appDefinitions = [
           { title: '配置与存储', titleKey: 'k8sConfigStorage', path: '/containers/k8s/config-storage', icon: 'Files', children: [] },
           { title: '监控详情', titleKey: 'k8sMonitoringDetails', path: '/containers/k8s/monitoring', icon: 'Monitor', children: [] }
         ]
-      }
+      },
+      { title: 'K8s 部署', path: '/containers/k8s-deployments', icon: 'Promotion', adminOnly: true, children: [] }
     ]
   },
   {

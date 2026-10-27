@@ -463,6 +463,7 @@ func seedApplicationMenus(db *gorm.DB) error {
 				{"网络", "/containers/k8s/network", "assets:k8s:advancednetwork", "Connection"},
 				{"工作负载伸缩", "/containers/k8s/scaling-policies", "assets:k8s:scalingpolicy", "TrendCharts"},
 				{"配置与存储", "/containers/k8s/config-storage", "assets:k8s:configstorage", "Files"},
+				{"K8s 部署", "/containers/k8s-deployments", "assets:k8s:deploy", "Promotion"},
 			},
 		},
 		{

@@ -24,6 +24,7 @@ type deployWarning struct{ message string }
 func (e *deployWarning) Error() string { return e.message }
 
 type deployProbe struct {
+	Interface string   `json:"interface"`
 	OS        string   `json:"os"`
 	Version   string   `json:"version"`
 	Arch      string   `json:"arch"`
@@ -349,7 +350,11 @@ func (s *Service) deployConnectivity(run model.K8sDeployRun, hosts []model.Asset
 }
 
 func deployProbeScript(c model.K8sDeployConfig, n model.K8sDeployNode) string {
-	params, _ := json.Marshal(map[string]any{"interface": n.Interface, "ip": n.IP, "version": c.Version, "repository": c.ImageRepository, "master": n.Role == "master", "builtinLB": c.BuiltinLB, "apiPort": c.APIPort, "runtimeDirectory": c.RuntimeDirectory, "vip": c.APIServer, "plugin": c.NetworkPlugin, "metrics": c.MetricsServer})
+	return deployProbeScriptOptions(c, n, false)
+}
+
+func deployProbeScriptOptions(c model.K8sDeployConfig, n model.K8sDeployNode, joining bool) string {
+	params, _ := json.Marshal(map[string]any{"interface": n.Interface, "ip": n.IP, "version": c.Version, "repository": c.ImageRepository, "master": n.Role == "master", "builtinLB": c.BuiltinLB, "apiPort": c.APIPort, "runtimeDirectory": c.RuntimeDirectory, "vip": c.APIServer, "plugin": c.NetworkPlugin, "metrics": c.MetricsServer, "joining": joining})
 	return "set -euo pipefail\ncommand -v python3 >/dev/null || { echo '目标主机需要预装 python3' >&2; exit 1; }\npython3 - " + shellQuote(base64.StdEncoding.EncodeToString(params)) + " <<'PY'\n" + deployProbePython + "\nPY"
 }
 
@@ -376,6 +381,8 @@ for target in set(['/var/lib/containerd',p['runtimeDirectory']]):
 addresses=[]; networks=[]
 try:
     interfaces=json.loads(subprocess.check_output(['ip','-j','-4','address'],text=True))
+    if p['interface']=='auto':
+        p['interface']=next((i['ifname'] for i in interfaces if any(a.get('local')==p['ip'] for a in i.get('addr_info',[]))), '')
     import ipaddress
     for interface in interfaces:
         for addr in interface.get('addr_info',[]):
@@ -404,7 +411,7 @@ try:
     with urllib.request.urlopen('https://pkgs.k8s.io/core:/stable:/v'+minor+'/deb/Packages.gz',timeout=20) as r: packages=gzip.decompress(r.read(16*1024*1024)).decode()
     if not any(line.startswith('Version: '+p['version']+'-') for line in packages.splitlines()): errors.append('官方软件源未找到 Kubernetes '+p['version'])
 except Exception: errors.append('无法访问 Kubernetes 软件源，请检查出网及代理')
-urls=['https://raw.githubusercontent.com/projectcalico/calico/v3.31.2/manifests/calico.yaml' if p['plugin']=='calico' else 'https://raw.githubusercontent.com/flannel-io/flannel/v0.27.4/Documentation/kube-flannel.yml']
+urls=[] if p.get('joining') else ['https://raw.githubusercontent.com/projectcalico/calico/v3.31.2/manifests/calico.yaml' if p['plugin']=='calico' else 'https://raw.githubusercontent.com/flannel-io/flannel/v0.27.4/Documentation/kube-flannel.yml']
 if p['metrics']: urls.append('https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.0/components.yaml')
 for url in urls:
     try:
@@ -422,7 +429,7 @@ if not os.path.exists('/run/systemd/timesync/synchronized'):
         if synchronized!='yes': errors.append('系统时间尚未同步，请先启用 NTP')
     except Exception: errors.append('无法确认系统时间同步')
 machine=open('/etc/machine-id').read().strip() if os.path.exists('/etc/machine-id') else ''
-print(json.dumps(dict(os=system,version=version,arch=arch,hostname=platform.node().split('.')[0],machineId=machine,cpu=cpu,memoryMB=memory,diskGB=disk,addresses=addresses,networks=networks,errors=errors)))`
+print(json.dumps(dict(os=system,version=version,arch=arch,hostname=platform.node().split('.')[0],interface=p['interface'],machineId=machine,cpu=cpu,memoryMB=memory,diskGB=disk,addresses=addresses,networks=networks,errors=errors)))`
 
 func (s *Service) installK8sDeploy(run model.K8sDeployRun, hosts []model.AssetHost) error {
 	c := run.Config

@@ -160,6 +160,9 @@ func (s *Service) K8sDeployHostOptions(keyword, environment string, groupID uint
 		for _, lock := range locks {
 			if lock.HostID == h.ID {
 				occupied = lock.PlanID
+				if lock.PlanID == 0 {
+					reason = "被节点添加任务占用或需要核对安装现场"
+				}
 				break
 			}
 		}

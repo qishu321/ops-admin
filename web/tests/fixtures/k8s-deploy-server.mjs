@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { emptyDeployment } from '../../src/utils/k8s-deploy.js'
+import { NodeAddMemory } from './k8s-node-add-memory.mjs'
 
 const root = resolve(fileURLToPath(new URL('../../dist', import.meta.url)))
 const user = { id: 990001, username: 'acceptance-test', nickname: '隔离验收', accountType: 'administrator' }
@@ -18,6 +19,8 @@ const hosts = Array.from({ length: 12 }, (_, i) => ({
   connectionMode: i === 1 ? 'gateway' : 'direct', gatewayName: i === 1 ? 'test-gateway' : '', credentialName: '模拟 SSH 凭据', authType: 'privateKey',
   aliveStatus: 1, authStatus: 1, disabledReason: i === 10 ? '请先在 CMDB 配置有效凭据' : '', occupiedPlanId: i === 11 ? 999 : 0
 }))
+const nodeAdd = new NodeAddMemory(hosts)
+setInterval(() => { for (const task of nodeAdd.tasks.values()) nodeAdd.advance(task.id) }, 900).unref()
 function respond(res, data, status = 200, message = 'success') { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ code: status, data, message })) }
 function step(run, host, title, status = 'success', summary = '模拟执行通过') {
   const record = { id: ++stepId, runId: run.id, hostId: host.hostId, hostName: host.hostName, title, status, summary, startedAt: new Date(), finishedAt: new Date() }
@@ -36,6 +39,7 @@ const server = createServer(async (req, res) => {
       if (url.pathname === '/api/v1/ops/environment/list') return respond(res, [{ id: 1, code: 'test', name: '测试环境' }])
       if (url.pathname === '/api/v1/asset/hostGroup/list') return respond(res, { list: [{ id: 1, name: '模拟服务器组' }] })
       if (url.pathname === '/api/v1/auth/refresh') return respond(res, { token: 'isolated-test-token', accessTokenExpiresAt: Date.now() + 3600000, sessionExpiresAt: Date.now() + 3600000 })
+      if (nodeAdd.handle(req, url, body, respond, res)) return
       const action = url.pathname.replace('/api/v1/k8s/deploy/', '')
       const id = Number(url.searchParams.get('id') || body.id), plan = plans.get(id)
       if (action === 'capabilities') return respond(res, { versions: ['1.34.9', '1.33.5'], versionRange: '1.31.x–1.34.x', systems: 'Ubuntu 22.04 / 24.04、Debian 12 / 13', plugins: [{ value: 'calico', label: 'Calico' }, { value: 'flannel', label: 'Flannel' }, { value: 'cilium', label: 'Cilium（待适配）', disabled: true }] })
@@ -84,4 +88,6 @@ const server = createServer(async (req, res) => {
     res.end(content)
   } catch (error) { respond(res, null, 500, error.message) }
 })
-server.listen(18081, '127.0.0.1', () => console.log('Isolated acceptance fixture: http://127.0.0.1:18081/containers/k8s-deployments (memory only; no upstream)'))
+const port = Number(process.env.OPS_ADMIN_MOCK_PORT || 18081)
+if (![18081, 18082].includes(port)) throw new Error('Acceptance fixture only supports isolated ports 18081 or 18082')
+server.listen(port, '127.0.0.1', () => console.log(`Isolated acceptance fixture: http://127.0.0.1:${port}/containers/k8s/nodes (memory only; no upstream)`))

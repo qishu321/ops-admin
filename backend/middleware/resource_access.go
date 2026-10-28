@@ -124,7 +124,7 @@ func resourceRouteFor(method, path string) resourceRoute {
 		}
 		return resourceRoute{Kind: "database", Action: action, Permissions: []string{permission}}
 	}
-	if strings.HasPrefix(path, "/k8s/deploy/") {
+	if strings.HasPrefix(path, "/k8s/deploy/") || strings.HasPrefix(path, "/k8s/node-add/") {
 		// Installing a cluster changes host ownership and creates cluster credentials.
 		// Keep the same administrator boundary as cluster connection management.
 		return resourceRoute{Admin: true}

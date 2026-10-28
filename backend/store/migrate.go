@@ -63,6 +63,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.K8sDeployStep{},
 		&model.K8sDeployLog{},
 		&model.K8sDeployHostLock{},
+		&model.K8sNodeAddTask{},
 		&model.K8sScalingPolicy{},
 		&model.OpsScript{},
 		&model.OpsScriptVersion{},

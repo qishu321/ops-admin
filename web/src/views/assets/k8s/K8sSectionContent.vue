@@ -1,6 +1,7 @@
 <script setup>
 import K8sNamespaceBoard from './K8sNamespaceBoard.vue'
 import K8sWorkloadBoard from './K8sWorkloadBoard.vue'
+import NodeAddDrawer from './node-add/NodeAddDrawer.vue'
 import { Connection, CopyDocument } from '@element-plus/icons-vue'
 
 function serviceTypeTagType(type) {
@@ -127,10 +128,13 @@ defineProps({
   </section>
 
   <section v-if="page.hasCluster && page.currentTab === 'nodes'" class="section-body node-workspace">
-    <div v-if="page.hasItems(page.nodes)" class="node-management-card">
+    <div class="node-management-card">
       <div class="node-management-intro">
         <div><strong>节点运行概览</strong><span>查看节点角色、容量与 Pod 分配；标签管理会直接写入 Kubernetes Node。</span></div>
-        <el-tag type="info" effect="plain">{{ page.nodes.length }} 个节点</el-tag>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <el-tag type="info" effect="plain">{{ page.nodes.length }} 个节点</el-tag>
+          <NodeAddDrawer :key="page.cluster.id" :cluster="page.cluster" @completed="page.refreshCurrentClusterData" />
+        </div>
       </div>
       <el-table :data="page.nodes" class="data-table node-table">
       <el-table-column :label="page.t('k8sName')" min-width="210">
@@ -151,7 +155,6 @@ defineProps({
       </el-table-column>
       </el-table>
     </div>
-    <el-empty v-else :description="page.t('k8sNoRealtimeNodeData')" />
   </section>
 
   <K8sNamespaceBoard v-if="page.hasCluster && page.currentTab === 'namespaces'" :page="page" />

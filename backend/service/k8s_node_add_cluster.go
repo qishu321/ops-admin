@@ -175,6 +175,21 @@ func (s *Service) nodeAddClusterSnapshot(id uint) (*nodeAddCluster, error) {
 		}
 	}
 	config := model.K8sDeployConfig{Version: v, ImageRepository: cfg.Repository, PodCIDR: cfg.Networking.Pod, ServiceCIDR: cfg.Networking.Service, APIServer: host, APIPort: p, ProxyMode: "iptables"}
+	kubeletConfig, e := client.CoreV1().ConfigMaps("kube-system").Get(ctx, "kubelet-config", metav1.GetOptions{})
+	if e != nil {
+		return nil, errors.New("无法读取集群 kubelet-config，不能确认 cgroup 配置")
+	}
+	var kubelet struct {
+		Driver string `yaml:"cgroupDriver"`
+		FailV1 bool   `yaml:"failCgroupV1"`
+	}
+	if yaml.Unmarshal([]byte(kubeletConfig.Data["kubelet"]), &kubelet) != nil {
+		return nil, errors.New("集群 kubelet cgroup 配置无法解析")
+	}
+	if kubelet.Driver != "" && kubelet.Driver != "systemd" {
+		return nil, errors.New("当前添加节点模板要求目标集群使用 systemd cgroup 驱动")
+	}
+	config.RequireCgroupV2 = kubelet.FailV1
 	if proxy, e := client.CoreV1().ConfigMaps("kube-system").Get(ctx, "kube-proxy", metav1.GetOptions{}); e == nil {
 		var settings struct {
 			Mode string `yaml:"mode"`

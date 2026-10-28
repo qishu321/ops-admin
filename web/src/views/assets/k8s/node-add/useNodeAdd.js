@@ -4,7 +4,7 @@ import { validateNodeDraft } from '../../../../utils/k8s-node-add'
 
 export function useNodeAdd(clusterId, completed) {
   const state = reactive({ visible: false, step: 0, busy: false, checking: false, error: '', context: null, check: null, task: null, history: [], view: 'wizard',
-    draft: { clusterId, nodes: [], labels: '', taints: '' }, idempotencyKey: '' })
+    draft: { clusterId, nodes: [], labels: '', taints: '', disableSELinux: true, disableFirewalld: false }, idempotencyKey: '' })
   let timer, checkTimer, checkGeneration = 0, generation = 0, disposed = false
   const notified = new Set()
   const running = computed(() => state.task?.status === 'running')
@@ -113,7 +113,7 @@ export function useNodeAdd(clusterId, completed) {
     state.draft = { ...state.task.config, nodes: failed.map(n => ({ ...n.host, hostId: n.hostId, nodeName: n.nodeName })), retryOf: state.task.id }
     state.check = null; state.step = 1; state.view = 'wizard'; state.error = ''
   }
-  function newDraft() { state.draft = { clusterId, nodes: [], labels: '', taints: '' }; state.check = null; state.step = 0; state.task = null; state.view = 'wizard'; state.error = '' }
+  function newDraft() { state.draft = { clusterId, nodes: [], labels: '', taints: '', disableSELinux: true, disableFirewalld: false }; state.check = null; state.step = 0; state.task = null; state.view = 'wizard'; state.error = '' }
   watch(() => state.visible, open => { if (!open) { ++generation; ++checkGeneration; clearTimeout(timer); clearTimeout(checkTimer); state.checking = false } })
   onBeforeUnmount(() => { disposed = true; ++generation; ++checkGeneration; clearTimeout(timer); clearTimeout(checkTimer) })
   return { state, running, validCheck, open, pick, check, next, start, showTask, cancel, retryFailed, newDraft }

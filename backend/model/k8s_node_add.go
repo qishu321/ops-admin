@@ -8,11 +8,13 @@ type K8sNodeAddSelection struct {
 }
 
 type K8sNodeAddConfig struct {
-	ClusterID uint                  `json:"clusterId"`
-	Nodes     []K8sNodeAddSelection `json:"nodes"`
-	Labels    string                `json:"labels"`
-	Taints    string                `json:"taints"`
-	RetryOf   uint                  `json:"retryOf,omitempty"`
+	ClusterID        uint                  `json:"clusterId"`
+	Nodes            []K8sNodeAddSelection `json:"nodes"`
+	Labels           string                `json:"labels"`
+	Taints           string                `json:"taints"`
+	DisableSELinux   bool                  `json:"disableSELinux"`
+	DisableFirewalld bool                  `json:"disableFirewalld"`
+	RetryOf          uint                  `json:"retryOf,omitempty"`
 }
 
 // Execution, host ownership and logs use the existing deployment run infrastructure.

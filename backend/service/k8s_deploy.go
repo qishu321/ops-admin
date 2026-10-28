@@ -46,7 +46,7 @@ func (s *Service) K8sDeployCapabilities() map[string]any {
 	return map[string]any{
 		"versions":     []string{"1.34.9", "1.33.5", "1.32.9", "1.31.13"},
 		"versionRange": "1.31.x–1.34.x",
-		"systems":      "Ubuntu 22.04 / 24.04、Debian 12 / 13，x86_64 / aarch64；部署前自动检测",
+		"systems":      "Ubuntu 22.04 / 24.04、Debian 12 / 13（x86_64 / aarch64）；CentOS 7.9（x86_64，需 5.10/5.15 或 6.x 内核）；预检自动补齐基础依赖",
 		"plugins":      []map[string]any{{"value": "calico", "label": "Calico", "version": "3.31.2"}, {"value": "flannel", "label": "Flannel", "version": "0.27.4"}, {"value": "cilium", "label": "Cilium（待适配）", "disabled": true}},
 	}
 }
@@ -275,13 +275,8 @@ func validateDeployConfig(c model.K8sDeployConfig, nodes []model.K8sDeployNode) 
 	if c.BuiltinLB && (!c.HA || net.ParseIP(c.APIServer) == nil || net.ParseIP(c.APIServer).To4() == nil || c.APIPort == 6443 || c.RouterID < 1 || c.RouterID > 255) {
 		return errors.New("自建负载均衡需要高可用、IPv4 VIP、1–255 路由 ID，入口端口不能占用 6443")
 	}
-	if c.CustomSource != "" {
-		for _, line := range strings.Split(c.CustomSource, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") && !regexp.MustCompile(`^deb(-src)? https?://[^\s]+ [a-zA-Z0-9 ./_-]+$`).MatchString(line) {
-				return errors.New("自定义软件源仅接受不带额外选项的 apt deb/deb-src 行")
-			}
-		}
+	if err := validateDeployCustomSource(c.CustomSource); err != nil {
+		return err
 	}
 	if _, err := deployKubeletOverrides(c.KubeletConfig); err != nil {
 		return err
@@ -539,6 +534,9 @@ func (s *Service) initK8sDeployRecovery() {
 								planStatus = "failed"
 							}
 							message = "执行器在系统变更前中断，可重新预检"
+							if r.DependenciesPrepared {
+								message = "执行器在 Kubernetes 安装前中断，基础依赖可能已经补齐；可重新预检，仍在运行的依赖进程会由主机锁阻止重复执行"
+							}
 						}
 						res := tx.Model(&model.K8sDeployRun{}).Where("id = ? AND status = ? AND heartbeat_at < ? AND mutated = ?", r.ID, deployActive, now.Add(-2*time.Minute), r.Mutated).Updates(map[string]any{"status": runStatus, "error": message, "finished_at": now})
 						if res.Error != nil {

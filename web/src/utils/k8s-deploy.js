@@ -16,7 +16,7 @@ export function emptyDeployment() {
     id: 0, revision: 0, name: '', env: '', description: '', nodes: [],
     config: {
       version: '1.34.9', runtimeDirectory: '', networkPlugin: 'calico', podCIDR: '172.30.0.0/16', serviceCIDR: '10.254.0.0/16',
-      interface: 'eth0', autoHostname: false, disableSELinux: true, imageRepository: 'registry.cn-hangzhou.aliyuncs.com/google_containers',
+      interface: 'eth0', autoHostname: false, disableSELinux: true, disableFirewalld: false, imageRepository: 'registry.cn-hangzhou.aliyuncs.com/google_containers',
       customSource: '', kubeletConfig: '', ha: false, builtinLB: false, apiServer: '', apiPort: 6443, routerId: 68,
       proxyMode: 'iptables', customCertificates: false, certificateYears: 1, caYears: 10,
       metricsServer: false, allowControlPlaneWorkloads: false

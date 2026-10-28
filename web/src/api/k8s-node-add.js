@@ -4,6 +4,7 @@ const executionPayload = data => ({
   clusterId: data.clusterId,
   nodes: data.nodes.map(node => ({ hostId: node.hostId, nodeName: node.nodeName })),
   labels: data.labels || '', taints: data.taints || '', retryOf: data.retryOf || 0,
+  disableSELinux: Boolean(data.disableSELinux), disableFirewalld: Boolean(data.disableFirewalld),
   precheckId: data.precheckId, idempotencyKey: data.idempotencyKey
 })
 export const nodeAddContext = clusterId => http.get(`${base}/context`, { params: { clusterId }, timeout: 60000 })

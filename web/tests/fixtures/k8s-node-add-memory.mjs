@@ -42,7 +42,7 @@ export class NodeAddMemory {
   }
   normalize(body) {
     const config = { clusterId: Number(body.clusterId), nodes: (body.nodes || []).map(n => ({ hostId: Number(n.hostId), nodeName: String(n.nodeName || '') })),
-      labels: String(body.labels || '').trim(), taints: String(body.taints || '').trim(), scenario: body.scenario || 'success', retryOf: Number(body.retryOf) || 0 }
+      labels: String(body.labels || '').trim(), taints: String(body.taints || '').trim(), disableSELinux: Boolean(body.disableSELinux), disableFirewalld: Boolean(body.disableFirewalld), scenario: body.scenario || 'success', retryOf: Number(body.retryOf) || 0 }
     validateNodeDraft(config)
     if (!['success', 'partial', 'blocked'].includes(config.scenario)) reject('未知模拟场景')
     const c = this.cluster(config.clusterId)

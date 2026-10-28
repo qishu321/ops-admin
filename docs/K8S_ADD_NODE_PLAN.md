@@ -14,7 +14,7 @@
 
 - 首期添加 Worker，不改变现有控制平面拓扑，不重新初始化集群，也不重新安装 CNI。
 - 支持标准 Kubernetes 1.31–1.34、containerd、IPv4 的 kubeadm 集群；包含手工登记但保留完整 kubeadm 引导配置及必要权限的集群。
-- 新服务器支持现有安装模板中的 Ubuntu 22.04 / 24.04、Debian 12 / 13，x86_64 / aarch64、systemd 和 cgroup v2。节点必须无现有 Kubernetes、etcd 数据和正在运行的容器运行时。
+- 新服务器支持 Ubuntu 22.04 / 24.04、Debian 12 / 13（x86_64 / aarch64），以及 CentOS 7.9.2009（仅 x86_64）。使用 systemd；兼容完整挂载控制器的 cgroup v1，但目标集群显式禁止 v1 时阻断。CentOS 需先运行 5.10/5.15 或 6.x 内核，原厂 3.10 内核不能用于当前安装模板；不会自动升级内核或重启。节点必须无现有 Kubernetes、etcd 数据和正在运行的容器运行时。
 - 从目标 API 读取版本、kubeadm-config、cluster-info、CA、公用入口及现有节点，沿用当前 Pod/Service 网络和镜像仓库。检测到 kube-proxy IPVS 时准备相应组件及内核模块。
 - 从 CMDB 关联服务器、凭据与网关。OS、网卡和 machine-id 通过 SSH 实际核验，不让用户重复选择 OS。
 - 集群 kubeconfig 需要启用 CA 校验，能读取相关集群配置、节点和引导角色绑定，能够创建与撤销 kube-system 内的短期 bootstrap Secret。缺少配置或权限时返回具体阻断原因。
@@ -22,7 +22,11 @@
 
 ## 预检与执行
 
-预检异步执行并保存结果，只做探测和连通性验证，不安装、不 join。检查主机身份、OS/架构、CPU/内存/磁盘、干净状态、端口、网卡/IP、路由冲突、软件源、仓库与集群 API 可达性。
+预检异步执行并保存结果：先自动准备缺失的 Python、iproute、证书、下载与签名工具，以及时间同步组件，再检查主机身份、OS/架构、内核/cgroup、CPU/内存/磁盘、干净状态、端口、网卡/IP、路由冲突、软件源、仓库与集群 API 可达性。此阶段会调整软件源并安装基础依赖，不安装 Kubernetes、不 join、不升级内核、不重启。
+
+系统和 Kubernetes 软件包源默认使用阿里云。Ubuntu 按架构区分 ubuntu / ubuntu-ports，Debian 使用 debian / debian-security，CentOS 使用 centos-vault/7.9.2009；保留包签名校验。CentOS 的 containerd 1.7.36 静态包和 runc 1.3.6 来自官方 GitHub 固定版本，并在执行前校验固定 SHA256；尚未配置阿里云二进制镜像，不声称所有下载均来自阿里云。
+
+界面显式提供「安装时关闭 SELinux」及「安装时关闭 Firewalld」。预检只核对这些选项，不提前关闭；CentOS SELinux Enforcing 或 Firewalld 运行中但未选择对应处理时给出阻断原因。现有正常时间同步服务会保留。
 
 预检有效期五分钟，绑定输入配置、真实资产/凭据修订和目标集群身份。开始执行时重查这些信息，首次系统变更前再次核对集群；不复用过期检查。
 

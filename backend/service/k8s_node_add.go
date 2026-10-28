@@ -190,6 +190,7 @@ func (s *Service) createK8sNodeAdd(p K8sNodeAddPayload, kind, operator string) (
 	}
 	defer snap.Cleanup()
 	nodes := make([]model.K8sDeployNode, 0, len(p.Nodes))
+	snap.Config.DisableSELinux, snap.Config.DisableFirewalld = p.DisableSELinux, p.DisableFirewalld
 	for _, selection := range p.Nodes {
 		nodes = append(nodes, model.K8sDeployNode{HostID: selection.HostID, Name: selection.NodeName, Role: "worker"})
 	}
@@ -419,7 +420,7 @@ func nodeAddTaskView(task model.K8sNodeAddTask, run model.K8sDeployRun, name str
 				break
 			}
 		}
-		nodes = append(nodes, map[string]any{"hostId": n.HostID, "nodeName": n.Name, "host": host, "os": n.OS, "arch": n.Arch, "interface": n.Interface, "stage": nodeStage, "status": status, "message": message, "checks": checks, "passed": status == "success", "retryable": !mutated && (status == "failed" || status == "cancelled")})
+		nodes = append(nodes, map[string]any{"hostId": n.HostID, "nodeName": n.Name, "host": host, "os": n.OS, "arch": n.Arch, "interface": n.Interface, "kernel": n.Kernel, "cgroup": n.Cgroup, "stage": nodeStage, "status": status, "message": message, "checks": checks, "passed": status == "success", "retryable": !mutated && (status == "failed" || status == "cancelled")})
 	}
 	lines := []string{}
 	logBytes := 0
@@ -450,5 +451,5 @@ func nodeAddTaskView(task model.K8sNodeAddTask, run model.K8sDeployRun, name str
 }
 
 func nodeAddStepStage(title string) int {
-	return map[string]int{"节点预检": 1, "网络检查": 1, "执行前核验": 1, "安装组件": 2, "加入集群": 3, "等待 Ready": 4, "完成": 5}[title]
+	return map[string]int{"基础依赖准备": 1, "节点预检": 1, "网络检查": 1, "执行前核验": 1, "安装组件": 2, "加入集群": 3, "等待 Ready": 4, "完成": 5}[title]
 }

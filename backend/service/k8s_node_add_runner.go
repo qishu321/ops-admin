@@ -36,10 +36,11 @@ func nodeAddProbeIdentity(n model.K8sDeployNode, probe deployProbe, existing []c
 			}
 		}
 	}
-	if installing && (n.MachineID != probe.MachineID || n.OS != probe.OS+" "+probe.Version || n.Arch != probe.Arch || n.Interface != probe.Interface) {
+	if installing && (n.MachineID != probe.MachineID || n.OS != probe.OS+" "+probe.Version || n.Arch != probe.Arch || n.Interface != probe.Interface || n.Kernel != probe.Kernel || n.Cgroup != probe.Cgroup) {
 		return n, errors.New("主机身份、系统或网卡与预检不一致，请重新预检")
 	}
 	n.MachineID, n.OS, n.Arch, n.Interface = probe.MachineID, probe.OS+" "+probe.Version, probe.Arch, probe.Interface
+	n.Kernel, n.Cgroup = probe.Kernel, probe.Cgroup
 	return n, nil
 }
 
@@ -85,6 +86,10 @@ func (s *Service) processK8sNodeAdd(task model.K8sNodeAddTask, run model.K8sDepl
 				break
 			}
 		}
+		if err = s.deployDependencyStep(run, host); err != nil {
+			runErr = err
+			return
+		}
 		err = s.deployStep(run, host, "节点预检", false, func(log func(string)) error {
 			probeNode := n
 			probeNode.Interface = "auto"
@@ -117,7 +122,7 @@ func (s *Service) processK8sNodeAdd(task model.K8sNodeAddTask, run model.K8sDepl
 				}
 			}
 			run.Nodes[i] = updated
-			log(fmt.Sprintf("%s：%s / %s，网卡 %s，CPU %d，内存 %d MiB，磁盘 %d GiB；主机身份及干净状态检查通过。\n", host.HostName, updated.OS, updated.Arch, updated.Interface, probe.CPU, probe.MemoryMB, probe.DiskGB))
+			log(fmt.Sprintf("%s：%s / %s，内核 %s / cgroup %s，网卡 %s，CPU %d，内存 %d MiB，磁盘 %d GiB；主机身份及干净状态检查通过。\n", host.HostName, updated.OS, updated.Arch, probe.Kernel, probe.Cgroup, updated.Interface, probe.CPU, probe.MemoryMB, probe.DiskGB))
 			return nil
 		})
 		if err != nil {

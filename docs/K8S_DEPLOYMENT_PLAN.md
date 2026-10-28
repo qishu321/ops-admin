@@ -142,7 +142,7 @@ Cilium 的 kube-proxy replacement 作为后续独立能力；首期若开放 Cil
 
 确认页明确列出将执行的变更：安装软件包、修改内核参数/主机名/软件源、配置 containerd、处理 SELinux 等。敏感信息只显示凭据名称和认证方式，不展示秘密。
 
-提供「执行预检」和预检报告；阻断项修复前不能开始部署。预检只执行探测，不安装软件、不修改系统配置。草稿可以随时保存。
+提供「执行预检」和预检报告；阻断项修复前不能开始部署。预检先按系统配置软件源并自动准备 Python、网络工具、证书及时间同步等基础依赖，再执行环境探测；不安装 Kubernetes、不升级内核、不重启。草稿可以随时保存。
 
 预检覆盖：SSH 和网关、root/sudo 能力、OS/内核/架构、CPU/内存/磁盘、时间同步、swap 和内核条件、节点名称、网口/IP、端口、节点间通信、软件源及镜像访问、CIDR 冲突、现有 Kubernetes 痕迹、高可用入口条件。
 
@@ -223,7 +223,7 @@ Cilium 的 kube-proxy replacement 作为后续独立能力；首期若开放 Cil
 
 **第一阶段：形成可审阅的业务流程。** 菜单、部署列表、四步向导、能力目录、CMDB 关联、草稿与确认摘要；后端完成配置校验和权限。此阶段尚不能宣称能安装真实集群。
 
-**第二阶段：交付首个真实部署闭环。** 优先验证一种实际使用的 OS/Kubernetes 组合，containerd + Calico + 单控制平面；加入只读预检、持久任务、阶段日志、失败处理、自动集群接入。支持通过现有 SSH 网关访问目标主机。
+**第二阶段：交付首个真实部署闭环。** 优先验证一种实际使用的 OS/Kubernetes 组合，containerd + Calico + 单控制平面；加入基础依赖准备与预检、持久任务、阶段日志、失败处理、自动集群接入。支持通过现有 SSH 网关访问目标主机。
 
 **第三阶段：补全高级能力。** 3 控制平面高可用、已有 LB/自建 LB、其他 OS、Flannel/Cilium、IPVS、自定义软件源及受控配置。按实际支持矩阵逐项验收，不一次性宣称支持所有组合。Agent 不在任何阶段范围内。
 
@@ -243,7 +243,13 @@ Cilium 的 kube-proxy replacement 作为后续独立能力；首期若开放 Cil
 
 已实现菜单、部署列表、四步向导、草稿与版本校验、CMDB 分页多选、只读系统识别、SSH 预检、持久化运行/步骤/增量日志、主机占用、停止请求、心跳中断保护、集群自动登记及单独重试接入。安装通过 SSH 复用现有凭据和网关；部署生成的 kubeconfig 加密保存，并兼容现有集群连接解析。
 
-当前安装模板覆盖 Ubuntu 22.04/24.04、Debian 12/13，x86_64/aarch64，Kubernetes 1.31.x–1.34.x、containerd、Calico/Flannel；包含单控制平面、三控制平面、已有 LB 和 HAProxy + Keepalived 配置。Cilium 显示为待适配，不接受提交。目标主机需预装 python3、iproute2、systemd，具备 root 或无交互 sudo 权限和必要的联网条件；现有 Kubernetes/运行时数据会阻断新建安装。不同系统/架构混用暂不支持。
+当前安装模板覆盖 Ubuntu 22.04/24.04、Debian 12/13（x86_64/aarch64），以及 CentOS 7.9.2009（仅 x86_64），Kubernetes 1.31.x–1.34.x、containerd、Calico/Flannel；包含单控制平面、三控制平面、已有 LB 和 HAProxy + Keepalived 配置。Cilium 显示为待适配，不接受提交。目标主机需具备 systemd、root 或无交互 sudo 权限和必要的联网条件，Python、iproute、证书及时间同步等基础依赖会在预检阶段自动准备；现有 Kubernetes/运行时数据会阻断新建安装。不同系统/架构混用暂不支持。
+
+CentOS 7.9 原厂 3.10 内核不满足当前 Kubernetes 安装模板要求，需先升级并启动 5.10/5.15 或 6.x 内核；不会自动升级内核或重启。兼容完整挂载控制器的 cgroup v1。SELinux 与 Firewalld 只在正式安装时按显式选项处理，预检不提前关闭。
+
+系统与 Kubernetes 软件包源默认统一使用阿里云。Ubuntu 根据架构匹配 ubuntu / ubuntu-ports，Debian 使用 debian / debian-security，CentOS 使用 centos-vault/7.9.2009；Kubernetes 使用 kubernetes-new/core/stable 对应 minor 的 deb/rpm 仓库。APT 原源会备份，CentOS 使用独立且限本次命令启用的仓库，保留签名和 TLS 校验。自定义软件源可覆盖默认值。
+
+CentOS 使用官方 containerd 1.7.36 静态发布包和 runc 1.3.6，执行前校验固定 SHA256，避免将 EL8/EL9 的动态二进制装入 EL7。上述二进制及 CNI/Metrics Server 清单仍使用各自官方 GitHub 地址，需要相应出网条件；软件源统一阿里云不代表所有发布文件或镜像都已迁移至阿里云。
 
 安装发生变更后的失败或中断进入待核对，保留主机归属，不提供盲目重装或自动 reset。尚未提供扩缩容、卸载、升级、离线安装、历史归档与自动日志保留期管理。
 

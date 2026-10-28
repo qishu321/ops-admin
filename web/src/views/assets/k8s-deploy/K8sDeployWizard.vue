@@ -160,8 +160,9 @@ onBeforeUnmount(() => clearInterval(timer))
           <div class="deploy-grid">
             <el-form-item label="节点命名模式"><div class="field"><el-radio-group v-model="config.autoHostname"><el-radio :value="false">保留主机名</el-radio><el-radio :value="true">自动命名</el-radio></el-radio-group><div class="deploy-help">自动命名将修改系统主机名，可在节点表预览并调整。</div></div></el-form-item>
             <el-form-item label="关闭 SELinux"><div class="field"><el-switch v-model="config.disableSELinux" aria-label="关闭 SELinux" /><div class="deploy-help">仅在节点安装了 SELinux 时执行。</div></div></el-form-item>
+            <el-form-item label="关闭 Firewalld"><div class="field"><el-switch v-model="config.disableFirewalld" aria-label="关闭 Firewalld" /><div class="deploy-help">默认保留防火墙。CentOS 正在运行 Firewalld 时，需核对网络要求后选择关闭；此设置在正式安装时执行。</div></div></el-form-item>
             <el-form-item label="Kubernetes 镜像仓库" required class="wide"><div class="field"><el-input v-model="config.imageRepository" placeholder="registry.cn-hangzhou.aliyuncs.com/google_containers" /><div class="deploy-help">基础组件镜像仓库；网络插件和 Metrics Server 使用各自官方镜像。</div></div></el-form-item>
-            <el-form-item label="自定义软件源" class="wide"><div class="field"><el-switch v-model="customSource" aria-label="自定义软件源" /><div class="deploy-help">启用后替换节点的 apt 软件源，原配置会备份。关闭则使用节点现有源。</div><el-input v-if="customSource" v-model="config.customSource" type="textarea" :rows="4" class="deploy-mono" placeholder="deb https://mirrors.example.com/ubuntu noble main restricted universe multiverse" /></div></el-form-item>
+            <el-form-item label="自定义软件源" class="wide"><div class="field"><el-switch v-model="customSource" aria-label="自定义软件源" /><div class="deploy-help">默认按系统匹配阿里云源。启用后使用自定义 APT deb 行或 Yum repo；APT 原配置会备份，Yum 仓库 ID 需以 ops-admin-centos7- 开头并启用签名校验。</div><el-input v-if="customSource" v-model="config.customSource" type="textarea" :rows="4" class="deploy-mono" placeholder="APT 示例：deb https://mirrors.aliyun.com/ubuntu noble main restricted universe multiverse；CentOS 请填写 Yum repo 配置" /></div></el-form-item>
           </div>
           <el-collapse><el-collapse-item title="自定义 kubelet 配置（可选）" name="kubelet"><p class="deploy-help">仅支持 maxPods、systemReserved、kubeReserved，使用 YAML 格式。</p><el-input v-model="config.kubeletConfig" type="textarea" :rows="5" class="deploy-mono" placeholder="maxPods: 110&#10;systemReserved:&#10;  cpu: '200m'&#10;  memory: '256Mi'" /></el-collapse-item></el-collapse>
         </template>
@@ -181,7 +182,7 @@ onBeforeUnmount(() => clearInterval(timer))
         </template>
         <template v-else>
           <div class="deploy-toolbar"><h2>节点清单</h2><div class="deploy-inline"><span class="deploy-node-count">{{ counts.masters }} 控制平面 / {{ counts.workers }} 工作节点</span><el-button type="primary" :icon="Plus" @click="pickerOpen = true">从 CMDB 关联节点</el-button></div></div>
-          <div class="deploy-node-source"><el-icon><Monitor /></el-icon><div><strong>主机信息自动同步</strong><p>{{ capabilities.systems || 'Ubuntu / Debian' }} · 部署前将重新核验系统与连通性。</p></div></div>
+          <div class="deploy-node-source"><el-icon><Monitor /></el-icon><div><strong>主机信息自动同步</strong><p>{{ capabilities.systems || 'Ubuntu / Debian / CentOS 7.9' }} · 部署前将重新核验系统与连通性。</p></div></div>
           <el-table :data="form.nodes" row-key="hostId" border>
             <el-table-column label="主机 / 系统" min-width="185"><template #default="{ row }"><strong>{{ row.hostName }}</strong><div class="deploy-help">{{ row.os || '待预检识别' }}</div><div class="deploy-help">{{ row.cpu || '—' }} 核 / {{ row.memory || '—' }}</div></template></el-table-column>
             <el-table-column label="角色" width="140"><template #default="{ row }"><el-select v-model="row.role" :aria-label="`${row.hostName} 角色`"><el-option label="控制平面" value="master" /><el-option label="工作节点" value="worker" /></el-select></template></el-table-column>
@@ -196,9 +197,9 @@ onBeforeUnmount(() => clearInterval(timer))
       </el-form>
       <div v-else class="deploy-form">
         <DeploySummary :plan="form" :editable="!running && canEdit" @edit="value => step = value" />
-        <el-alert title="部署将安装软件包、配置 containerd 和 Kubernetes，并根据选项修改软件源、主机名、swap、内核参数及 SELinux。请使用准备好的目标服务器。" type="warning" show-icon :closable="false" style="margin-bottom:20px" />
+        <el-alert title="部署将安装软件包、配置 containerd 和 Kubernetes，并根据选项修改软件源、主机名、swap、内核参数、SELinux 及 Firewalld。请使用准备好的目标服务器。" type="warning" show-icon :closable="false" style="margin-bottom:20px" />
         <div class="deploy-toolbar"><h2>部署预检</h2><el-button :loading="running && lastRun?.kind === 'precheck'" :disabled="saving || running || !canEdit" @click="precheck">{{ lastRun ? '重新预检' : '执行预检' }}</el-button></div>
-        <p v-if="!lastRun" class="deploy-help">预检只读取节点状态，不安装软件。预检通过后 15 分钟内可开始部署，修改配置后需要重新预检。</p>
+        <p v-if="!lastRun" class="deploy-help">预检先使用阿里云软件源自动准备 Python、网络工具、证书与时间同步组件，再检查环境；不安装 Kubernetes、不升级内核、不重启。CentOS 7.9 需运行 5.10/5.15 或 6.x 内核。通过后 15 分钟内可部署，修改配置后需重新预检。</p>
         <el-alert v-else-if="dirty" title="配置已修改，请重新预检。" type="info" :closable="false" />
         <el-alert v-else-if="lastRun.error" :title="lastRun.error" type="error" show-icon :closable="false" />
         <el-alert v-else-if="canDeploy" title="预检通过，可以开始部署。未知 VPC 网段与外部网络策略仍需确认。" type="success" show-icon :closable="false" />

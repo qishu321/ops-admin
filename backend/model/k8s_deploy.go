@@ -12,6 +12,8 @@ type K8sDeployConfig struct {
 	Interface                  string `json:"interface"`
 	AutoHostname               bool   `json:"autoHostname"`
 	DisableSELinux             bool   `json:"disableSELinux"`
+	DisableFirewalld           bool   `json:"disableFirewalld"`
+	RequireCgroupV2            bool   `json:"requireCgroupV2"`
 	ImageRepository            string `json:"imageRepository"`
 	CustomSource               string `json:"customSource"`
 	KubeletConfig              string `json:"kubeletConfig"`
@@ -40,6 +42,8 @@ type K8sDeployNode struct {
 	CPU       string `json:"cpu"`
 	Memory    string `json:"memory"`
 	MachineID string `json:"machineId"`
+	Kernel    string `json:"kernel"`
+	Cgroup    string `json:"cgroup"`
 }
 
 type K8sDeployPlan struct {
@@ -64,21 +68,23 @@ type K8sDeployPlan struct {
 func (K8sDeployPlan) TableName() string { return "k8s_deploy_plan" }
 
 type K8sDeployRun struct {
-	ID            uint            `json:"id" gorm:"primaryKey"`
-	PlanID        uint            `json:"planId" gorm:"index;not null"`
-	Revision      int             `json:"revision"`
-	Kind          string          `json:"kind" gorm:"size:32"`
-	Status        string          `json:"status" gorm:"size:32;index"`
-	Operator      string          `json:"operator" gorm:"size:128"`
-	Config        K8sDeployConfig `json:"config" gorm:"serializer:json;type:text"`
-	Nodes         []K8sDeployNode `json:"nodes" gorm:"serializer:json;type:text"`
-	Fingerprint   string          `json:"-" gorm:"size:64"`
-	Error         string          `json:"error" gorm:"type:text"`
-	StopRequested bool            `json:"stopRequested"`
-	Mutated       bool            `json:"mutated"`
-	StartedAt     time.Time       `json:"startedAt"`
-	HeartbeatAt   time.Time       `json:"heartbeatAt" gorm:"index"`
-	FinishedAt    *time.Time      `json:"finishedAt"`
+	ID                   uint            `json:"id" gorm:"primaryKey"`
+	PlanID               uint            `json:"planId" gorm:"index;not null"`
+	Revision             int             `json:"revision"`
+	Kind                 string          `json:"kind" gorm:"size:32"`
+	Status               string          `json:"status" gorm:"size:32;index"`
+	Operator             string          `json:"operator" gorm:"size:128"`
+	Config               K8sDeployConfig `json:"config" gorm:"serializer:json;type:text"`
+	Nodes                []K8sDeployNode `json:"nodes" gorm:"serializer:json;type:text"`
+	Fingerprint          string          `json:"-" gorm:"size:64"`
+	Error                string          `json:"error" gorm:"type:text"`
+	StopRequested        bool            `json:"stopRequested"`
+	Mutated              bool            `json:"mutated"`
+	DependenciesPrepared bool            `json:"dependenciesPrepared"`
+	PhaseSequence        int             `json:"phaseSequence" gorm:"not null;default:0"`
+	StartedAt            time.Time       `json:"startedAt"`
+	HeartbeatAt          time.Time       `json:"heartbeatAt" gorm:"index"`
+	FinishedAt           *time.Time      `json:"finishedAt"`
 }
 
 func (K8sDeployRun) TableName() string { return "k8s_deploy_run" }

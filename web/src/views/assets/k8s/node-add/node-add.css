@@ -66,6 +66,9 @@
 .na-check-node .warning i, .na-check-node .warning small { color: #b88427; }
 .na-check-node small, .na-muted { color: var(--na-muted); font-size: 11px; }
 .na-check-identity { display: grid; gap: 5px; }
+.na-system-options > div { padding: 14px; border: 1px solid var(--na-line); border-radius: 8px; }
+.na-system-options .el-switch { float: right; }
+.na-system-options p { font-size: 11px; line-height: 1.6; color: var(--na-muted); margin: 10px 0 0; }
 .na-capacity { display: flex; align-items: center; justify-content: space-around; padding: 20px 30px; margin-bottom: 20px; border: 1px solid #dce7fd; background: #f3f7ff; border-radius: 10px; }
 .na-capacity > div { display: grid; text-align: center; gap: 8px; }
 .na-capacity span { font-size: 11px; color: #778cab; }

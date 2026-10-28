@@ -25,6 +25,8 @@ func (e *deployWarning) Error() string { return e.message }
 
 type deployProbe struct {
 	Interface string   `json:"interface"`
+	Kernel    string   `json:"kernel"`
+	Cgroup    string   `json:"cgroup"`
 	OS        string   `json:"os"`
 	Version   string   `json:"version"`
 	Arch      string   `json:"arch"`
@@ -67,6 +69,9 @@ func (s *Service) processK8sDeploy(run model.K8sDeployRun, hosts []model.AssetHo
 	identities := map[string]bool{}
 	var err error
 	for _, host := range hosts {
+		if err = s.deployDependencyStep(run, host); err != nil {
+			break
+		}
 		n := deployNodeForHost(run.Nodes, host.ID)
 		var probe deployProbe
 		err = s.deployStep(run, host, "节点预检", false, func(log func(string)) error {
@@ -77,7 +82,7 @@ func (s *Service) processK8sDeploy(run model.K8sDeployRun, hosts []model.AssetHo
 			if err = json.Unmarshal([]byte(strings.TrimSpace(output)), &probe); err != nil {
 				return errors.New("无法解析节点探测结果，请确认 python3 与 iproute2 可用")
 			}
-			log(fmt.Sprintf("识别系统 %s %s / %s，CPU %d，内存 %d MiB，可用磁盘 %d GiB\n", probe.OS, probe.Version, probe.Arch, probe.CPU, probe.MemoryMB, probe.DiskGB))
+			log(fmt.Sprintf("识别系统 %s %s / %s，内核 %s / cgroup %s，CPU %d，内存 %d MiB，可用磁盘 %d GiB\n", probe.OS, probe.Version, probe.Arch, probe.Kernel, probe.Cgroup, probe.CPU, probe.MemoryMB, probe.DiskGB))
 			if probe.MachineID == "" {
 				return errors.New("无法获取主机身份 machine-id")
 			}
@@ -160,7 +165,7 @@ func resolveDeployNodes(run model.K8sDeployRun, probes map[uint]deployProbe) ([]
 		if !run.Config.AutoHostname {
 			name = p.Hostname
 		}
-		if run.Kind == "deploy" && (n.MachineID == "" || n.MachineID != p.MachineID || n.OS != p.OS+" "+p.Version || n.Arch != p.Arch || (!run.Config.AutoHostname && n.Name != name)) {
+		if run.Kind == "deploy" && (n.MachineID == "" || n.MachineID != p.MachineID || n.OS != p.OS+" "+p.Version || n.Arch != p.Arch || n.Kernel != p.Kernel || n.Cgroup != p.Cgroup || (!run.Config.AutoHostname && n.Name != name)) {
 			return nil, fmt.Errorf("主机 %s 的身份、系统或主机名与预检不一致，请重新预检", n.HostName)
 		}
 		if len(name) > 63 || !deployNodeNamePattern.MatchString(name) || names[name] {
@@ -168,6 +173,7 @@ func resolveDeployNodes(run model.K8sDeployRun, probes map[uint]deployProbe) ([]
 		}
 		names[name] = true
 		n.Name, n.OS, n.Arch, n.MachineID = name, p.OS+" "+p.Version, p.Arch, p.MachineID
+		n.Kernel, n.Cgroup = p.Kernel, p.Cgroup
 	}
 	return nodes, nil
 }
@@ -196,12 +202,8 @@ func (s *Service) deployStep(run model.K8sDeployRun, host model.AssetHost, title
 		return errDeployStopped
 	}
 	if mutates {
-		res := s.db.Model(&model.K8sDeployRun{}).Where("id = ? AND status = ? AND stop_requested = ?", run.ID, deployActive, false).Update("mutated", true)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected != 1 {
-			return errDeployStopped
+		if err := s.claimDeployPhase(run.ID, "mutated"); err != nil {
+			return err
 		}
 	}
 	step := model.K8sDeployStep{RunID: run.ID, HostID: host.ID, HostName: host.HostName, Title: title, Status: deployActive, StartedAt: time.Now()}
@@ -273,6 +275,22 @@ func (s *Service) deployStep(run model.K8sDeployRun, host model.AssetHost, title
 		return err
 	}
 	return saveErr
+}
+
+func (s *Service) claimDeployPhase(runID uint, flag string) error {
+	if flag != "mutated" && flag != "dependencies_prepared" {
+		return errors.New("阶段标记无效")
+	}
+	// MySQL reports zero changed rows for SET flag=true after the first phase.
+	// A monotonic sequence guarantees every successful claim changes the row.
+	res := s.db.Model(&model.K8sDeployRun{}).Where("id = ? AND status = ? AND stop_requested = ?", runID, deployActive, false).Updates(map[string]any{flag: true, "phase_sequence": gorm.Expr("phase_sequence + 1"), "heartbeat_at": time.Now()})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return errDeployStopped
+	}
+	return nil
 }
 
 func (s *Service) finishK8sDeploy(runID uint, runErr error) {
@@ -354,82 +372,9 @@ func deployProbeScript(c model.K8sDeployConfig, n model.K8sDeployNode) string {
 }
 
 func deployProbeScriptOptions(c model.K8sDeployConfig, n model.K8sDeployNode, joining bool) string {
-	params, _ := json.Marshal(map[string]any{"interface": n.Interface, "ip": n.IP, "version": c.Version, "repository": c.ImageRepository, "master": n.Role == "master", "builtinLB": c.BuiltinLB, "apiPort": c.APIPort, "runtimeDirectory": c.RuntimeDirectory, "vip": c.APIServer, "plugin": c.NetworkPlugin, "metrics": c.MetricsServer, "joining": joining})
-	return "set -euo pipefail\ncommand -v python3 >/dev/null || { echo '目标主机需要预装 python3' >&2; exit 1; }\npython3 - " + shellQuote(base64.StdEncoding.EncodeToString(params)) + " <<'PY'\n" + deployProbePython + "\nPY"
+	params, _ := json.Marshal(map[string]any{"interface": n.Interface, "ip": n.IP, "version": c.Version, "repository": c.ImageRepository, "master": n.Role == "master", "builtinLB": c.BuiltinLB, "apiPort": c.APIPort, "runtimeDirectory": c.RuntimeDirectory, "vip": c.APIServer, "plugin": c.NetworkPlugin, "metrics": c.MetricsServer, "joining": joining, "disableSELinux": c.DisableSELinux, "disableFirewalld": c.DisableFirewalld, "requireV2": c.RequireCgroupV2})
+	return "set -euo pipefail\nexport LC_ALL=C\ncommand -v python3 >/dev/null || { echo '基础依赖准备未成功：python3 仍不可用' >&2; exit 1; }\npython3 - " + shellQuote(base64.StdEncoding.EncodeToString(params)) + " <<'PY'\n" + deployProbePython + "\nPY"
 }
-
-const deployProbePython = `import os, sys, json, platform, subprocess, shutil, urllib.request, base64, gzip
-p=json.loads(base64.b64decode(sys.argv[1])); errors=[]
-release={}
-for line in open('/etc/os-release'):
-    if '=' in line:
-        k,v=line.strip().split('=',1); release[k]=v.strip('"')
-system=release.get('ID',''); version=release.get('VERSION_ID',''); arch=platform.machine()
-if not ((system=='ubuntu' and version in ('22.04','24.04')) or (system=='debian' and version in ('12','13'))): errors.append('不支持的系统：'+system+' '+version)
-if arch not in ('x86_64','aarch64'): errors.append('不支持的架构：'+arch)
-if not shutil.which('apt-get') or not shutil.which('ip') or not shutil.which('systemctl'): errors.append('需要 apt-get、iproute2 和 systemd')
-cpu=os.cpu_count() or 0
-memory=int(next((l.split()[1] for l in open('/proc/meminfo') if l.startswith('MemTotal:')),0))//1024
-disk=shutil.disk_usage('/').free//(1024**3)
-if cpu<2 or memory<1800 or disk<15: errors.append('至少需要 2 CPU、约 2 GiB 内存和 15 GiB 可用磁盘')
-for target in ('/etc/kubernetes/admin.conf','/etc/kubernetes/kubelet.conf','/etc/kubernetes/manifests/kube-apiserver.yaml','/var/lib/etcd/member'):
-    if os.path.exists(target): errors.append('发现现有 Kubernetes/etcd 数据，禁止自动覆盖'); break
-for service in ('docker','containerd','kubelet'):
-    if subprocess.run(['systemctl','is-active','--quiet',service],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0: errors.append('已有运行中的 '+service+'，请使用干净的目标主机')
-for target in set(['/var/lib/containerd',p['runtimeDirectory']]):
-    if target and os.path.isdir(target) and os.listdir(target): errors.append('运行时目录非空：'+target)
-addresses=[]; networks=[]
-try:
-    interfaces=json.loads(subprocess.check_output(['ip','-j','-4','address'],text=True))
-    if p['interface']=='auto':
-        p['interface']=next((i['ifname'] for i in interfaces if any(a.get('local')==p['ip'] for a in i.get('addr_info',[]))), '')
-    import ipaddress
-    for interface in interfaces:
-        for addr in interface.get('addr_info',[]):
-            if interface['ifname']==p['interface']: addresses.append(addr['local'])
-            if addr.get('scope')=='global': networks.append(str(ipaddress.ip_network(addr['local']+'/'+str(addr['prefixlen']),strict=False)))
-    if p['ip'] not in addresses: errors.append('部署 IP 不属于指定网口 '+p['interface'])
-    routes=json.loads(subprocess.check_output(['ip','-j','-4','route'],text=True))
-    networks+= [r['dst'] for r in routes if r.get('dst') and r['dst']!='default']
-    if p['master'] and p['builtinLB']:
-        own=[ipaddress.ip_network(a['local']+'/'+str(a['prefixlen']),strict=False) for interface in interfaces if interface['ifname']==p['interface'] for a in interface.get('addr_info',[])]
-        if not any(ipaddress.ip_address(p['vip']) in subnet for subnet in own): errors.append('VIP 必须属于控制平面网口所在子网')
-        if subprocess.run(['ping','-c','1','-W','2',p['vip']],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0: errors.append('VIP 已有 ICMP 响应，请确认未被占用')
-except Exception: errors.append('无法读取网口及路由信息')
-if os.path.exists('/sys/fs/cgroup/cgroup.controllers') is False: errors.append('当前模板要求 cgroup v2')
-try:
-    import socket
-    ports=[10250]+([6443,2379,2380] if p['master'] else [])+([p['apiPort']] if p['master'] and p['builtinLB'] else [])
-    for port in ports:
-        sock=socket.socket()
-        try: sock.bind(('0.0.0.0',port))
-        except OSError: errors.append('端口已被占用：'+str(port))
-        finally: sock.close()
-except Exception: errors.append('端口检查失败')
-minor='.'.join(p['version'].split('.')[:2])
-try:
-    with urllib.request.urlopen('https://pkgs.k8s.io/core:/stable:/v'+minor+'/deb/Packages.gz',timeout=20) as r: packages=gzip.decompress(r.read(16*1024*1024)).decode()
-    if not any(line.startswith('Version: '+p['version']+'-') for line in packages.splitlines()): errors.append('官方软件源未找到 Kubernetes '+p['version'])
-except Exception: errors.append('无法访问 Kubernetes 软件源，请检查出网及代理')
-urls=[] if p.get('joining') else ['https://raw.githubusercontent.com/projectcalico/calico/v3.31.2/manifests/calico.yaml' if p['plugin']=='calico' else 'https://raw.githubusercontent.com/flannel-io/flannel/v0.27.4/Documentation/kube-flannel.yml']
-if p['metrics']: urls.append('https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.0/components.yaml')
-for url in urls:
-    try:
-        with urllib.request.urlopen(url,timeout=15) as response: response.read(128)
-    except Exception: errors.append('无法访问组件安装文件：'+url)
-try:
-    req=urllib.request.Request('https://'+p['repository'].split('/')[0]+'/v2/',method='GET')
-    try: urllib.request.urlopen(req,timeout=15).close()
-    except urllib.error.HTTPError as e:
-        if e.code!=401: raise
-except Exception: errors.append('无法访问镜像仓库；组件镜像是否存在将在拉取阶段验证')
-if not os.path.exists('/run/systemd/timesync/synchronized'):
-    try:
-        synchronized=subprocess.check_output(['timedatectl','show','--property=NTPSynchronized','--value'],text=True).strip()
-        if synchronized!='yes': errors.append('系统时间尚未同步，请先启用 NTP')
-    except Exception: errors.append('无法确认系统时间同步')
-machine=open('/etc/machine-id').read().strip() if os.path.exists('/etc/machine-id') else ''
-print(json.dumps(dict(os=system,version=version,arch=arch,hostname=platform.node().split('.')[0],interface=p['interface'],machineId=machine,cpu=cpu,memoryMB=memory,diskGB=disk,addresses=addresses,networks=networks,errors=errors)))`
 
 func (s *Service) installK8sDeploy(run model.K8sDeployRun, hosts []model.AssetHost) error {
 	c := run.Config

@@ -19,8 +19,9 @@ const emit = defineEmits(['edit'])
       <el-descriptions-item label="Service CIDR"><span class="deploy-mono">{{ c.serviceCIDR }}</span></el-descriptions-item>
       <el-descriptions-item label="节点命名">{{ c.autoHostname ? '自动设置主机名' : '保留主机名' }}</el-descriptions-item>
       <el-descriptions-item label="关闭 SELinux">{{ c.disableSELinux ? '是（已安装时执行）' : '否' }}</el-descriptions-item>
+      <el-descriptions-item label="关闭 Firewalld">{{ c.disableFirewalld ? '是（正式安装时执行）' : '否' }}</el-descriptions-item>
       <el-descriptions-item label="镜像仓库" :span="2">{{ c.imageRepository }}</el-descriptions-item>
-      <el-descriptions-item label="自定义软件源" :span="2"><pre v-if="c.customSource" class="deploy-pre">{{ c.customSource }}</pre><span v-else>使用节点软件源</span></el-descriptions-item>
+      <el-descriptions-item label="系统软件源" :span="2"><pre v-if="c.customSource" class="deploy-pre">{{ c.customSource }}</pre><span v-else>阿里云（按系统及架构自动匹配）</span></el-descriptions-item>
       <el-descriptions-item label="自定义 kubelet" :span="2"><pre v-if="c.kubeletConfig" class="deploy-pre">{{ c.kubeletConfig }}</pre><span v-else>默认配置</span></el-descriptions-item>
       <el-descriptions-item label="环境">{{ plan.env || '未分配' }}</el-descriptions-item>
       <el-descriptions-item label="描述">{{ plan.description || '—' }}</el-descriptions-item>

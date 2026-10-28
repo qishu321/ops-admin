@@ -1686,17 +1686,17 @@
   background: linear-gradient(90deg, #f7faff 0%, #fff 72%);
 }
 
-.node-management-intro strong,
-.node-management-intro span {
+.node-management-intro > div:first-child > strong,
+.node-management-intro > div:first-child > span {
   display: block;
 }
 
-.node-management-intro strong {
+.node-management-intro > div:first-child > strong {
   color: #172b4d;
   font-size: 16px;
 }
 
-.node-management-intro span {
+.node-management-intro > div:first-child > span {
   margin-top: 5px;
   color: #8090aa;
   font-size: 13px;

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"ops-admin/backend/model"
+	"ops-admin/backend/util"
 
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
@@ -695,6 +696,13 @@ func (s *Service) GetK8sCluster(id uint) (model.K8sCluster, error) {
 	if err := s.db.Preload("Gateway").Preload("MonitorDatasource").First(&cluster, id).Error; err != nil {
 		return cluster, err
 	}
+	if strings.HasPrefix(cluster.KubeConfig, "encrypted:v1:") {
+		plain, err := util.DecryptSecret(strings.TrimPrefix(cluster.KubeConfig, "encrypted:v1:"))
+		if err != nil {
+			return cluster, err
+		}
+		cluster.KubeConfig = plain
+	}
 	return cluster, nil
 }
 
@@ -787,6 +795,15 @@ func (s *Service) UpdateK8sCluster(payload model.K8sClusterPayload) (model.K8sCl
 	cluster.Status = probe.Status
 	cluster.LastSyncAt = &now
 
+	// Preserve encrypted storage when an administrator edits an automatically
+	// registered cluster through the existing kubeconfig editor.
+	if !strings.HasPrefix(cluster.KubeConfig, "encrypted:v1:") {
+		cipher, encryptErr := util.EncryptSecret(cluster.KubeConfig)
+		if encryptErr != nil {
+			return cluster, encryptErr
+		}
+		cluster.KubeConfig = "encrypted:v1:" + cipher
+	}
 	if err := s.db.Save(&cluster).Error; err != nil {
 		return cluster, err
 	}
@@ -4829,6 +4846,13 @@ func (s *Service) probeK8sCluster(cluster model.K8sCluster) (k8sClusterProbe, er
 }
 
 func parseKubeConfig(content string) (kubeClusterRuntime, error) {
+	if strings.HasPrefix(content, "encrypted:v1:") {
+		plain, err := util.DecryptSecret(strings.TrimPrefix(content, "encrypted:v1:"))
+		if err != nil {
+			return kubeClusterRuntime{}, errors.New("无法解密集群连接凭据")
+		}
+		content = plain
+	}
 	var cfg kubeConfig
 	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
 		return kubeClusterRuntime{}, err

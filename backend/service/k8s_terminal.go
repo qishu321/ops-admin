@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ops-admin/backend/model"
+	"ops-admin/backend/util"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -409,7 +410,15 @@ func k8sAPITargetAddress(rawURL string) (string, error) {
 }
 
 func (s *Service) k8sRESTConfigForCluster(cluster model.K8sCluster) (*rest.Config, func(), error) {
-	config, err := clientcmd.RESTConfigFromKubeConfig([]byte(cluster.KubeConfig))
+	content := cluster.KubeConfig
+	if strings.HasPrefix(content, "encrypted:v1:") {
+		plain, err := util.DecryptSecret(strings.TrimPrefix(content, "encrypted:v1:"))
+		if err != nil {
+			return nil, func() {}, errors.New("无法解密集群连接凭据")
+		}
+		content = plain
+	}
+	config, err := clientcmd.RESTConfigFromKubeConfig([]byte(content))
 	if err != nil {
 		return nil, func() {}, err
 	}

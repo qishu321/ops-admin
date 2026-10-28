@@ -14,6 +14,7 @@ export function useInspectionExport({ inspectionReport, inspectionReportResults 
       return `
         <tr>
           <td>${index + 1}</td>
+          <td>${escapeHtml(item.datasourceName || report.datasourceName || '-')}</td>
           <td>${escapeHtml(item.title)}<br><small>${escapeHtml(item.category || '')}</small></td>
           <td><span class="status ${stateType}">${escapeHtml(stateText)}</span></td>
           <td>${escapeHtml(item.valueText || '--')}</td>
@@ -62,11 +63,11 @@ export function useInspectionExport({ inspectionReport, inspectionReportResults 
           <div class="meta">
             <span>巡检范围：${escapeHtml(formatReportTime(report.startAt))} 至 ${escapeHtml(formatReportTime(report.endAt))}</span>
             <span>完成时间：${escapeHtml(formatReportTime(report.completedAt))}</span>
-            <span>数据源：${escapeHtml(report.datasourceName || '-')}</span>
+            <span>数据源：${escapeHtml(report.datasourceNames?.length ? report.datasourceNames.join('、') : report.datasourceName || '-')}</span>
             <span>耗时：${report.durationMs || 0} ms</span>
           </div>
           <div class="summary">
-            <div class="card"><span>巡检项</span><strong>${report.totalCount}</strong></div>
+            <div class="card"><span>检查结果</span><strong>${report.totalCount}</strong></div>
             <div class="card"><span>正常</span><strong>${report.healthyCount}</strong></div>
             <div class="card"><span>待核查</span><strong>${report.warningCount}</strong></div>
             <div class="card"><span>异常</span><strong>${report.dangerCount}</strong></div>
@@ -74,10 +75,10 @@ export function useInspectionExport({ inspectionReport, inspectionReportResults 
           <table>
             <thead>
               <tr>
-                <th>#</th><th>巡检项</th><th>状态</th><th>统计值</th><th>统计方式</th><th>序列</th><th>PromQL / 错误</th>
+                <th>#</th><th>数据源</th><th>巡检项</th><th>状态</th><th>统计值</th><th>统计方式</th><th>序列</th><th>PromQL / 错误</th>
               </tr>
             </thead>
-            <tbody>${rows || '<tr><td colspan="7">暂无巡检结果</td></tr>'}</tbody>
+            <tbody>${rows || '<tr><td colspan="8">暂无巡检结果</td></tr>'}</tbody>
           </table>
         </body>
       </html>

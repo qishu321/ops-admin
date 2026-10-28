@@ -252,11 +252,12 @@ type MonitorDashboardPanelPayload struct {
 }
 
 type MonitorInspectionRunPayload struct {
-	DashboardID  uint  `json:"dashboardId"`
-	DatasourceID uint  `json:"datasourceId"`
-	StartAt      int64 `json:"startAt"`
-	EndAt        int64 `json:"endAt"`
-	StepSeconds  int   `json:"stepSeconds"`
+	DashboardID   uint   `json:"dashboardId"`
+	DatasourceID  uint   `json:"datasourceId"`
+	DatasourceIDs []uint `json:"datasourceIds"`
+	StartAt       int64  `json:"startAt"`
+	EndAt         int64  `json:"endAt"`
+	StepSeconds   int    `json:"stepSeconds"`
 }
 
 type MonitorDashboardPanelQueryPayload struct {
@@ -5589,19 +5590,16 @@ func (s *Service) RunMonitorInspection(payload MonitorInspectionRunPayload) (map
 	if len(panels) == 0 {
 		return nil, errors.New("当前方案没有启用的巡检项")
 	}
-	datasourceID := payload.DatasourceID
-	if datasourceID == 0 {
-		datasourceID = panels[0].DatasourceID
-	}
-	ds, err := s.GetMonitorDatasource(datasourceID)
+	datasources, err := s.inspectionDatasources(payload, panels[0].DatasourceID)
 	if err != nil {
 		return nil, err
 	}
-	if isMonitorLogDatasource(ds.Type) {
-		return nil, errors.New("巡检仅支持 Prometheus 或 VictoriaMetrics 指标数据源")
-	}
 	startedAt := time.Now()
-	run := model.MonitorInspectionRun{DashboardID: dashboard.ID, DashboardName: dashboard.Name, DatasourceID: ds.ID, DatasourceName: ds.Name, StartAt: time.Unix(payload.StartAt, 0), EndAt: time.Unix(payload.EndAt, 0), Status: "running", TotalCount: len(panels)}
+	run := model.MonitorInspectionRun{DashboardID: dashboard.ID, DashboardName: dashboard.Name, DatasourceID: datasources[0].ID, DatasourceName: datasources[0].Name, StartAt: time.Unix(payload.StartAt, 0), EndAt: time.Unix(payload.EndAt, 0), Status: "running", TotalCount: len(panels) * len(datasources)}
+	for _, ds := range datasources {
+		run.DatasourceIDs = append(run.DatasourceIDs, ds.ID)
+		run.DatasourceNames = append(run.DatasourceNames, ds.Name)
+	}
 	if err := s.db.Create(&run).Error; err != nil {
 		return nil, err
 	}
@@ -5615,9 +5613,10 @@ func (s *Service) RunMonitorInspection(payload MonitorInspectionRunPayload) (map
 		noData bool
 	}
 	evaluate := func(index int, panel model.MonitorDashboardPanel) evaluatedInspection {
+		ds := datasources[index/len(panels)]
 		rule := inspectionRuleFor(panel)
-		item := model.MonitorInspectionResult{RunID: run.ID, PanelID: panel.ID, Title: panel.Title, Category: rule.category, InspectionKind: rule.kind, Unit: panel.Unit, Reducer: rule.reducer, Operator: rule.operator, WarningValue: rule.warning, CriticalValue: rule.critical, NoDataState: rule.noDataState, PromQL: panel.PromQL}
-		queryResult, queryErr := s.prometheusRangeQuery(*ds, panel.PromQL, run.StartAt, run.EndAt, step)
+		item := model.MonitorInspectionResult{RunID: run.ID, PanelID: panel.ID, DatasourceID: ds.ID, DatasourceName: ds.Name, Title: panel.Title, Category: rule.category, InspectionKind: rule.kind, Unit: panel.Unit, Reducer: rule.reducer, Operator: rule.operator, WarningValue: rule.warning, CriticalValue: rule.critical, NoDataState: rule.noDataState, PromQL: panel.PromQL}
+		queryResult, queryErr := s.prometheusRangeQuery(ds, panel.PromQL, run.StartAt, run.EndAt, step)
 		noData := false
 		if queryErr != nil {
 			item.Status, item.Error, item.ValueText = "danger", queryErr.Error(), "查询失败"
@@ -5635,30 +5634,30 @@ func (s *Service) RunMonitorInspection(payload MonitorInspectionRunPayload) (map
 		return evaluatedInspection{index: index, item: item, noData: noData}
 	}
 	jobs := make(chan int)
-	completed := make(chan evaluatedInspection, len(panels))
+	completed := make(chan evaluatedInspection, run.TotalCount)
 	var workers sync.WaitGroup
-	for workerIndex := 0; workerIndex < min(4, len(panels)); workerIndex++ {
+	for workerIndex := 0; workerIndex < min(4, run.TotalCount); workerIndex++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				completed <- evaluate(index, panels[index])
+				completed <- evaluate(index, panels[index%len(panels)])
 			}
 		}()
 	}
 	go func() {
-		for index := range panels {
+		for index := 0; index < run.TotalCount; index++ {
 			jobs <- index
 		}
 		close(jobs)
 		workers.Wait()
 		close(completed)
 	}()
-	evaluated := make([]evaluatedInspection, len(panels))
+	evaluated := make([]evaluatedInspection, run.TotalCount)
 	for value := range completed {
 		evaluated[value.index] = value
 	}
-	results := make([]model.MonitorInspectionResult, 0, len(panels))
+	results := make([]model.MonitorInspectionResult, 0, run.TotalCount)
 	for _, value := range evaluated {
 		item := value.item
 		if value.noData {
@@ -5690,10 +5689,16 @@ func (s *Service) GetMonitorInspectionRun(id uint) (map[string]any, error) {
 	if err := s.db.First(&run, id).Error; err != nil {
 		return nil, err
 	}
+	for _, id := range uniqueMonitorDatasourceIDs(run.DatasourceIDs, run.DatasourceID) {
+		if err := s.requireResource("datasource", id, "", "query"); err != nil {
+			return nil, err
+		}
+	}
 	var results []model.MonitorInspectionResult
 	if err := s.db.Where("run_id = ?", run.ID).Order("id ASC").Find(&results).Error; err != nil {
 		return nil, err
 	}
+	hydrateInspectionDatasourceSnapshots(&run, results)
 	return map[string]any{"run": run, "results": results}, nil
 }
 

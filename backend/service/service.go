@@ -83,6 +83,7 @@ func New(db *gorm.DB) *Service {
 	svc.initOpsRetryCleanup()
 	svc.initHTTPProbeLogCleanup()
 	svc.initK8sScalingScheduler()
+	svc.initK8sDeployRecovery()
 	svc.initMonitorScheduler()
 	svc.initDatabaseBackupScheduler()
 	svc.initFinOpsScheduler()

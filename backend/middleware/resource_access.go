@@ -124,6 +124,11 @@ func resourceRouteFor(method, path string) resourceRoute {
 		}
 		return resourceRoute{Kind: "database", Action: action, Permissions: []string{permission}}
 	}
+	if strings.HasPrefix(path, "/k8s/deploy/") || strings.HasPrefix(path, "/k8s/node-add/") {
+		// Installing a cluster changes host ownership and creates cluster credentials.
+		// Keep the same administrator boundary as cluster connection management.
+		return resourceRoute{Admin: true}
+	}
 	if strings.HasPrefix(path, "/k8s/") {
 		action := "read"
 		permissions := []string{"assets:k8s:cluster", "assets:k8s:overview", "assets:k8s:node", "assets:k8s:namespace", "assets:k8s:workload", "assets:k8s:pod", "assets:k8s:advancednetwork", "assets:k8s:configstorage", "assets:k8s:scalingpolicy"}

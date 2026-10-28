@@ -16,6 +16,7 @@ import (
 
 type systemTestDB struct {
 	query  func(string, []driver.NamedValue) ([]string, [][]driver.Value, error)
+	exec   func(string, []driver.NamedValue) (driver.Result, error)
 	writes []string
 }
 type systemTestConnector struct{ state *systemTestDB }
@@ -43,8 +44,11 @@ func (c *systemTestConn) QueryContext(_ context.Context, q string, args []driver
 	cols, rows, err := c.state.query(q, args)
 	return &systemTestRows{columns: cols, rows: rows}, err
 }
-func (c *systemTestConn) ExecContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Result, error) {
+func (c *systemTestConn) ExecContext(_ context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
 	c.state.writes = append(c.state.writes, q)
+	if c.state.exec != nil {
+		return c.state.exec(q, args)
+	}
 	return driver.RowsAffected(1), nil
 }
 func (r *systemTestRows) Columns() []string { return r.columns }

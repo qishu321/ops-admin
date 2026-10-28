@@ -1,0 +1,112 @@
+/* Inspection-only palette and shared controls; monitoring grids keep their own theme. */
+.dashboard-page.is-inspection-page {
+  --dash-canvas: #f4f7fb;
+  --dash-surface: #fff;
+  --dash-subtle: #f7f9fc;
+  --dash-border: #e2e8f1;
+  --dash-text: #172740;
+  --dash-muted: #66758a;
+  --dash-accent: #4e60ce;
+  --inspect-healthy: #19815f;
+  --inspect-warning: #aa7016;
+  --inspect-danger: #c44754;
+  --inspect-accent-soft: #eff1fd;
+  --inspect-cell-healthy: #f1f8f5;
+  --inspect-cell-warning: #fff8e9;
+  --inspect-cell-danger: #fff0f2;
+  --inspect-shadow: 0 3px 12px rgba(22, 39, 64, .025);
+  gap: 16px;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-page.is-inspection-page.is-dark {
+  --dash-canvas: #0d1522;
+  --dash-surface: #141f2f;
+  --dash-subtle: #192638;
+  --dash-border: #29394e;
+  --dash-text: #e7edf6;
+  --dash-muted: #9cacc2;
+  --dash-accent: #a0afff;
+  --inspect-healthy: #65d2ad;
+  --inspect-warning: #efc279;
+  --inspect-danger: #ff939d;
+  --inspect-accent-soft: #252f4d;
+  --inspect-cell-healthy: #172e2c;
+  --inspect-cell-warning: #332c23;
+  --inspect-cell-danger: #362530;
+  --inspect-shadow: none;
+}
+.is-inspection-page .observability-canvas {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.is-inspection-page .el-button {
+  --el-button-bg-color: var(--dash-surface);
+  --el-button-border-color: var(--dash-border);
+  --el-button-text-color: var(--dash-text);
+  --el-button-hover-bg-color: var(--inspect-accent-soft);
+  --el-button-hover-border-color: var(--dash-accent);
+  --el-button-hover-text-color: var(--dash-accent);
+  border-radius: 8px;
+  font-weight: 500;
+}
+.is-inspection-page .el-button--primary:not(.is-link):not(.is-plain) {
+  --el-button-bg-color: #4e60ce;
+  --el-button-border-color: #4e60ce;
+  --el-button-text-color: #fff;
+  --el-button-hover-bg-color: #4051bb;
+  --el-button-hover-border-color: #4051bb;
+  --el-button-hover-text-color: #fff;
+  --el-button-disabled-bg-color: var(--dash-subtle);
+  --el-button-disabled-border-color: var(--dash-border);
+  --el-button-disabled-text-color: var(--dash-muted);
+}
+.is-inspection-page .el-select__wrapper,
+.is-inspection-page .el-date-editor.el-input__wrapper {
+  min-height: 38px;
+  border-radius: 8px;
+  background: var(--dash-surface);
+  /* The platform's shared input rule is !important; scope its override here. */
+  box-shadow: 0 0 0 1px var(--dash-border) inset !important;
+}
+.is-inspection-page .el-select__wrapper.is-focused,
+.is-inspection-page .el-date-editor.el-input__wrapper.is-focus { box-shadow: 0 0 0 1px var(--dash-accent) inset !important; }
+.is-inspection-page .el-select__selected-item { color: var(--dash-text); }
+.is-inspection-page .el-select .el-tag {
+  --el-tag-bg-color: var(--inspect-accent-soft);
+  --el-tag-border-color: transparent;
+  --el-tag-text-color: var(--dash-accent);
+}
+.is-inspection-page .el-button.is-link.el-button--danger { color: var(--inspect-danger); }
+.is-inspection-page .el-button.is-link.el-button--primary { color: var(--dash-accent); }
+.is-inspection-page .el-loading-mask { background-color: var(--dash-surface); opacity: .92; }
+.is-inspection-page .observability-canvas:is(:fullscreen, .is-presentation) {
+  --dash-canvas: #0d1522;
+  --dash-surface: #141f2f;
+  --dash-subtle: #192638;
+  --dash-border: #29394e;
+  --dash-text: #e7edf6;
+  --dash-muted: #9cacc2;
+  --dash-accent: #a0afff;
+  --inspect-healthy: #65d2ad;
+  --inspect-warning: #efc279;
+  --inspect-danger: #ff939d;
+  --inspect-accent-soft: #252f4d;
+  --inspect-cell-healthy: #172e2c;
+  --inspect-cell-warning: #332c23;
+  --inspect-cell-danger: #362530;
+  --inspect-shadow: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 12px;
+  overflow: hidden;
+  color: var(--dash-text);
+  background: var(--dash-canvas);
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-inspection-page *, .is-inspection-page *::before, .is-inspection-page *::after { transition: none !important; }
+}

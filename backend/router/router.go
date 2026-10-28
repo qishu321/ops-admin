@@ -484,7 +484,19 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.POST("/monitor/inspection/run", ctl.Scoped((*controller.Controller).RunMonitorInspection))
 		authGroup.GET("/monitor/inspection/run/latest", ctl.Scoped((*controller.Controller).GetLatestMonitorInspectionRun))
 		authGroup.GET("/monitor/inspection/run/info", ctl.Scoped((*controller.Controller).GetMonitorInspectionRunInfo))
+		for _, action := range []string{"capabilities", "list", "host-options", "info", "logs"} {
+			authGroup.GET("/k8s/deploy/"+action, ctl.Scoped((*controller.Controller).K8sDeploy))
+		}
+		for _, action := range []string{"save", "precheck", "start", "stop", "delete", "register-cluster"} {
+			authGroup.POST("/k8s/deploy/"+action, ctl.Scoped((*controller.Controller).K8sDeploy))
+		}
 		authGroup.GET("/k8s/cluster/list", ctl.Scoped((*controller.Controller).GetK8sClusterList))
+		for _, action := range []string{"context", "hosts", "tasks", "tasks/:id"} {
+			authGroup.GET("/k8s/node-add/"+action, ctl.Scoped((*controller.Controller).K8sNodeAdd))
+		}
+		for _, action := range []string{"prechecks", "tasks", "tasks/:id/cancel"} {
+			authGroup.POST("/k8s/node-add/"+action, ctl.Scoped((*controller.Controller).K8sNodeAdd))
+		}
 		authGroup.GET("/k8s/cluster/info", ctl.Scoped((*controller.Controller).GetK8sClusterInfo))
 		authGroup.POST("/k8s/cluster/add", ctl.Scoped((*controller.Controller).CreateK8sCluster))
 		authGroup.PUT("/k8s/cluster/update", ctl.Scoped((*controller.Controller).UpdateK8sCluster))

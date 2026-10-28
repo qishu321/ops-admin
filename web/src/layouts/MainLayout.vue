@@ -123,8 +123,18 @@ const appNavigationSoftAccent = {
 }
 
 function countAppMenus(app) {
-  const countTree = (items = []) => items.reduce((total, item) => total + 1 + countTree(item.children), 0)
-  return app.menuSource === 'backend' ? countTree(rawMenus.value) : countTree(app.menus)
+  const menus = app.menuSource === 'backend'
+    ? normalizeBackendMenus(rawMenus.value)
+    : normalizeStaticMenus(app.menus || [])
+  const paths = new Set()
+  const visit = (items) => {
+    for (const item of items) {
+      if (item.children?.length) visit(item.children)
+      else if (item.path?.startsWith('/') && router.resolve(item.path).matched.length) paths.add(item.path)
+    }
+  }
+  visit(menus)
+  return paths.size
 }
 
 function loadTags() {

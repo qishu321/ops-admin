@@ -287,6 +287,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.POST("/dbms/sql/execute", ctl.Scoped((*controller.Controller).ExecuteDatabaseSQL))
 		authGroup.POST("/dbms/sql/analyze", ctl.Scoped((*controller.Controller).AnalyzeDatabaseSQL))
 		authGroup.POST("/dbms/redis/analyze", ctl.Scoped((*controller.Controller).AnalyzeRedisCommand))
+		authGroup.GET("/dbms/redis/keys", ctl.Scoped((*controller.Controller).GetRedisKeys))
 		authGroup.POST("/dbms/redis/execute", ctl.Scoped((*controller.Controller).ExecuteRedisCommand))
 		authGroup.GET("/dbms/sql/history", ctl.Scoped((*controller.Controller).GetDatabaseSQLHistory))
 		authGroup.POST("/dbms/table/row/insert", ctl.Scoped((*controller.Controller).InsertDatabaseTableRow))

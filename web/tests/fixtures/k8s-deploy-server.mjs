@@ -6,6 +6,7 @@ import { resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { emptyDeployment } from '../../src/utils/k8s-deploy.js'
 import { NodeAddMemory } from './k8s-node-add-memory.mjs'
+import { createRedisWorkbenchMemory } from './redis-workbench-memory.mjs'
 
 const root = resolve(fileURLToPath(new URL('../../dist', import.meta.url)))
 const user = { id: 990001, username: 'acceptance-test', nickname: '隔离验收', accountType: 'administrator' }
@@ -20,6 +21,7 @@ const hosts = Array.from({ length: 12 }, (_, i) => ({
   aliveStatus: 1, authStatus: 1, disabledReason: i === 10 ? '请先在 CMDB 配置有效凭据' : '', occupiedPlanId: i === 11 ? 999 : 0
 }))
 const nodeAdd = new NodeAddMemory(hosts)
+const redisWorkbench = createRedisWorkbenchMemory()
 setInterval(() => { for (const task of nodeAdd.tasks.values()) nodeAdd.advance(task.id) }, 900).unref()
 function respond(res, data, status = 200, message = 'success') { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ code: status, data, message })) }
 function step(run, host, title, status = 'success', summary = '模拟执行通过') {
@@ -30,7 +32,7 @@ function step(run, host, title, status = 'success', summary = '模拟执行通�
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://127.0.0.1:18081')
-    if (url.pathname === '/__test/state') return respond(res, { plans: [...plans.values()], requests, externalRequests: 0 })
+    if (url.pathname === '/__test/state') return respond(res, { plans: [...plans.values()], requests, redisWorkbench: redisWorkbench.inspect(), externalRequests: 0 })
     if (url.pathname.startsWith('/api/')) {
       let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 1e6) throw new Error('payload too large') }
       const body = raw ? JSON.parse(raw) : {}; requests.push({ method: req.method, path: url.pathname })
@@ -39,6 +41,7 @@ const server = createServer(async (req, res) => {
       if (url.pathname === '/api/v1/ops/environment/list') return respond(res, [{ id: 1, code: 'test', name: '测试环境' }])
       if (url.pathname === '/api/v1/asset/hostGroup/list') return respond(res, { list: [{ id: 1, name: '模拟服务器组' }] })
       if (url.pathname === '/api/v1/auth/refresh') return respond(res, { token: 'isolated-test-token', accessTokenExpiresAt: Date.now() + 3600000, sessionExpiresAt: Date.now() + 3600000 })
+      if (redisWorkbench.handle(req, url, body, respond, res)) return
       if (nodeAdd.handle(req, url, body, respond, res)) return
       const action = url.pathname.replace('/api/v1/k8s/deploy/', '')
       const id = Number(url.searchParams.get('id') || body.id), plan = plans.get(id)

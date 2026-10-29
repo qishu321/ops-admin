@@ -5,16 +5,15 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { confirmRiskOperation } from '../../composables/useRiskConfirm'
 import { queryAssetDatabaseList } from '../../api/asset'
 import DatabaseConnectionTree from './database/DatabaseConnectionTree.vue'
+import RedisWorkbench from './database/RedisWorkbench.vue'
 import {
   analyzeDBMSSQL,
-  analyzeRedisCommand,
   createDBMSSchema,
   createDBMSExportTask,
   createDBMSImportTask,
   deleteDBMSTableRow,
   downloadDBMSTaskFile,
   executeDBMSSQL,
-  executeRedisCommand,
   insertDBMSTableRow,
   precheckDBMSImportTask,
   queryDBMSSchemaTree,
@@ -35,12 +34,10 @@ const databaseId = computed(() => Number(route.params.id || 0))
 const loading = ref(false)
 const treeLoading = ref(false)
 const sqlRunning = ref(false)
-const redisRunning = ref(false)
 const dataLoading = ref(false)
 const historyLoading = ref(false)
 const taskLoading = ref(false)
 const rowDialogVisible = ref(false)
-const redisKeyDialogVisible = ref(false)
 const rollbackDialogVisible = ref(false)
 const importDialogVisible = ref(false)
 const createDatabaseVisible = ref(false)
@@ -50,7 +47,6 @@ const sqlConfirmVisible = ref(false)
 const sqlAcknowledgement = ref('')
 const activeTab = ref('data')
 const rowDialogMode = ref('insert')
-const redisKeyDialogMode = ref('create')
 
 const connection = ref(null)
 const schemaTree = ref([])
@@ -85,7 +81,6 @@ const currentToken = ref('')
 const activeSuggestionIndex = ref(0)
 const currentLine = ref(1)
 const sqlText = ref('SELECT *\nFROM your_table\nLIMIT 50;')
-const redisCommandText = ref('GET key')
 const sqlScrollTop = ref(0)
 const sqlScrollLeft = ref(0)
 const sqlEditorRef = ref(null)
@@ -135,13 +130,6 @@ const editingOriginalRow = ref(null)
 
 const rowForm = reactive({})
 const rowOriginal = ref({})
-const redisKeyForm = reactive({
-  key: '',
-  type: 'string',
-  value: '',
-  ttl: undefined
-})
-
 const importForm = reactive({
   sourceDatabaseId: undefined,
   sourceSchema: '',
@@ -173,21 +161,6 @@ const baseSqlSnippets = [
   { label: 'DELETE', text: 'DELETE FROM table_name\nWHERE id = 1;' }
 ]
 
-const redisCommandSnippets = [
-  { label: 'GET', text: 'GET key' },
-  { label: 'MGET', text: 'MGET key1 key2' },
-  { label: 'TTL', text: 'TTL key' },
-  { label: 'TYPE', text: 'TYPE key' },
-  { label: 'SCAN', text: 'SCAN 0 MATCH * COUNT 100' },
-  { label: 'HGETALL', text: 'HGETALL hash_key' },
-  { label: 'LRANGE', text: 'LRANGE list_key 0 -1' },
-  { label: 'SMEMBERS', text: 'SMEMBERS set_key' },
-  { label: 'ZRANGE', text: 'ZRANGE zset_key 0 -1 WITHSCORES' },
-  { label: 'SET', text: 'SET key value' },
-  { label: 'DEL', text: 'DEL key' },
-  { label: 'EXPIRE', text: 'EXPIRE key 3600' }
-]
-
 const sourceSchemas = computed(() => importSchemaTree.value || [])
 const isReadOnly = computed(() => connection.value?.accessMode === 'readonly')
 const capabilities = computed(() => connection.value?.capabilities || {})
@@ -210,14 +183,6 @@ const supportsResourceData = computed(() => capabilities.value.resourceData === 
 const supportsExport = computed(() => capabilities.value.export === true || (capabilities.value.export === undefined && capabilities.value.transfer !== false))
 const supportsImport = computed(() => capabilities.value.import === true || (capabilities.value.import === undefined && capabilities.value.transfer !== false))
 const canEditRows = computed(() => supportsTableData.value && !isReadOnly.value && selectedPrimaryKeys.value.length > 0 && capabilities.value.rowEdit !== false)
-const canManageRedisKeys = computed(() => isRedis.value && !isReadOnly.value && capabilities.value.keyEdit !== false)
-const redisKeyTypes = ['string', 'hash', 'list', 'set', 'zset']
-const redisKeyValuePlaceholder = computed(() => {
-  if (redisKeyForm.type === 'hash') return '{"field":"value"}'
-  if (redisKeyForm.type === 'zset') return '[{"member":"user:1","score":100}]'
-  if (['list', 'set'].includes(redisKeyForm.type)) return '["value-1", "value-2"]'
-  return '请输入字符串值'
-})
 const sourceTables = computed(() => {
   const schema = sourceSchemas.value.find((item) => item.name === importForm.sourceSchema)
   return schema?.tables || []
@@ -660,7 +625,8 @@ function formatResourceValue(value) {
 async function initialize() {
   loading.value = true
   try {
-    await Promise.all([loadConnection(), loadTree(), loadHistory(), loadTasks()])
+    await loadConnection()
+    if (!isRedis.value) await Promise.all([loadTree(), loadHistory(), loadTasks()])
   } finally {
     loading.value = false
   }
@@ -676,6 +642,7 @@ function switchDatabase(database) {
 }
 
 function resetWorkbenchState() {
+  connection.value = null
   selectedSchema.value = ''
   selectedTable.value = ''
   treeKeyword.value = ''
@@ -819,201 +786,6 @@ async function confirmSQLExecution() {
     sqlConfirmVisible.value = false
   } finally {
     sqlRunning.value = false
-  }
-}
-
-async function executeRedisCommandText(confirmed = false) {
-  const data = await executeRedisCommand({
-    databaseId: databaseId.value,
-    commandText: redisCommandText.value.trim(),
-    confirmed
-  })
-  resultColumns.value = data.columns || []
-  resultRows.value = data.rows || []
-  execMeta.sqlType = `REDIS ${data.command || ''}`.trim()
-  execMeta.rowsAffected = Number(data.rowsAffected || 0)
-  execMeta.durationMs = Number(data.durationMs || 0)
-  activeTab.value = 'result'
-  ElMessage.success('Redis 命令执行完成')
-  await loadHistory()
-  if (selectedTable.value) await loadResourceData()
-}
-
-async function runRedisCommand() {
-  if (!isRedis.value) return
-  if (!redisCommandText.value.trim()) {
-    ElMessage.warning('请输入 Redis 命令')
-    return
-  }
-  redisRunning.value = true
-  resetExecMeta()
-  try {
-    const analysis = await analyzeRedisCommand({
-      databaseId: databaseId.value,
-      commandText: redisCommandText.value.trim()
-    })
-    if (analysis.writeOperation) {
-      await confirmRiskOperation({
-        operation: `Redis 写命令：${analysis.command}`,
-        targetSummary: `${connection.value?.databaseName || connection.value?.name || databaseId.value}`,
-        production: isProductionEnvironment(connection.value?.environment),
-        destructive: true
-      })
-    }
-    await executeRedisCommandText(analysis.writeOperation)
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close') throw error
-  } finally {
-    redisRunning.value = false
-  }
-}
-
-function quoteRedisArgument(value) {
-  return JSON.stringify(String(value ?? ''))
-}
-
-function resetRedisKeyForm() {
-  redisKeyForm.key = ''
-  redisKeyForm.type = 'string'
-  redisKeyForm.value = ''
-  redisKeyForm.ttl = undefined
-}
-
-function openRedisKeyCreate() {
-  resetRedisKeyForm()
-  redisKeyDialogMode.value = 'create'
-  redisKeyDialogVisible.value = true
-}
-
-function openRedisKeyEdit(row) {
-  if (row.type === 'stream') {
-    ElMessage.warning('Stream 类型暂不支持可视化编辑，请使用上方 Redis 命令控制台')
-    return
-  }
-  redisKeyDialogMode.value = 'edit'
-  redisKeyForm.key = row.key || ''
-  redisKeyForm.type = row.type || 'string'
-  redisKeyForm.value = row.value || ''
-  redisKeyForm.ttl = Number(row.ttlSeconds) >= 0 ? Number(row.ttlSeconds) : undefined
-  redisKeyDialogVisible.value = true
-}
-
-function parseRedisValueArguments() {
-  const raw = redisKeyForm.value ?? ''
-  if (redisKeyForm.type === 'string') return [quoteRedisArgument(raw)]
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new Error('复杂类型的值必须填写合法 JSON')
-  }
-  if (redisKeyForm.type === 'hash') {
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Hash 值必须是 JSON 对象')
-    const entries = Object.entries(parsed)
-    if (!entries.length) throw new Error('Hash 至少需要一个字段')
-    return entries.flatMap(([field, value]) => [quoteRedisArgument(field), quoteRedisArgument(value)])
-  }
-  if (redisKeyForm.type === 'zset') {
-    if (!Array.isArray(parsed) || !parsed.length) throw new Error('有序集合值必须是非空 JSON 数组')
-    return parsed.flatMap((item) => {
-      if (!item || item.member === undefined || Number.isNaN(Number(item.score))) throw new Error('有序集合元素必须包含 member 和 score')
-      return [quoteRedisArgument(item.score), quoteRedisArgument(item.member)]
-    })
-  }
-  if (!Array.isArray(parsed) || !parsed.length) throw new Error('List 或 Set 值必须是非空 JSON 数组')
-  return parsed.map((item) => quoteRedisArgument(item))
-}
-
-function redisTTLCommand(key) {
-  if (redisKeyForm.ttl === undefined || redisKeyForm.ttl === null || redisKeyForm.ttl === '') return ''
-  const ttl = Number(redisKeyForm.ttl)
-  if (!Number.isInteger(ttl) || ttl < -1) throw new Error('TTL 只能设置为 -1 或非负整数秒')
-  return ttl === -1 ? `PERSIST ${quoteRedisArgument(key)}` : `EXPIRE ${quoteRedisArgument(key)} ${ttl}`
-}
-
-function buildRedisKeyCommands() {
-  const key = redisKeyForm.key.trim()
-  if (!key) throw new Error('请输入 Key 名称')
-  const valueArgs = parseRedisValueArguments()
-  const quotedKey = quoteRedisArgument(key)
-  const editing = redisKeyDialogMode.value === 'edit'
-  let command = ''
-  switch (redisKeyForm.type) {
-    case 'string':
-      command = `SET ${quotedKey} ${valueArgs[0]}${editing && redisKeyForm.ttl === undefined ? ' KEEPTTL' : ''}`
-      break
-    case 'hash': command = `HSET ${quotedKey} ${valueArgs.join(' ')}`; break
-    case 'list': command = `RPUSH ${quotedKey} ${valueArgs.join(' ')}`; break
-    case 'set': command = `SADD ${quotedKey} ${valueArgs.join(' ')}`; break
-    case 'zset': command = `ZADD ${quotedKey} ${valueArgs.join(' ')}`; break
-    default: throw new Error('不支持的 Redis Key 类型')
-  }
-  const commands = []
-  if (editing && redisKeyForm.type !== 'string') commands.push(`DEL ${quotedKey}`)
-  commands.push(command)
-  const ttlCommand = redisTTLCommand(key)
-  if (ttlCommand) commands.push(ttlCommand)
-  return commands
-}
-
-async function submitRedisKey() {
-  let commands
-  try {
-    commands = buildRedisKeyCommands()
-  } catch (error) {
-    ElMessage.warning(error.message || 'Key 内容不正确')
-    return
-  }
-  const action = redisKeyDialogMode.value === 'create' ? '新增' : '更新'
-  try {
-    await confirmRiskOperation({
-      operation: `${action} Redis Key`,
-      targetSummary: redisKeyForm.key,
-      production: isProductionEnvironment(connection.value?.environment),
-      destructive: redisKeyDialogMode.value === 'edit'
-    })
-  } catch {
-    return
-  }
-  redisRunning.value = true
-  try {
-    for (const commandText of commands) {
-      await executeRedisCommand({ databaseId: databaseId.value, commandText, confirmed: true })
-    }
-    redisKeyDialogVisible.value = false
-    await Promise.all([loadTree(), loadHistory()])
-    selectedSchema.value = schemaTree.value?.[0]?.name || selectedSchema.value
-    selectedTable.value = redisKeyForm.key
-    await loadResourceData()
-    ElMessage.success(`Redis Key 已${action}`)
-  } finally {
-    redisRunning.value = false
-  }
-}
-
-async function deleteRedisKey(row) {
-  try {
-    await confirmRiskOperation({
-      operation: '删除 Redis Key',
-      targetSummary: row.key,
-      production: isProductionEnvironment(connection.value?.environment),
-      destructive: true
-    })
-  } catch {
-    return
-  }
-  redisRunning.value = true
-  try {
-    await executeRedisCommand({ databaseId: databaseId.value, commandText: `DEL ${quoteRedisArgument(row.key)}`, confirmed: true })
-    if (selectedTable.value === row.key) {
-      selectedTable.value = ''
-      selectedRows.value = []
-      selectedColumns.value = []
-    }
-    await Promise.all([loadTree(), loadHistory()])
-    ElMessage.success('Redis Key 已删除')
-  } finally {
-    redisRunning.value = false
   }
 }
 
@@ -1319,7 +1091,8 @@ onBeforeUnmount(() => {
         <el-tag :type="isReadOnly ? 'warning' : 'success'" effect="plain">{{ isReadOnly ? '只读连接' : '可写连接' }}</el-tag>
       </div>
     </header>
-    <div class="dbms-layout">
+    <RedisWorkbench v-if="isRedis" :key="databaseId" :database-id="databaseId" :connection="connection" @switch-database="switchDatabase" />
+    <div v-else class="dbms-layout">
       <aside class="dbms-sidebar page-card">
         <section class="sidebar-section connection-section">
           <div class="sidebar-section-title">
@@ -1391,9 +1164,8 @@ onBeforeUnmount(() => {
         <div class="dbms-editor page-card">
           <div class="panel-head">
             <div>
-              <h3>{{ supportsSQL ? 'SQL 编辑器' : isRedis ? 'Redis 命令控制台' : `${connection?.dbType?.toUpperCase() || '数据库'} 资源浏览` }}</h3>
+              <h3>{{ supportsSQL ? 'SQL 编辑器' : `${connection?.dbType?.toUpperCase() || '数据库'} 资源浏览` }}</h3>
               <p v-if="supportsSQL">支持语法高亮、关键字/库表字段补全、常用语句模板和快捷执行。</p>
-              <p v-else-if="isRedis">支持常用 Redis 读取与变更命令，变更操作需二次确认并写入执行记录。</p>
               <p v-else>当前类型支持连接检测和资源结构浏览；文档、键值和数据编辑能力将按类型逐步开放。</p>
             </div>
             <div class="panel-actions">
@@ -1411,7 +1183,6 @@ onBeforeUnmount(() => {
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
-              <el-button v-if="!supportsSQL && isRedis" :loading="redisRunning" type="primary" @click="runRedisCommand">执行 Redis 命令</el-button>
               <el-button :disabled="!supportsExport || !selectedTable" @click="createExportTask">导出任务</el-button>
               <el-button :disabled="!supportsImport || isReadOnly" @click="openImportDialog">导入任务</el-button>
             </div>
@@ -1424,30 +1195,7 @@ onBeforeUnmount(() => {
               <span class="snippet-hint">`Ctrl + Enter` 可执行当前选中 SQL；格式化与收藏仅作用于选中 SQL，未选中时作用于全部内容。</span>
           </div>
 
-          <div v-else-if="isRedis" class="redis-command-console">
-            <div class="redis-command-head">
-              <strong>Redis 命令控制台</strong>
-              <span>读取命令可直接执行，写入命令需确认；高危管理命令已禁用。</span>
-            </div>
-            <div class="redis-command-snippets">
-              <el-button v-for="item in redisCommandSnippets" :key="item.label" size="small" plain @click="redisCommandText = item.text">
-                {{ item.label }}
-              </el-button>
-            </div>
-            <el-input
-              v-model="redisCommandText"
-              class="redis-command-input"
-              type="textarea"
-              :rows="6"
-              spellcheck="false"
-              placeholder="例如：GET key、HGETALL hash_key 或 SET key value"
-              @keydown.ctrl.enter.prevent="runRedisCommand"
-              @keydown.meta.enter.prevent="runRedisCommand"
-            />
-            <div class="redis-command-hint">支持带引号参数。按 Ctrl + Enter 执行，执行记录会保留在下方历史中。</div>
-          </div>
-
-          <el-alert v-if="!supportsSQL && !isRedis" class="database-capability-alert" type="info" :closable="false" show-icon title="当前数据库不是 SQL 类型">
+          <el-alert v-if="!supportsSQL" class="database-capability-alert" type="info" :closable="false" show-icon title="当前数据库不是 SQL 类型">
             可在左侧选择数据库、库与资源查看结构；MySQL 保留完整的数据编辑、导入导出与备份能力。
           </el-alert>
 
@@ -1501,9 +1249,8 @@ onBeforeUnmount(() => {
               <p v-if="selectedTable">{{ selectedSchema }} / {{ selectedTable }}</p>
               <p v-else>先从左侧选中一张表，或直接执行 SQL 查看结果。</p>
             </div>
-            <div v-if="selectedTable || isRedis" class="panel-actions">
-              <el-button v-if="canManageRedisKeys" type="primary" plain @click="openRedisKeyCreate">新增 Key</el-button>
-              <el-button v-else-if="selectedTable" type="primary" plain :disabled="!canEditRows" @click="openInsertRow">新增数据</el-button>
+            <div v-if="selectedTable" class="panel-actions">
+              <el-button v-if="selectedTable" type="primary" plain :disabled="!canEditRows" @click="openInsertRow">新增数据</el-button>
               <el-button @click="refreshSelectedData">刷新数据</el-button>
             </div>
           </div>
@@ -1522,24 +1269,14 @@ onBeforeUnmount(() => {
                 type="info"
                 :closable="false"
                 show-icon
-                :title="isRedis && canManageRedisKeys ? '当前 Redis 连接支持直接管理 Key' : '当前资源以只读方式浏览'"
+                title="当前资源以只读方式浏览"
               >
                 <template v-if="resourceType === 'collection'">可按字段筛选 MongoDB 文档；下方会展示集合索引摘要。</template>
-                <template v-else-if="resourceType === 'key'">
-                  <span v-if="canManageRedisKeys">支持新增、编辑和删除 Redis Key；所有写入操作均需确认并记录审计。</span>
-                  <span v-else>展示 Redis Key 的类型、TTL 与值摘要，不会直接修改 Key。</span>
-                </template>
                 <template v-else>PostgreSQL 表数据支持分页与字段筛选；执行计划可直接在 SQL 编辑器中使用 EXPLAIN ANALYZE。</template>
               </el-alert>
               <el-table v-if="supportsResourceData" v-loading="dataLoading" :data="selectedRows" border height="380">
                 <el-table-column v-for="col in selectedColumns" :key="col.name" :label="col.name" min-width="180" show-overflow-tooltip>
                   <template #default="{ row }">{{ formatResourceValue(row[col.name]) }}</template>
-                </el-table-column>
-                <el-table-column v-if="isRedis" label="操作" width="150" fixed="right">
-                  <template #default="{ row }">
-                    <el-button link type="primary" :disabled="!canManageRedisKeys || row.type === 'stream'" @click="openRedisKeyEdit(row)">编辑</el-button>
-                    <el-button link type="danger" :disabled="!canManageRedisKeys" @click="deleteRedisKey(row)">删除</el-button>
-                  </template>
                 </el-table-column>
               </el-table>
               <el-table v-else v-loading="dataLoading" :data="selectedRows" border height="380">
@@ -1768,37 +1505,6 @@ onBeforeUnmount(() => {
         >
           确认执行
         </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="redisKeyDialogVisible" :title="redisKeyDialogMode === 'create' ? '新增 Redis Key' : '编辑 Redis Key'" width="720px">
-      <el-alert
-        type="warning"
-        :closable="false"
-        show-icon
-        title="写入 Redis 将立即生效，并写入执行审计记录"
-        class="redis-key-alert"
-      />
-      <el-form label-width="112px" class="redis-key-form">
-        <el-form-item label="Key 名称" required>
-          <el-input v-model="redisKeyForm.key" :disabled="redisKeyDialogMode === 'edit'" placeholder="例如：app:config" />
-        </el-form-item>
-        <el-form-item label="数据类型">
-          <el-select v-model="redisKeyForm.type" :disabled="redisKeyDialogMode === 'edit'" style="width: 100%">
-            <el-option v-for="type in redisKeyTypes" :key="type" :label="type" :value="type" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="值" required>
-          <el-input v-model="redisKeyForm.value" type="textarea" :rows="8" :placeholder="redisKeyValuePlaceholder" />
-        </el-form-item>
-        <el-form-item label="TTL（秒）">
-          <el-input-number v-model="redisKeyForm.ttl" :min="-1" :precision="0" controls-position="right" />
-          <span class="redis-key-help">留空表示不修改 TTL；-1 表示永不过期。</span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="redisKeyDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="redisRunning" @click="submitRedisKey">确认保存</el-button>
       </template>
     </el-dialog>
 
@@ -2116,53 +1822,6 @@ onBeforeUnmount(() => {
   margin-top: 16px;
 }
 
-.redis-command-console {
-  margin-top: 16px;
-  padding: 16px;
-  border: 1px solid #253653;
-  border-radius: 10px;
-  background: #0f172a;
-}
-
-.redis-command-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 16px;
-  margin-bottom: 12px;
-  color: #e2e8f0;
-}
-
-.redis-command-head span,
-.redis-command-hint {
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.redis-command-snippets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.redis-command-input :deep(.el-textarea__inner) {
-  min-height: 132px;
-  border-color: #334155;
-  background: #111827;
-  color: #e2e8f0;
-  font-family: Consolas, 'Courier New', monospace;
-  line-height: 1.65;
-}
-
-.redis-command-input :deep(.el-textarea__inner:focus) {
-  box-shadow: 0 0 0 1px #3b82f6 inset;
-}
-
-.redis-command-hint {
-  margin-top: 10px;
-}
-
 .resource-readonly-alert {
   margin-bottom: 12px;
 }
@@ -2399,20 +2058,6 @@ onBeforeUnmount(() => {
 
 .sql-acknowledgement {
   margin: 16px 0 0;
-}
-
-.redis-key-alert {
-  margin-bottom: 18px;
-}
-
-.redis-key-form .el-form-item:last-child {
-  margin-bottom: 0;
-}
-
-.redis-key-help {
-  margin-left: 12px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
 }
 
 .import-precheck {

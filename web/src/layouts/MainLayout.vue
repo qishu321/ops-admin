@@ -16,7 +16,7 @@ import {
 } from '../utils/auth'
 import { ACCESS_CHANGED_EVENT, createAccessSynchronizer } from '../utils/access-sync'
 import { appDefinitions, getAppByRoute, setCurrentApp } from '../utils/apps'
-import { locale, setLocale, t, translateRoute } from '../utils/i18n'
+import { locale, setLocale, t, tr, translateRoute } from '../utils/i18n'
 import { applySystemTheme, getSystemConfig, resolveSystemAsset, setSystemConfig } from '../utils/system-config'
 
 const route = useRoute()
@@ -338,7 +338,7 @@ function ensureTag(path, title, fullPath = path) {
   if (!path || path === '/login') {
     return
   }
-  const translated = translateRoute(path, title || '未命名页面')
+  const translated = translateRoute(path, title || tr('未命名页面'))
   const found = tagViews.value.find((item) => item.path === path)
   if (found) {
     found.title = translated
@@ -583,20 +583,20 @@ onBeforeUnmount(() => {
 
 <template>
   <el-container class="layout-shell" :class="[`theme-${sidebarTheme}`, { 'terminal-layout': route.path === '/assets/terminal' }]">
-    <el-aside :width="collapsed ? '78px' : '200px'" class="layout-aside" :class="{ 'is-collapsed': collapsed }">
+    <el-aside :width="collapsed ? '78px' : currentLocale === 'en-US' ? '250px' : '200px'" class="layout-aside" :class="{ 'is-collapsed': collapsed }">
       <div class="brand-box">
         <div class="brand-row">
           <img v-if="logoImage" :src="logoImage" alt="logo" class="brand-image" />
           <div v-else class="brand-mark">{{ currentLogoText() }}</div>
           <div v-if="!collapsed" class="brand-text">
             <strong>{{ siteName }}</strong>
-            <span>{{ layoutConfig.siteSlogan || '个人运维管理平台' }}</span>
+            <span>{{ layoutConfig.siteSlogan === '个人运维管理平台' ? tr('个人运维管理平台') : layoutConfig.siteSlogan || tr('个人运维管理平台') }}</span>
           </div>
           <el-popover v-model:visible="appNavigationVisible" placement="bottom-start" :width="820" trigger="click" popper-class="platform-nav-popper">
             <template #reference>
               <button type="button" class="platform-nav-trigger" :aria-label="t('appSwitch')" :title="t('appSwitch')">
                 <el-icon><Grid /></el-icon>
-                <span>平台导航</span>
+                <span>{{ tr("平台导航") }}</span>
                 <el-icon class="platform-nav-arrow"><ArrowDown /></el-icon>
               </button>
             </template>
@@ -604,9 +604,9 @@ onBeforeUnmount(() => {
               <div class="platform-navigation-head">
                 <div>
                   <span>PLATFORM NAVIGATION</span>
-                  <strong>应用平台导航</strong>
+                  <strong>{{ tr("应用平台导航") }}</strong>
                 </div>
-                <small>选择一个应用，切换对应的工作台与菜单</small>
+                <small>{{ tr("选择一个应用，切换对应的工作台与菜单") }}</small>
               </div>
               <div class="platform-navigation-grid">
                 <button
@@ -621,7 +621,7 @@ onBeforeUnmount(() => {
                   <span class="platform-app-icon"><el-icon><component :is="app.icon || House" /></el-icon></span>
                   <span class="platform-app-copy">
                     <strong>{{ t(app.labelKey || 'appConsole') }}</strong>
-                    <small>{{ app.menuCount }} 个菜单入口</small>
+                    <small>{{ tr("{p0} 个菜单入口", { p0: (app.menuCount) }) }}</small>
                   </span>
                   <el-icon v-if="app.key === currentApp.key" class="platform-app-check"><Check /></el-icon>
                 </button>
@@ -690,7 +690,7 @@ onBeforeUnmount(() => {
           <div class="header-right">
             <el-button class="command-trigger" @click="openCommandPalette">
               <el-icon><Search /></el-icon>
-              <span>全局搜索</span>
+              <span>{{ tr("全局搜索") }}</span>
               <kbd>⌘K</kbd>
             </el-button>
             <el-dropdown trigger="click" @command="switchLocale">
@@ -777,7 +777,7 @@ onBeforeUnmount(() => {
           </span>
           <span class="app-drawer-text">
             <strong>{{ t(app.labelKey || 'appConsole') }}</strong>
-            <small>{{ app.key === currentApp.key ? '当前应用' : '切换进入' }}</small>
+            <small>{{ app.key === currentApp.key ? tr("当前应用") : tr("切换进入") }}</small>
           </span>
           <el-icon v-if="app.key === currentApp.key" class="app-drawer-check"><Check /></el-icon>
         </button>
@@ -790,9 +790,9 @@ onBeforeUnmount(() => {
         :style="{ left: `${tagContextMenu.x}px`, top: `${tagContextMenu.y}px` }"
         @click.stop
       >
-        <button type="button" @click="closeLeftTags">关闭左侧标签页</button>
-        <button type="button" @click="closeRightTags">关闭右侧标签页</button>
-        <button type="button" @click="closeOtherTags">关闭其他标签页</button>
+        <button type="button" @click="closeLeftTags">{{ tr("关闭左侧标签页") }}</button>
+        <button type="button" @click="closeRightTags">{{ tr("关闭右侧标签页") }}</button>
+        <button type="button" @click="closeOtherTags">{{ tr("关闭其他标签页") }}</button>
       </div>
     </div>
 
@@ -801,12 +801,12 @@ onBeforeUnmount(() => {
         <div class="command-palette-head">
           <div>
             <span>GLOBAL COMMAND</span>
-            <strong>快速跳转与检索</strong>
+            <strong>{{ tr("快速跳转与检索") }}</strong>
           </div>
           <kbd>ESC</kbd>
         </div>
       </template>
-      <el-input v-model="commandKeyword" autofocus placeholder="搜索全部应用的页面、模块或路径" clearable>
+      <el-input v-model="commandKeyword" autofocus :placeholder="tr('搜索全部应用的页面、模块或路径')" clearable>
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <div class="command-result-list">
@@ -815,7 +815,7 @@ onBeforeUnmount(() => {
           <span><b>{{ item.title }}</b><small>{{ [item.appLabel, item.parentTitle].filter(Boolean).join(' / ') }} · {{ item.path }}</small></span>
           <em>Enter</em>
         </button>
-        <el-empty v-if="!commandItems.length" description="未找到匹配的页面或操作" :image-size="48" />
+        <el-empty v-if="!commandItems.length" :description="tr('未找到匹配的页面或操作')" :image-size="48" />
       </div>
     </el-dialog>
   </el-container>

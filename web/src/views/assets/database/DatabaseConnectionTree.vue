@@ -1,4 +1,5 @@
 <script setup>
+import { tr } from '../../../utils/i18n'
 import { computed, onMounted, ref } from 'vue'
 import { queryAssetDatabaseList } from '../../../api/asset'
 
@@ -17,7 +18,7 @@ const treeData = computed(() => {
   for (const item of databases.value) {
     const content = `${item.name} ${item.host} ${item.dbName || ''} ${item.env || ''}`.toLowerCase()
     if (search && !content.includes(search)) continue
-    const env = item.env || '未分配环境'
+    const env = item.env || tr("未分配环境")
     if (!groups.has(env)) groups.set(env, [])
     groups.get(env).push({
       id: `database:${item.id}`,
@@ -54,8 +55,8 @@ defineExpose({ refresh: loadData })
 <template>
   <div class="connection-tree">
     <div class="connection-tree-toolbar">
-      <el-input v-model="keyword" clearable placeholder="搜索数据库连接" />
-      <el-button title="刷新连接" @click="loadData">刷新</el-button>
+      <el-input v-model="keyword" clearable :placeholder="tr('搜索数据库连接')" />
+      <el-button :title="tr('刷新连接')" @click="loadData">{{ tr("刷新") }}</el-button>
     </div>
     <el-tree
       v-loading="loading"
@@ -71,7 +72,7 @@ defineExpose({ refresh: loadData })
             <span class="status-dot" :class="{ online: data.database.connectStatus === 1 }" />
             <div class="connection-label">
               <strong>{{ data.label }}</strong>
-              <small>{{ data.database.dbType?.toUpperCase() || 'MYSQL' }} · {{ data.database.dbName || data.database.host }} · {{ data.database.accessMode === 'readonly' ? '只读' : '读写' }}</small>
+              <small>{{ data.database.dbType?.toUpperCase() || 'MYSQL' }} · {{ data.database.dbName || data.database.host }} · {{ data.database.accessMode === 'readonly' ? tr("只读") : tr("读写") }}</small>
             </div>
           </template>
           <template v-else>
@@ -81,7 +82,7 @@ defineExpose({ refresh: loadData })
         </div>
       </template>
     </el-tree>
-    <el-empty v-if="!loading && !treeData.length" description="暂无数据库连接" :image-size="58" />
+    <el-empty v-if="!loading && !treeData.length" :description="tr('暂无数据库连接')" :image-size="58" />
   </div>
 </template>
 

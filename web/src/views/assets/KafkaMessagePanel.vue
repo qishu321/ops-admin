@@ -1,4 +1,5 @@
 <script setup>
+import { tr, getLocale } from '../../utils/i18n'
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowUp, CopyDocument } from '@element-plus/icons-vue'
@@ -21,7 +22,7 @@ const time = computed(() => {
   const raw = props.message?.timestamp
   if (!raw || String(raw).startsWith('0001-')) return '—'
   const date = new Date(raw)
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(getLocale(), { hour12: false })
 })
 
 async function copy() {
@@ -30,9 +31,9 @@ async function copy() {
     : currentText.value
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
+    ElMessage.success(tr("已复制到剪贴板"))
   } catch {
-    ElMessage.warning('浏览器不允许访问剪贴板，请手动选择内容复制')
+    ElMessage.warning(tr("浏览器不允许访问剪贴板，请手动选择内容复制"))
   }
 }
 </script>
@@ -41,10 +42,10 @@ async function copy() {
   <section class="msg-panel">
     <header class="msg-head">
       <span class="msg-head-dot"/>
-      <b>消息详情</b>
-      <span class="msg-head-path">分区 {{ message.partition }} · Offset {{ message.offset }}</span>
-      <span class="msg-head-hint">点击上方消息行任意位置可收起</span>
-      <el-button link type="primary" :icon="ArrowUp" @click="emit('collapse')">收起</el-button>
+      <b>{{ tr("消息详情") }}</b>
+      <span class="msg-head-path">{{ tr("分区 {p0} · Offset {p1}", { p0: (message.partition), p1: (message.offset) }) }}</span>
+      <span class="msg-head-hint">{{ tr("点击上方消息行任意位置可收起") }}</span>
+      <el-button link type="primary" :icon="ArrowUp" @click="emit('collapse')">{{ tr("收起") }}</el-button>
     </header>
 
     <div class="msg-body">
@@ -56,33 +57,33 @@ async function copy() {
             </button>
           </div>
           <div class="msg-tools">
-            <el-checkbox v-if="tab !== 'headers'" v-model="pretty" :disabled="currentEncoding === 'base64'">格式化 JSON</el-checkbox>
-            <el-button link type="primary" :icon="CopyDocument" @click="copy">复制</el-button>
+            <el-checkbox v-if="tab !== 'headers'" v-model="pretty" :disabled="currentEncoding === 'base64'">{{ tr("格式化 JSON") }}</el-checkbox>
+            <el-button link type="primary" :icon="CopyDocument" @click="copy">{{ tr("复制") }}</el-button>
           </div>
         </div>
 
         <template v-if="tab === 'headers'">
-          <p v-if="!headers.length" class="msg-empty">该消息没有 Headers。</p>
+          <p v-if="!headers.length" class="msg-empty">{{ tr("该消息没有 Headers。") }}</p>
           <ul v-else class="msg-headers">
-            <li v-for="(header, index) in headers" :key="`${header.key}-${index}`"><code>{{ header.key }}</code><span>{{ kafkaPayload(header.value) || '（空值）' }}</span></li>
+            <li v-for="(header, index) in headers" :key="`${header.key}-${index}`"><code>{{ header.key }}</code><span>{{ kafkaPayload(header.value) || tr("（空值）") }}</span></li>
           </ul>
         </template>
         <pre v-else-if="isNull" class="msg-code null">null</pre>
-        <pre v-else class="msg-code">{{ currentText || '（空字符串）' }}</pre>
+        <pre v-else class="msg-code">{{ currentText || tr("（空字符串）") }}</pre>
       </div>
 
       <aside class="msg-meta">
-        <div><span>时间</span><b>{{ time }}</b></div>
-        <div><span>时间类型</span><b>CreateTime</b></div>
-        <div><span>分区</span><b>{{ message.partition }}</b></div>
+        <div><span>{{ tr("时间") }}</span><b>{{ time }}</b></div>
+        <div><span>{{ tr("时间类型") }}</span><b>CreateTime</b></div>
+        <div><span>{{ tr("分区") }}</span><b>{{ message.partition }}</b></div>
         <div><span>Offset</span><b>{{ message.offset }}</b></div>
-        <div><span>Key 编码</span><b>{{ kafkaEncodingLabel(message.key?.encoding) }}</b></div>
-        <div><span>Key 大小</span><b>{{ kafkaByteSize(message.key?.size) }}</b></div>
-        <div><span>Value 编码</span><b>{{ kafkaEncodingLabel(message.value?.encoding) }}</b></div>
-        <div><span>Value 大小</span><b>{{ kafkaByteSize(message.value?.size) }}</b></div>
-        <div><span>Headers</span><b>{{ headers.length }} 个</b></div>
-        <p v-if="message.value?.null" class="msg-flag">Tombstone：Value 为 null 的删除标记</p>
-        <p v-else-if="message.key?.null" class="msg-flag">该消息没有 Key</p>
+        <div><span>{{ tr("Key 编码") }}</span><b>{{ kafkaEncodingLabel(message.key?.encoding) }}</b></div>
+        <div><span>{{ tr("Key 大小") }}</span><b>{{ kafkaByteSize(message.key?.size) }}</b></div>
+        <div><span>{{ tr("Value 编码") }}</span><b>{{ kafkaEncodingLabel(message.value?.encoding) }}</b></div>
+        <div><span>{{ tr("Value 大小") }}</span><b>{{ kafkaByteSize(message.value?.size) }}</b></div>
+        <div><span>Headers</span><b>{{ tr("{p0} 个", { p0: (headers.length) }) }}</b></div>
+        <p v-if="message.value?.null" class="msg-flag">{{ tr("Tombstone：Value 为 null 的删除标记") }}</p>
+        <p v-else-if="message.key?.null" class="msg-flag">{{ tr("该消息没有 Key") }}</p>
       </aside>
     </div>
   </section>

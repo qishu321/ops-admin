@@ -1,3 +1,4 @@
+import { tr, getLocale } from '../src/utils/i18n.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -13,7 +14,7 @@ function createPage(confirm = () => Promise.resolve()) {
   const requests = [], props = { sourceId: 1, topic: 'orders' }
   let permissions = ['assets:middleware:query', 'assets:middleware:write', 'assets:middleware:delete']
   const context = vm.createContext({
-    computed, reactive, ref, defineProps: () => props,
+    tr, getLocale, computed, reactive, ref, defineProps: () => props,
     watch: (source, callback, options) => { if (options?.immediate) callback() }, onUnmounted: () => {},
     useRouter: () => ({ push: () => {} }), window: new EventTarget(),
     getUser: () => ({ accountType: 'user' }), getPermissions: () => permissions,

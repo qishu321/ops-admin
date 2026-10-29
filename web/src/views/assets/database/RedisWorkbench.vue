@@ -1,4 +1,5 @@
 <script setup>
+import { tr } from '../../../utils/i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Coin, Refresh, Search, VideoPlay, Key, View, Delete, Edit } from '@element-plus/icons-vue'
@@ -50,12 +51,12 @@ const locked = computed(() => running.value || formVisible.value)
 const readOnly = computed(() => props.connection.accessMode === 'readonly')
 const shownDatabases = computed(() => databases.value.filter(db => db.name.toLowerCase().includes(databaseSearch.value.trim().toLowerCase())))
 const currentDatabase = computed(() => databases.value.find(db => db.name === schema.value))
-const keyEmptyText = computed(() => keysError.value ? '扫描失败，请重试' : scanned.value && !scanComplete.value ? '本批次暂无匹配项，可继续扫描' : keyPattern.value ? '没有匹配的 Key' : '当前逻辑库没有 Key')
+const keyEmptyText = computed(() => keysError.value ? tr("扫描失败，请重试") : scanned.value && !scanComplete.value ? tr("本批次暂无匹配项，可继续扫描") : keyPattern.value ? tr("没有匹配的 Key") : tr("当前逻辑库没有 Key"))
 const snippets = [{ label: 'GET', text: 'GET key' }, { label: 'MGET', text: 'MGET key1 key2' }, { label: 'TTL', text: 'TTL key' }, { label: 'TYPE', text: 'TYPE key' }, { label: 'SCAN', text: 'SCAN 0 MATCH * COUNT 100' }, { label: 'HGETALL', text: 'HGETALL hash_key' }, { label: 'LRANGE', text: 'LRANGE list_key 0 199' }, { label: 'SET', text: 'SET key value', write: true }, { label: 'DEL', text: 'DEL key', write: true }, { label: 'EXPIRE', text: 'EXPIRE key 3600', write: true }]
 let alive = true, keyGeneration = 0, detailGeneration = 0, historyGeneration = 0
-const message = err => err?.response?.data?.message || err?.message || '请求失败，请重试'
+const message = err => err?.response?.data?.message || err?.message || tr("请求失败，请重试")
 const target = () => ({ databaseId: props.databaseId, schema: schema.value })
-function assertTarget(context) { if (!alive || context.databaseId !== props.databaseId || context.schema !== schema.value) throw new Error('连接或逻辑库已切换，本次操作已停止') }
+function assertTarget(context) { if (!alive || context.databaseId !== props.databaseId || context.schema !== schema.value) throw new Error(tr("连接或逻辑库已切换，本次操作已停止")) }
 async function loadDatabases() {
   discoveryLoading.value = true; discoveryError.value = ''
   try {
@@ -69,7 +70,7 @@ async function loadDatabases() {
 async function selectDatabase(value) {
   if (locked.value) return
   let next
-  try { next = normalizeRedisSchema(value); if (discovery.value.clusterMode && next !== 'db0') throw new Error('Redis Cluster 只支持 db0') } catch (err) { ElMessage.warning(message(err)); return }
+  try { next = normalizeRedisSchema(value); if (discovery.value.clusterMode && next !== 'db0') throw new Error(tr("Redis Cluster 只支持 db0")) } catch (err) { ElMessage.warning(message(err)); return }
   schema.value = next; detailVisible.value = false; detail.value = null; result.value = null; commandError.value = ''; selectedKey.value = ''; activeTab.value = 'result'; keyPattern.value = ''
   if (!databases.value.some(db => db.name === next)) databases.value.push({ name: next, keyCount: null })
   await loadKeys()
@@ -86,7 +87,7 @@ async function loadKeys(append = false) {
     keys.value = [...new Map(combined.map(row => [row.key, row])).values()]
     cursor.value = String(data.nextCursor || '0'); scanComplete.value = Boolean(data.complete); scanned.value = true; keyTotal.value = data.total ?? null
     if (currentDatabase.value) currentDatabase.value.keyCount = data.total ?? null
-    if (data.warnings?.length) keysError.value = data.warnings.join(' ')
+    if (data.warnings?.length) keysError.value = data.warnings.map(warning => tr(warning)).join(' ')
   } catch (err) { if (alive && version === keyGeneration) keysError.value = message(err) }
   finally { if (alive && version === keyGeneration) keysLoading.value = false }
 }
@@ -97,7 +98,7 @@ function toggleKey(row) {
 async function showKey(row) {
   const version = ++detailGeneration, context = target()
   detailVisible.value = true; detailLoading.value = true; detail.value = null; detailError.value = ''; selectedKey.value = row.key
-  try { const data = await queryDBMSResourceData({ ...context, table: row.key }); if (!alive || version !== detailGeneration || context.schema !== schema.value) return; detail.value = data.rows?.[0] || null; if (!detail.value) detailError.value = '该 Key 已不存在，请刷新列表' }
+  try { const data = await queryDBMSResourceData({ ...context, table: row.key }); if (!alive || version !== detailGeneration || context.schema !== schema.value) return; detail.value = data.rows?.[0] || null; if (!detail.value) detailError.value = tr("该 Key 已不存在，请刷新列表") }
   catch (err) { if (alive && version === detailGeneration) detailError.value = message(err) }
   finally { if (alive && version === detailGeneration) detailLoading.value = false }
 }
@@ -118,7 +119,7 @@ async function runCommand() {
   try {
     const analysis = await analyzeRedisCommand({ ...context, commandText: text })
     assertTarget(context)
-    if (analysis.writeOperation) { if (readOnly.value) throw new Error('当前连接为只读模式，不能执行写入命令'); await confirmWrite(context, `Redis ${analysis.command}`) }
+    if (analysis.writeOperation) { if (readOnly.value) throw new Error(tr("当前连接为只读模式，不能执行写入命令")); await confirmWrite(context, `Redis ${analysis.command}`) }
     const data = await executeRedisCommand({ ...context, commandText: text, confirmed: analysis.writeOperation })
     assertTarget(context); result.value = data; activeTab.value = 'result'; await loadHistory()
     if (analysis.writeOperation) { running.value = false; await Promise.all([loadKeys(), loadDatabases()]) }
@@ -127,7 +128,7 @@ async function runCommand() {
 }
 function openForm(row = null) {
   if (readOnly.value || running.value) return
-  if (row?.truncated || row?.type === 'stream') return ElMessage.warning('当前为部分预览或暂不支持的类型，请使用命令控制台按需修改')
+  if (row?.truncated || row?.type === 'stream') return ElMessage.warning(tr("当前为部分预览或暂不支持的类型，请使用命令控制台按需修改"))
   editing.value = Boolean(row); Object.assign(form, { key: row?.key || '', type: row?.type || 'string', value: row?.value || '', ttl: row ? row.ttlSeconds >= 0 ? row.ttlSeconds : -1 : undefined }); formVisible.value = true
 }
 async function submitForm() {
@@ -137,18 +138,18 @@ async function submitForm() {
   const context = target(), key = form.key
   running.value = true
   try {
-    await confirmWrite(context, editing.value ? '更新 Redis Key' : '新增 Redis Key', key)
+    await confirmWrite(context, editing.value ? tr("更新 Redis Key") : tr("新增 Redis Key"), key)
     for (const commandText of commands) { assertTarget(context); await executeRedisCommand({ ...context, commandText, confirmed: true }) }
     if (!alive) return
     formVisible.value = false; detailVisible.value = false; running.value = false
-    await Promise.all([loadKeys(), loadDatabases(), loadHistory()]); ElMessage.success(`${context.schema} / ${key} 已保存`)
+    await Promise.all([loadKeys(), loadDatabases(), loadHistory()]); ElMessage.success(tr("{p0} / {p1} 已保存", { p0: (context.schema), p1: (key) }))
   } catch (err) { if (alive && err !== 'cancel' && err !== 'close') ElMessage.error(message(err)) }
   finally { if (alive) running.value = false }
 }
 async function deleteKey(row) {
   if (running.value || readOnly.value) return
   const context = target(); running.value = true
-  try { await confirmWrite(context, '删除 Redis Key', row.key); await executeRedisCommand({ ...context, commandText: `DEL ${quoteRedisArgument(row.key)}`, confirmed: true }); assertTarget(context); detailVisible.value = false; running.value = false; await Promise.all([loadKeys(), loadDatabases(), loadHistory()]); ElMessage.success('Key 已删除') }
+  try { await confirmWrite(context, tr("删除 Redis Key"), row.key); await executeRedisCommand({ ...context, commandText: `DEL ${quoteRedisArgument(row.key)}`, confirmed: true }); assertTarget(context); detailVisible.value = false; running.value = false; await Promise.all([loadKeys(), loadDatabases(), loadHistory()]); ElMessage.success(tr("Key 已删除")) }
   catch (err) { if (alive && err !== 'cancel' && err !== 'close') ElMessage.error(message(err)) }
   finally { if (alive) running.value = false }
 }
@@ -165,60 +166,60 @@ onBeforeUnmount(() => { paneObserver?.disconnect(); alive = false; keyGeneration
 <template>
   <div class="rw-layout">
     <aside class="rw-sidebar page-card">
-      <section class="rw-connections"><header><strong>数据库连接</strong><span>点击连接即可切换</span></header><DatabaseConnectionTree :active-id="databaseId" @select="switchConnection" /></section>
-      <section class="rw-databases" v-loading="discoveryLoading"><header><strong>逻辑数据库</strong><el-button text :icon="Refresh" :disabled="locked" aria-label="刷新逻辑库" @click="loadDatabases" /></header><el-input v-model="databaseSearch" :prefix-icon="Search" clearable placeholder="查找 DB，例如 db10" aria-label="搜索逻辑库" /><el-alert v-if="discoveryError" :title="discoveryError" type="error" :closable="false" /><div class="rw-db-list"><button v-for="db in shownDatabases" :key="db.name" type="button" :class="{ active: schema === db.name, populated: Number(db.keyCount) > 0 }" :disabled="locked" :aria-pressed="schema === db.name" @click="selectDatabase(db.name)"><el-icon><Coin /></el-icon><strong>{{ db.name }}</strong><span>{{ db.keyCount ?? '—' }}</span></button></div><p v-if="!shownDatabases.length" class="rw-muted">没有匹配的逻辑库，可在右侧输入 DB 编号。</p></section>
+      <section class="rw-connections"><header><strong>{{ tr("数据库连接") }}</strong><span>{{ tr("点击连接即可切换") }}</span></header><DatabaseConnectionTree :active-id="databaseId" @select="switchConnection" /></section>
+      <section class="rw-databases" v-loading="discoveryLoading"><header><strong>{{ tr("逻辑数据库") }}</strong><el-button text :icon="Refresh" :disabled="locked" :aria-label="tr('刷新逻辑库')" @click="loadDatabases" /></header><el-input v-model="databaseSearch" :prefix-icon="Search" clearable :placeholder="tr('查找 DB，例如 db10')" :aria-label="tr('搜索逻辑库')" /><el-alert v-if="discoveryError" :title="discoveryError" type="error" :closable="false" /><div class="rw-db-list"><button v-for="db in shownDatabases" :key="db.name" type="button" :class="{ active: schema === db.name, populated: Number(db.keyCount) > 0 }" :disabled="locked" :aria-pressed="schema === db.name" @click="selectDatabase(db.name)"><el-icon><Coin /></el-icon><strong>{{ db.name }}</strong><span>{{ db.keyCount ?? '—' }}</span></button></div><p v-if="!shownDatabases.length" class="rw-muted">{{ tr("没有匹配的逻辑库，可在右侧输入 DB 编号。") }}</p></section>
     </aside>
     <main ref="paneRef" class="rw-main" :class="{ 'is-resizing': resizing }" :style="paneStyle">
       <section :id="`redis-key-browser-${databaseId}`" class="rw-browser page-card">
-        <header class="rw-browser-head"><div><h3>{{ schema }} <span>Key 浏览器</span></h3><p>点击 Key，在下方查看值。</p></div><el-button type="primary" plain :disabled="readOnly || !schema || running" @click="openForm()">新增 Key</el-button></header>
+        <header class="rw-browser-head"><div><h3>{{ schema }} <span>{{ tr("Key 浏览器") }}</span></h3><p>{{ tr("点击 Key，在下方查看值。") }}</p></div><el-button type="primary" plain :disabled="readOnly || !schema || running" @click="openForm()">{{ tr("新增 Key") }}</el-button></header>
         <div class="rw-browser-content">
           <div class="rw-search">
-            <el-input v-model="keyPattern" clearable :prefix-icon="Search" placeholder="匹配 Key，例如 user:*" aria-label="Redis Key 匹配模式" :disabled="keysLoading" @keyup.enter="loadKeys()" />
-            <el-button :loading="keysLoading" :disabled="running" @click="loadKeys()">扫描 Key</el-button>
+            <el-input v-model="keyPattern" clearable :prefix-icon="Search" :placeholder="tr('匹配 Key，例如 user:*')" :aria-label="tr('Redis Key 匹配模式')" :disabled="keysLoading" @keyup.enter="loadKeys()" />
+            <el-button :loading="keysLoading" :disabled="running" @click="loadKeys()">{{ tr("扫描 Key") }}</el-button>
           </div>
           <el-alert v-if="keysError" :title="keysError" type="warning" :closable="false" show-icon />
-          <div v-loading="keysLoading" class="rw-key-list" aria-label="Redis Key 列表">
+          <div v-loading="keysLoading" class="rw-key-list" :aria-label="tr('Redis Key 列表')">
             <article v-for="row in keys" :key="row.key" class="rw-key-item" :class="{ expanded: detailVisible && selectedKey === row.key }">
               <header class="rw-key-row">
                 <button type="button" class="rw-key-name" :title="row.key" :aria-expanded="detailVisible && selectedKey === row.key" @click="toggleKey(row)">
                   <el-icon><Key /></el-icon><span>{{ row.key }}</span>
                 </button>
                 <span class="rw-key-type">{{ row.type }}</span>
-                <span class="rw-key-ttl" :title="`TTL：${row.ttl}`">{{ row.ttl }}</span>
+                <span class="rw-key-ttl" :title="`TTL: ${row.ttlSeconds}`">{{ row.ttlSeconds >= 0 ? `${row.ttlSeconds} ${tr('秒')}` : tr(row.ttl) }}</span>
                 <div class="rw-key-actions">
-                  <el-button text :icon="View" :aria-label="`查看 Key ${row.key}`" title="查看值" @click="showKey(row)" />
-                  <el-button text :icon="Delete" :disabled="readOnly || running" :aria-label="`删除 Key ${row.key}`" title="删除 Key" @click="deleteKey(row)" />
+                  <el-button text :icon="View" :aria-label="tr('查看 Key {p0}', { p0: (row.key) })" :title="tr('查看值')" @click="showKey(row)" />
+                  <el-button text :icon="Delete" :disabled="readOnly || running" :aria-label="tr('删除 Key {p0}', { p0: (row.key) })" :title="tr('删除 Key')" @click="deleteKey(row)" />
                 </div>
               </header>
               <div v-if="detailVisible && selectedKey === row.key" v-loading="detailLoading" class="rw-key-value">
                 <el-alert v-if="detailError" :title="detailError" type="warning" :closable="false" />
                 <template v-if="detail">
-                  <div class="rw-value-toolbar"><span>值</span><el-button text :icon="Edit" :disabled="readOnly || running || detail.truncated || detail.type === 'stream'" @click="openForm(detail)">编辑</el-button></div>
-                  <el-alert v-if="detail.truncated" title="仅展示部分值，已停用可视化编辑。" type="info" :closable="false" />
-                  <pre class="rw-value-content" aria-label="Redis Key 值">{{ detail.value }}</pre>
+                  <div class="rw-value-toolbar"><span>{{ tr("值") }}</span><el-button text :icon="Edit" :disabled="readOnly || running || detail.truncated || detail.type === 'stream'" @click="openForm(detail)">{{ tr("编辑") }}</el-button></div>
+                  <el-alert v-if="detail.truncated" :title="tr('仅展示部分值，已停用可视化编辑。')" type="info" :closable="false" />
+                  <pre class="rw-value-content" :aria-label="tr('Redis Key 值')">{{ detail.value }}</pre>
                 </template>
               </div>
             </article>
             <p v-if="!keys.length && !keysLoading" class="rw-key-empty">{{ keyEmptyText }}</p>
           </div>
-          <footer class="rw-scan-footer"><span>已载入 {{ keys.length }}{{ keyTotal != null ? ` / ${keyTotal}` : '' }} 个 · {{ scanned ? scanComplete ? '扫描完成' : '扫描未结束' : '等待扫描' }}</span><el-button v-if="scanned && !scanComplete" :loading="keysLoading" :disabled="running" @click="loadKeys(true)">继续扫描</el-button></footer>
+          <footer class="rw-scan-footer"><span>{{ tr("已载入 {p0}{p1} 个 · {p2}", { p0: (keys.length), p1: (keyTotal != null ? ` / ${keyTotal}` : ''), p2: (scanned ? scanComplete ? tr("扫描完成") : tr("扫描未结束") : tr("等待扫描")) }) }}</span><el-button v-if="scanned && !scanComplete" :loading="keysLoading" :disabled="running" @click="loadKeys(true)">{{ tr("继续扫描") }}</el-button></footer>
         </div>
       </section>
-      <div class="rw-splitter" role="separator" tabindex="0" aria-label="调整 Key 浏览器宽度" aria-orientation="vertical" :aria-controls="`redis-key-browser-${databaseId}`" :aria-valuemin="Math.round(paneLimits.min * 100)" :aria-valuemax="Math.round(paneLimits.max * 100)" :aria-valuenow="Math.round(renderedShare * 100)" :aria-valuetext="`Key 浏览器宽度 ${Math.round(renderedShare * 100)}%`" title="左右拖动调整宽度，双击恢复均分" @pointerdown="startResize" @pointermove="moveResize" @pointerup="stopResize" @pointercancel="stopResize" @lostpointercapture="stopResize" @keydown="resizeWithKeyboard" @dblclick="setBrowserShare(0.5)" />
+      <div class="rw-splitter" role="separator" tabindex="0" :aria-label="tr('调整 Key 浏览器宽度')" aria-orientation="vertical" :aria-controls="`redis-key-browser-${databaseId}`" :aria-valuemin="Math.round(paneLimits.min * 100)" :aria-valuemax="Math.round(paneLimits.max * 100)" :aria-valuenow="Math.round(renderedShare * 100)" :aria-valuetext="tr('Key 浏览器宽度 {p0}%', { p0: (Math.round(renderedShare * 100)) })" :title="tr('左右拖动调整宽度，双击恢复均分')" @pointerdown="startResize" @pointermove="moveResize" @pointerup="stopResize" @pointercancel="stopResize" @lostpointercapture="stopResize" @keydown="resizeWithKeyboard" @dblclick="setBrowserShare(0.5)" />
       <section class="rw-console page-card">
-        <header class="rw-console-head"><div><span class="rw-redis-mark">&gt;_</span><div><h3>Redis 命令控制台</h3><p>命令始终在当前选中的逻辑库执行。</p></div></div><el-tag :type="readOnly ? 'info' : 'success'" effect="plain">{{ readOnly ? '只读连接' : '读写连接' }}</el-tag></header>
-        <div class="rw-db-context"><span>当前逻辑库</span><el-select :model-value="schema" filterable allow-create default-first-option :disabled="locked" aria-label="当前 Redis 逻辑库" @change="selectDatabase"><el-option v-for="db in databases" :key="db.name" :value="db.name" :label="`${db.name}${db.keyCount != null ? ` (${db.keyCount})` : ''}`" /></el-select><span>{{ keyTotal ?? currentDatabase?.keyCount ?? '—' }} 个 Key</span><el-button type="primary" :icon="VideoPlay" :loading="running" :disabled="!schema" @click="runCommand">执行命令</el-button></div>
-        <el-alert v-if="discovery.warnings?.length" :title="discovery.warnings.join(' ')" type="info" :closable="false" class="rw-metadata-note" />
-        <div class="rw-snippets"><span>常用命令</span><button v-for="item in snippets" :key="item.label" type="button" :class="{ write: item.write }" :disabled="running || item.write && readOnly" @click="command = item.text">{{ item.label }}</button></div>
-        <div class="rw-editor"><div><i />{{ connection.host }}:{{ connection.port || 6379 }} <b>[{{ schema }}]</b></div><el-input v-model="command" type="textarea" :rows="3" resize="vertical" :disabled="running" spellcheck="false" aria-label="Redis 命令" placeholder="例如：GET key 或 SCAN 0 MATCH * COUNT 100" @keydown.ctrl.enter.prevent="runCommand" @keydown.meta.enter.prevent="runCommand" /></div>
-        <footer class="rw-console-foot"><span>支持引号参数 · 写入操作需确认并记录历史</span><kbd>Ctrl / ⌘ + Enter</kbd></footer><el-alert v-if="commandError" :title="commandError" type="error" show-icon :closable="false" />
+        <header class="rw-console-head"><div><span class="rw-redis-mark">&gt;_</span><div><h3>{{ tr("Redis 命令控制台") }}</h3><p>{{ tr("命令始终在当前选中的逻辑库执行。") }}</p></div></div><el-tag :type="readOnly ? 'info' : 'success'" effect="plain">{{ readOnly ? tr("只读连接") : tr("读写连接") }}</el-tag></header>
+        <div class="rw-db-context"><span>{{ tr("当前逻辑库") }}</span><el-select :model-value="schema" filterable allow-create default-first-option :disabled="locked" :aria-label="tr('当前 Redis 逻辑库')" @change="selectDatabase"><el-option v-for="db in databases" :key="db.name" :value="db.name" :label="`${db.name}${db.keyCount != null ? ` (${db.keyCount})` : ''}`" /></el-select><span>{{ tr("{p0} 个 Key", { p0: (keyTotal ?? currentDatabase?.keyCount ?? '—') }) }}</span><el-button type="primary" :icon="VideoPlay" :loading="running" :disabled="!schema" @click="runCommand">{{ tr("执行命令") }}</el-button></div>
+        <el-alert v-if="discovery.warnings?.length" :title="discovery.warnings.map(warning => tr(warning)).join(' ')" type="info" :closable="false" class="rw-metadata-note" />
+        <div class="rw-snippets"><span>{{ tr("常用命令") }}</span><button v-for="item in snippets" :key="item.label" type="button" :class="{ write: item.write }" :disabled="running || item.write && readOnly" @click="command = item.text">{{ item.label }}</button></div>
+        <div class="rw-editor"><div><i />{{ connection.host }}:{{ connection.port || 6379 }} <b>[{{ schema }}]</b></div><el-input v-model="command" type="textarea" :rows="3" resize="vertical" :disabled="running" spellcheck="false" :aria-label="tr('Redis 命令')" :placeholder="tr('例如：GET key 或 SCAN 0 MATCH * COUNT 100')" @keydown.ctrl.enter.prevent="runCommand" @keydown.meta.enter.prevent="runCommand" /></div>
+        <footer class="rw-console-foot"><span>{{ tr("支持引号参数 · 写入操作需确认并记录历史") }}</span><kbd>Ctrl / ⌘ + Enter</kbd></footer><el-alert v-if="commandError" :title="commandError" type="error" show-icon :closable="false" />
         <el-tabs v-model="activeTab" class="rw-command-tabs">
-          <el-tab-pane label="命令结果" name="result"><template v-if="result"><div class="rw-result-meta"><el-tag effect="plain">{{ result.schema }}</el-tag><span>{{ result.durationMs }} ms</span><span>{{ result.executionId }}</span></div><pre class="rw-command-result">{{ result.rows?.map(row => `${row.command}\n${row.result}`).join('\n\n') }}</pre></template><el-empty v-else description="执行一条命令后，在这里查看结果" :image-size="64" /></el-tab-pane>
-          <el-tab-pane label="执行记录" name="history"><div class="rw-history-head"><span>此连接的执行记录，包含逻辑库与执行人</span><el-button text :icon="Refresh" @click="loadHistory">刷新记录</el-button></div><el-alert v-if="historyError" :title="historyError" type="error" :closable="false" /><el-table v-loading="historyLoading" :data="history"><el-table-column prop="schemaName" label="逻辑库" width="90" /><el-table-column prop="sqlText" label="命令" min-width="250" show-overflow-tooltip /><el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">{{ row.status === 1 ? '成功' : '失败' }}</el-tag></template></el-table-column><el-table-column prop="durationMs" label="耗时(ms)" width="100" /><el-table-column prop="operator" label="执行人" width="100" /><el-table-column prop="createTime" label="时间" min-width="160" /><el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="running" @click="reuseHistory(row)">填入命令</el-button></template></el-table-column></el-table><el-pagination v-model:current-page="historyPage" :total="historyTotal" :page-size="20" layout="total, prev, pager, next" @current-change="loadHistory" /></el-tab-pane>
+          <el-tab-pane :label="tr('命令结果')" name="result"><template v-if="result"><div class="rw-result-meta"><el-tag effect="plain">{{ result.schema }}</el-tag><span>{{ result.durationMs }} ms</span><span>{{ result.executionId }}</span></div><pre class="rw-command-result">{{ result.rows?.map(row => `${row.command}\n${row.result}`).join('\n\n') }}</pre></template><el-empty v-else :description="tr('执行一条命令后，在这里查看结果')" :image-size="64" /></el-tab-pane>
+          <el-tab-pane :label="tr('执行记录')" name="history"><div class="rw-history-head"><span>{{ tr("此连接的执行记录，包含逻辑库与执行人") }}</span><el-button text :icon="Refresh" @click="loadHistory">{{ tr("刷新记录") }}</el-button></div><el-alert v-if="historyError" :title="historyError" type="error" :closable="false" /><el-table v-loading="historyLoading" :data="history"><el-table-column prop="schemaName" :label="tr('逻辑库')" width="90" /><el-table-column prop="sqlText" :label="tr('命令')" min-width="250" show-overflow-tooltip /><el-table-column :label="tr('状态')" width="90"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">{{ row.status === 1 ? tr("成功") : tr("失败") }}</el-tag></template></el-table-column><el-table-column prop="durationMs" :label="tr('耗时(ms)')" width="100" /><el-table-column prop="operator" :label="tr('执行人')" width="100" /><el-table-column prop="createTime" :label="tr('时间')" min-width="160" /><el-table-column :label="tr('操作')" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="running" @click="reuseHistory(row)">{{ tr("填入命令") }}</el-button></template></el-table-column></el-table><el-pagination v-model:current-page="historyPage" :total="historyTotal" :page-size="20" layout="total, prev, pager, next" @current-change="loadHistory" /></el-tab-pane>
         </el-tabs>
       </section>
     </main>
-    <el-dialog v-model="formVisible" :title="`${editing ? '编辑' : '新增'} Key · ${schema}`" width="min(640px, 94vw)" :close-on-click-modal="!running" :close-on-press-escape="!running" :show-close="!running"><el-form label-position="top"><el-form-item label="Key 名称"><el-input v-model="form.key" :disabled="editing || running" /></el-form-item><el-form-item label="类型"><el-select v-model="form.type" :disabled="editing || running"><el-option v-for="kind in ['string', 'hash', 'list', 'set', 'zset']" :key="kind" :label="kind" :value="kind" /></el-select></el-form-item><el-form-item :label="form.type === 'string' ? '字符串值' : '值（JSON）'"><el-input v-model="form.value" type="textarea" :rows="7" :disabled="running" spellcheck="false" /></el-form-item><el-form-item label="TTL（秒）"><el-input-number v-model="form.ttl" :min="-1" :disabled="running" placeholder="不设置" /><span class="rw-ttl-hint">-1 永不过期；字符串编辑留空保留 TTL</span></el-form-item></el-form><template #footer><el-button :disabled="running" @click="formVisible = false">取消</el-button><el-button type="primary" :loading="running" @click="submitForm">确认保存</el-button></template></el-dialog>
+    <el-dialog v-model="formVisible" :title="`${editing ? tr('编辑') : tr('新增')} Key · ${schema}`" width="min(640px, 94vw)" :close-on-click-modal="!running" :close-on-press-escape="!running" :show-close="!running"><el-form label-position="top"><el-form-item :label="tr('Key 名称')"><el-input v-model="form.key" :disabled="editing || running" /></el-form-item><el-form-item :label="tr('类型')"><el-select v-model="form.type" :disabled="editing || running"><el-option v-for="kind in ['string', 'hash', 'list', 'set', 'zset']" :key="kind" :label="kind" :value="kind" /></el-select></el-form-item><el-form-item :label="form.type === 'string' ? tr('字符串值') : tr('值（JSON）')"><el-input v-model="form.value" type="textarea" :rows="7" :disabled="running" spellcheck="false" /></el-form-item><el-form-item :label="tr('TTL（秒）')"><el-input-number v-model="form.ttl" :min="-1" :disabled="running" :placeholder="tr('不设置')" /><span class="rw-ttl-hint">{{ tr("-1 永不过期；字符串编辑留空保留 TTL") }}</span></el-form-item></el-form><template #footer><el-button :disabled="running" @click="formVisible = false">{{ tr("取消") }}</el-button><el-button type="primary" :loading="running" @click="submitForm">{{ tr("确认保存") }}</el-button></template></el-dialog>
   </div>
 </template>
 

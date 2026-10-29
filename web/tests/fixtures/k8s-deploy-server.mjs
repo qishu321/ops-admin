@@ -41,6 +41,20 @@ const server = createServer(async (req, res) => {
       if (url.pathname === '/api/v1/ops/environment/list') return respond(res, [{ id: 1, code: 'test', name: '测试环境' }])
       if (url.pathname === '/api/v1/asset/hostGroup/list') return respond(res, { list: [{ id: 1, name: '模拟服务器组' }] })
       if (url.pathname === '/api/v1/auth/refresh') return respond(res, { token: 'isolated-test-token', accessTokenExpiresAt: Date.now() + 3600000, sessionExpiresAt: Date.now() + 3600000 })
+      // Read-only Kafka responses for language-switch acceptance; never contact a broker.
+      if (url.pathname === '/api/v1/asset/middleware/list') return respond(res, url.searchParams.get('type') === 'kafka' ? [{ id: 7101, name: '内网kafka', type: 'kafka', endpoints: ['192.0.2.169:9094'], description: '测试消息集群', authType: 'none' }] : [])
+      if (url.pathname === '/api/v1/asset/credential/options') return respond(res, [])
+      if (url.pathname === '/api/v1/asset/middleware/query') {
+        const partition = { id: 0, leader: 0, replicas: [0], isr: [0], firstOffset: '0', nextOffset: '1', offsetSpan: '1' }
+        const responses = {
+          topics: [{ Name: '业务订单', Partitions: [partition], Internal: false }], brokers: [{ ID: 0, Host: '192.0.2.169', Port: 9094 }], groups: [{ GroupID: '业务消费组', ProtocolType: 'consumer' }],
+          'topic.overview': { partitions: [partition], offsetSpan: '1', isrCount: 1, replicaCount: 1, underReplicated: 0, fetchedAt: '2026-10-29T08:00:00Z' },
+          'topic.configs': [{ name: 'cleanup.policy', value: 'delete', source: 1, readOnly: false, sensitive: false }],
+          'topic.messages': { items: [{ partition: 0, offset: '0', timestamp: '2026-10-29T08:00:00Z', key: { text: '订单编号', encoding: 'utf8', size: 12 }, value: { text: '中文业务消息保持原文', encoding: 'utf8', size: 30 }, headers: [] }], nextOffset: '1', hasMore: false },
+          'topic.consumers': { items: [], warnings: [], scanned: 0, totalGroups: 0, hasMore: false }
+        }
+        return Object.hasOwn(responses, body.operation) ? respond(res, responses[body.operation]) : respond(res, null, 400, 'Unsupported acceptance query')
+      }
       if (redisWorkbench.handle(req, url, body, respond, res)) return
       if (nodeAdd.handle(req, url, body, respond, res)) return
       const action = url.pathname.replace('/api/v1/k8s/deploy/', '')

@@ -1,4 +1,6 @@
 import { computed, ref } from 'vue'
+import uiEnglish from '../locales/en-ui.js'
+import { appDefinitions } from './apps.js'
 
 const LOCALE_KEY = 'ops-admin-locale'
 
@@ -939,11 +941,21 @@ Object.assign(messages['en-US'], {
   monitorMetrics: 'Instant Query'
 })
 
-export const locale = ref(localStorage.getItem(LOCALE_KEY) || 'zh-CN')
+const uiTranslations = { ...Object.fromEntries(Object.entries(messages['zh-CN']).filter(([key]) => messages['en-US'][key]).map(([key, value]) => [value, messages['en-US'][key]])), ...uiEnglish }
+const menuLabels = new Map()
+function collectMenuLabels(items) {
+  for (const item of items || []) {
+    if (item.path) menuLabels.set(item.path, item)
+    collectMenuLabels(item.children)
+  }
+}
+appDefinitions.forEach(app => collectMenuLabels(app.menus))
+const normalizeLocale = value => /^en(?:[-_]|$)/i.test(value || '') ? 'en-US' : 'zh-CN'
+export const locale = ref(normalizeLocale(typeof localStorage === 'undefined' ? '' : localStorage.getItem(LOCALE_KEY)))
 
 export function setLocale(value) {
-  locale.value = value || 'zh-CN'
-  localStorage.setItem(LOCALE_KEY, locale.value)
+  locale.value = normalizeLocale(value)
+  if (typeof localStorage !== 'undefined') localStorage.setItem(LOCALE_KEY, locale.value)
 }
 
 export function getLocale() {
@@ -953,10 +965,17 @@ export function getLocale() {
 export function t(key, params = {}) {
   const dict = messages[locale.value] || messages['zh-CN']
   let text = dict[key] || messages['zh-CN'][key] || key
-  Object.keys(params).forEach((name) => {
-    text = text.replace(`{${name}}`, params[name])
-  })
-  return text
+  return interpolate(text, params)
+}
+
+function interpolate(text, params) {
+  return String(text).replace(/\{([\w]+)\}/g, (match, name) => Object.hasOwn(params, name) ? String(params[name] ?? '') : match)
+}
+
+// Translate authored UI copy explicitly, never resource names or message values.
+export function tr(source, params = {}) {
+  if (source == null) return ''
+  return interpolate(locale.value === 'en-US' ? uiTranslations[source] || source : source, params)
 }
 
 const routeTitleMap = {
@@ -1051,6 +1070,14 @@ const routeTitleMap = {
   '/monitor/metrics': 'monitorMetrics'
 }
 
+const extraRouteLabels = {
+  '/business-topology': '业务拓扑图',
+  '/assets/middleware/kafka/topic': 'Topic 详情',
+  '/assets/middleware/rabbitmq/explorer': 'RabbitMQ 工作台',
+  '/assets/middleware/nacos/explorer': 'Nacos 工作台',
+  '/assets/middleware/zookeeper/explorer': 'ZooKeeper 节点浏览'
+}
+
 export function translateRoute(path, fallback = '') {
   const normalizedPath = path.startsWith('/containers/k8s/pod-terminal/')
     ? '/containers/k8s/pod-terminal'
@@ -1058,7 +1085,10 @@ export function translateRoute(path, fallback = '') {
       ? '/assets/databases/workbench'
       : path
   const key = routeTitleMap[normalizedPath]
-  return key ? t(key) : fallback
+  if (key && messages[locale.value]?.[key]) return t(key)
+  const menu = menuLabels.get(normalizedPath)
+  if (menu?.titleKey && messages[locale.value]?.[menu.titleKey]) return t(menu.titleKey)
+  return tr(menu?.title || extraRouteLabels[normalizedPath] || messages['zh-CN'][key] || fallback)
 }
 
 export function translateEntity(value, fallback = '-') {

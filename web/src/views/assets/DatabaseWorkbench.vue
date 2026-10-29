@@ -1,4 +1,5 @@
 <script setup>
+import { tr } from '../../utils/i18n'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1082,13 +1083,13 @@ onBeforeUnmount(() => {
     <header class="dbms-console-bar">
       <div class="dbms-console-identity">
         <span>DBMS WORKBENCH</span>
-        <strong>{{ connection?.name || connection?.databaseName || '数据库工作台' }}</strong>
-        <small>{{ connection?.host || connection?.address || '选择连接后可浏览对象、执行语句与查看结果' }}</small>
+        <strong>{{ connection?.name || connection?.databaseName || tr('数据库工作台') }}</strong>
+        <small>{{ connection?.host || connection?.address || tr('选择连接后可浏览对象、执行语句与查看结果') }}</small>
       </div>
       <div class="dbms-console-status">
         <el-tag effect="plain">{{ (connection?.dbType || 'DBMS').toUpperCase() }}</el-tag>
         <el-tag v-if="connection?.environment" type="info" effect="plain">{{ connection.environment }}</el-tag>
-        <el-tag :type="isReadOnly ? 'warning' : 'success'" effect="plain">{{ isReadOnly ? '只读连接' : '可写连接' }}</el-tag>
+        <el-tag :type="isReadOnly ? 'warning' : 'success'" effect="plain">{{ isReadOnly ? tr('只读连接') : tr('可写连接') }}</el-tag>
       </div>
     </header>
     <RedisWorkbench v-if="isRedis" :key="databaseId" :database-id="databaseId" :connection="connection" @switch-database="switchDatabase" />

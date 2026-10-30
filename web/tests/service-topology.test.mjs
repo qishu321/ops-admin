@@ -4,12 +4,31 @@ import { buildServiceTopology, routeServiceEdge, segmentHitsNode, nodeWidth, nod
 const workload=(name,type='Deployment')=>({name,type,ready:'2/2',available:2})
 const sample=()=>['nginx-gm','szfc-mgr','szfc-gate','szfc-notice','szfc-login','szfc-contact','szfc-social','szfc-battle','szfc-home','szfc-world'].map(name=>workload(name,name.includes('home')||name.includes('world')?'StatefulSet':'Deployment'))
 
-test('Contact is a central scheduler receiving exactly the six specified service roles',()=>{
+test('Contact is a central scheduler receiving exactly the specified service roles',()=>{
   const layout=buildServiceTopology(sample()),contact=layout.positions.contact,zk=layout.positions.zk
   assert.equal(contact.kind,'scheduler');assert.equal(contact.x,zk.x)
-  assert.ok(zk.y-contact.y>=300)
-  assert.deepEqual(layout.edges.filter(edge=>edge.to==='contact').map(edge=>edge.from).sort(),['gate','mgr','notice','social','home-0','world-0'].sort())
+  // 注册中心就挂在调度器正下方：同一列、隔一个可走线的通道（>44 才有通道，又不能再拉开两百多像素）。
+  const gap=zk.y-(contact.y+nodeHeight(contact))
+  assert.ok(gap>44&&gap<120,`zk 与调度器的间距 ${gap}`)
+  assert.deepEqual(layout.edges.filter(edge=>edge.to==='contact').map(edge=>edge.from).sort(),['gate','mgr','notice','social','battle-0','home-0','world-0'].sort())
   assert.equal(layout.nodes.filter(node=>node.workload?.name==='szfc-contact').length,1)
+})
+
+test('the entry chain reads left to right: player → gate → login → contact → backend services',()=>{
+  const layout=buildServiceTopology(sample()),p=layout.positions
+  // 玩家客户端是唯一的最左入口，不在「其他内部服务」里下沉。
+  assert.equal(p.player.kind,'external')
+  assert.equal(Math.min(...layout.nodes.map(node=>node.x)),p.player.x)
+  const chain=['player','gate','login','contact']
+  for(let i=1;i<chain.length;i++)assert.ok(p[chain[i]].x>p[chain[i-1]].x,`${chain[i]} 应该在 ${chain[i-1]} 右边`)
+  // 后段服务（home / world）在调度器右侧。
+  assert.ok(p['home-0'].x>p.contact.x&&p['world-0'].x>p.contact.x)
+  // 战斗服单独成卡，紧接在 login 后面（同列下行 + 登录后进入战斗的连线），不再归入其他内部服务。
+  const battle=p['battle-0']
+  assert.equal(battle.x,p.login.x)
+  assert.ok(battle.y>p.login.y)
+  assert.ok(layout.edges.some(edge=>edge.from==='login'&&edge.to==='battle-0'))
+  assert.equal(battle.workload.name,'szfc-battle')
 })
 
 test('cards remain separated and inside the canvas for both ordinary and many-instance layouts',()=>{

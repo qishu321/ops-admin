@@ -8,7 +8,8 @@ import K8sConsoleLayout from './k8s/K8sConsoleLayout.vue'
 import K8sSectionContent from './k8s/K8sSectionContent.vue'
 import K8sDrawers from './k8s/K8sDrawers.vue'
 import K8sDialogs from './k8s/K8sDialogs.vue'
-import K8sWorkloadCreate from './k8s/K8sWorkloadCreate.vue'
+import K8sWorkloadEditor from './k8s/K8sWorkloadEditor.vue'
+import K8sPodDeleteDialog from './k8s/K8sPodDeleteDialog.vue'
 import './k8s/k8s-page.css'
 import {
   queryK8sClusterList,
@@ -35,8 +36,6 @@ import {
   scaleK8sWorkload,
   restartK8sWorkload,
   updateK8sWorkloadImages,
-  updateK8sWorkloadResources,
-  createK8sWorkloadBundle,
   updateK8sIstioTraffic,
   updateK8sHTTPRouteTraffic,
   createK8sResourceYAML,
@@ -44,7 +43,7 @@ import {
   updateK8sResourceYAML
 } from '../../api/k8s'
 import { queryMonitorPrometheus, queryMonitorPrometheusRange } from '../../api/monitor'
-import { t } from '../../utils/i18n'
+import { t, tr } from '../../utils/i18n'
 
 const route = useRoute()
 const router = useRouter()
@@ -125,23 +124,10 @@ const namespaceCreateForm = reactive({
 const workloadDrawerVisible = ref(false)
 const workloadDrawerLoading = ref(false)
 const workloadDetail = ref(null)
-const workloadResourceDialogVisible = ref(false)
-const workloadResourceSaving = ref(false)
-const workloadResourceForm = reactive({
-  namespace: '', workloadType: '', workloadName: '', replicas: 1, originalReplicas: 1,
-  activeContainerName: '', containers: [], originalContainers: []
-})
+let workloadEditorLoadVersion=0
+const workloadEditorResource = ref(null)
+const podDeleteTarget = ref(null)
 const workloadCreateVisible = ref(false)
-const workloadCreateSaving = ref(false)
-const workloadCreateActiveTab = ref('basic')
-const workloadCreateForm = reactive({
-  namespace: '', name: '', workloadType: 'Deployment', replicas: 1,
-  image: '', containerName: 'app', containerPort: 8080, imagePullPolicy: 'IfNotPresent',
-  requestCPU: '', requestMemory: '', limitCPU: '', limitMemory: '',
-  createService: true, serviceName: '', serviceType: 'ClusterIP', servicePort: 80, targetPort: '',
-  createIngress: false, ingressName: '', ingressClassName: '', ingressHost: '', ingressPath: '/', ingressPathType: 'Prefix'
-})
-
 const podDrawerVisible = ref(false)
 const podDrawerLoading = ref(false)
 const podDetail = ref(null)
@@ -1139,6 +1125,8 @@ function clearClusterData() {
 
 async function loadClusters(preferId) {
   const version = ++clusterListVersion
+  podDeleteTarget.value = null
+  workloadCreateVisible.value = false
   ++clusterDataVersion
   loading.value = true
   let options
@@ -1207,6 +1195,8 @@ async function refreshCurrentClusterData() {
 }
 
 async function handleClusterChange(clusterId) {
+  podDeleteTarget.value=null
+  workloadCreateVisible.value=false
   switching.value = true
   try {
     await loadClusterData(clusterId)
@@ -1812,101 +1802,11 @@ async function submitIngressCreate() {
   } finally { ingressCreateSaving.value = false }
 }
 
-function resetWorkloadCreateForm() {
-  Object.assign(workloadCreateForm, {
-    namespace: namespaceFilter.value !== '__all__' ? namespaceFilter.value : (namespaces.value[0]?.name || ''),
-    name: '', workloadType: 'Deployment', replicas: 1, image: '', containerName: 'app', containerPort: 8080, imagePullPolicy: 'IfNotPresent',
-    requestCPU: '', requestMemory: '', limitCPU: '', limitMemory: '', createService: true, serviceName: '', serviceType: 'ClusterIP', servicePort: 80, targetPort: '',
-    createIngress: false, ingressName: '', ingressClassName: '', ingressHost: '', ingressPath: '/', ingressPathType: 'Prefix'
-  })
-  workloadCreateActiveTab.value = 'basic'
-}
-
 function openWorkloadCreate() {
   if (!cluster.value?.id) return
-  resetWorkloadCreateForm()
+  workloadEditorLoadVersion++
+  workloadEditorResource.value = null
   workloadCreateVisible.value = true
-}
-
-function yamlValue(value) {
-  return JSON.stringify(String(value ?? ''))
-}
-
-function workloadCreateNames() {
-  const name = workloadCreateForm.name.trim()
-  return {
-    name,
-    serviceName: workloadCreateForm.serviceName.trim() || name,
-    ingressName: workloadCreateForm.ingressName.trim() || `${name}-ingress`
-  }
-}
-
-function buildWorkloadCreateYamls() {
-  const form = workloadCreateForm
-  const { name, serviceName, ingressName } = workloadCreateNames()
-  const labels = `      labels:\n        app.kubernetes.io/name: ${yamlValue(name)}`
-  const container = [
-    `      containers:`, `        - name: ${yamlValue(form.containerName.trim() || 'app')}`,
-    `          image: ${yamlValue(form.image.trim())}`, `          imagePullPolicy: ${form.imagePullPolicy}`,
-    `          ports:`, `            - name: http`, `              containerPort: ${Number(form.containerPort)}`
-  ]
-  const resources = []
-  if (form.requestCPU || form.requestMemory) {
-    resources.push('            requests:')
-    if (form.requestCPU) resources.push(`              cpu: ${yamlValue(form.requestCPU)}`)
-    if (form.requestMemory) resources.push(`              memory: ${yamlValue(form.requestMemory)}`)
-  }
-  if (form.limitCPU || form.limitMemory) {
-    if (!resources.length) resources.push('            limits:')
-    else resources.push('            limits:')
-    if (form.limitCPU) resources.push(`              cpu: ${yamlValue(form.limitCPU)}`)
-    if (form.limitMemory) resources.push(`              memory: ${yamlValue(form.limitMemory)}`)
-  }
-  if (resources.length) container.push('          resources:', ...resources)
-  const podSpec = [`    metadata:`, ...labels.split('\n'), `    spec:`, ...container]
-  let workloadYaml
-  if (form.workloadType === 'CronJob') {
-    workloadYaml = [`apiVersion: batch/v1`, `kind: CronJob`, `metadata:`, `  name: ${yamlValue(name)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, `  schedule: "0 * * * *"`, `  jobTemplate:`, `    spec:`, `      template:`, ...podSpec.map((line) => `    ${line}`)].join('\n')
-  } else if (form.workloadType === 'Job') {
-    workloadYaml = [`apiVersion: batch/v1`, `kind: Job`, `metadata:`, `  name: ${yamlValue(name)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, `  template:`, ...podSpec].join('\n')
-  } else {
-    const kind = form.workloadType
-    const spec = [`apiVersion: apps/v1`, `kind: ${kind}`, `metadata:`, `  name: ${yamlValue(name)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`]
-    if (kind !== 'DaemonSet') spec.push(`  replicas: ${Number(form.replicas)}`)
-    if (kind === 'StatefulSet') spec.push(`  serviceName: ${yamlValue(serviceName)}`)
-    spec.push(`  selector:`, `    matchLabels:`, `      app.kubernetes.io/name: ${yamlValue(name)}`, `  template:`, ...podSpec)
-    workloadYaml = spec.join('\n')
-  }
-  const serviceYaml = form.createService ? [`apiVersion: v1`, `kind: Service`, `metadata:`, `  name: ${yamlValue(serviceName)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, `  type: ${form.serviceType}`, `  selector:`, `    app.kubernetes.io/name: ${yamlValue(name)}`, `  ports:`, `    - name: http`, `      protocol: TCP`, `      port: ${Number(form.servicePort)}`, `      targetPort: ${yamlValue(form.targetPort || form.containerPort)}`].join('\n') : ''
-  const ingressYaml = form.createIngress ? [`apiVersion: networking.k8s.io/v1`, `kind: Ingress`, `metadata:`, `  name: ${yamlValue(ingressName)}`, `  namespace: ${yamlValue(form.namespace)}`, `spec:`, ...(form.ingressClassName.trim() ? [`  ingressClassName: ${yamlValue(form.ingressClassName.trim())}`] : []), `  rules:`, `    - host: ${yamlValue(form.ingressHost.trim())}`, `      http:`, `        paths:`, `          - path: ${yamlValue(form.ingressPath || '/')}`, `            pathType: ${form.ingressPathType}`, `            backend:`, `              service:`, `                name: ${yamlValue(serviceName)}`, `                port:`, `                  number: ${Number(form.servicePort)}`].join('\n') : ''
-  return { workloadYaml, serviceYaml, ingressYaml }
-}
-
-const workloadCreatePreview = computed(() => {
-  const yamls = buildWorkloadCreateYamls()
-  return [yamls.workloadYaml, yamls.serviceYaml, yamls.ingressYaml].filter(Boolean).join('\n---\n')
-})
-
-async function submitWorkloadCreate() {
-  const form = workloadCreateForm
-  if (!cluster.value?.id || !form.namespace || !form.name.trim() || !form.image.trim()) {
-    ElMessage.warning('请填写命名空间、工作负载名称和容器镜像')
-    return
-  }
-  if (form.createIngress && (!form.createService || !form.ingressHost.trim())) {
-    ElMessage.warning('创建路由时必须同时创建服务，并填写访问域名')
-    return
-  }
-  workloadCreateSaving.value = true
-  try {
-    const yamls = buildWorkloadCreateYamls()
-    await createK8sWorkloadBundle({ clusterId: cluster.value.id, namespace: form.namespace, workloadType: form.workloadType, ...yamls })
-    ElMessage.success('工作负载及关联资源已创建')
-    workloadCreateVisible.value = false
-    await refreshCurrentClusterData()
-  } finally {
-    workloadCreateSaving.value = false
-  }
 }
 
 async function copyServiceName(row) {
@@ -1929,130 +1829,17 @@ function handlePodPageChange(page) {
 
 async function handleDeletePod(row) {
   if (!cluster.value?.id || !row?.namespace || !row?.name) return
-  await ElMessageBox.confirm(
-    `确认删除 Pod ${row.namespace}/${row.name}？`,
-    '确认删除',
-    {
-      type: 'warning',
-      confirmButtonText: t('k8sDelete'),
-      cancelButtonText: t('cancel')
-    }
-  )
-  await deleteK8sResource({
-    clusterId: cluster.value.id,
-    resourceType: 'pod',
-    namespace: row.namespace,
-    name: row.name
-  })
-  ElMessage.success('Pod 已删除')
-  if (podDrawerVisible.value && podDetail.value?.name === row.name && podDetail.value?.namespace === row.namespace) {
-    podDrawerVisible.value = false
-  }
-  if (podLogDrawerVisible.value && currentPodQuery.podName === row.name && currentPodQuery.namespace === row.namespace) {
-    podLogDrawerVisible.value = false
-  }
-  await refreshCurrentClusterData()
-  const maxPage = Math.max(1, Math.ceil(filteredPods.value.length / podPageSize.value))
-  if (podPage.value > maxPage) {
-    podPage.value = maxPage
-  }
+  podDeleteTarget.value = { ...row }
 }
 
 async function openWorkloadResourceSettings(row) {
   if (!cluster.value?.id) return
-  const detail = await queryK8sWorkloadDetail(cluster.value.id, row.namespace, row.type, row.name)
-  workloadResourceForm.namespace = detail.namespace
-  workloadResourceForm.workloadType = detail.type
-  workloadResourceForm.workloadName = detail.name
-  const readyParts = String(detail.ready || row.ready || '').split('/')
-  const desiredReplicas = Number(readyParts[1] || readyParts[0] || 1)
-  workloadResourceForm.replicas = Number.isFinite(desiredReplicas) ? desiredReplicas : 1
-  workloadResourceForm.originalReplicas = workloadResourceForm.replicas
-  workloadResourceForm.containers = (detail.containers || []).map((item) => ({
-    name: item.name,
-    image: item.image || '',
-    requestCPU: item.requestCPU || '',
-    limitCPU: item.limitCPU || '',
-    requestMemory: item.requestMemory || '',
-    limitMemory: item.limitMemory || '',
-    imagePullPolicy: item.imagePullPolicy || 'IfNotPresent',
-    env: (item.env || []).map((env) => ({
-      name: env.name || '',
-      value: env.value || '',
-      valueFrom: env.valueFrom || null,
-      source: env.source || ''
-    }))
-  }))
-  workloadResourceForm.originalContainers = JSON.parse(JSON.stringify(workloadResourceForm.containers))
-  workloadResourceForm.activeContainerName = workloadResourceForm.containers[0]?.name || ''
-  workloadResourceDialogVisible.value = true
-}
-
-function addWorkloadEnvironment(container) {
-  if (!Array.isArray(container.env)) container.env = []
-  container.env.push({ name: '', value: '', valueFrom: null, source: '' })
-}
-
-function removeWorkloadEnvironment(container, index) {
-  if (Array.isArray(container.env)) container.env.splice(index, 1)
-}
-
-async function submitWorkloadResourceSettings() {
-  if (!cluster.value?.id || !workloadResourceForm.containers.length) return
-  const missingImage = workloadResourceForm.containers.find((container) => !String(container.image || '').trim())
-  if (missingImage) {
-    ElMessage.warning(`请填写容器 ${missingImage.name} 的镜像地址`)
-    workloadResourceForm.activeContainerName = missingImage.name
-    return
-  }
-  for (const container of workloadResourceForm.containers) {
-    const envNames = (container.env || []).map((item) => String(item.name || '').trim())
-    if (envNames.some((name) => !name)) {
-      ElMessage.warning(`请补全容器 ${container.name} 的环境变量名称`)
-      workloadResourceForm.activeContainerName = container.name
-      return
-    }
-    if (new Set(envNames).size !== envNames.length) {
-      ElMessage.warning(`容器 ${container.name} 存在重复的环境变量名称`)
-      workloadResourceForm.activeContainerName = container.name
-      return
-    }
-  }
-  const containerSettingsChanged = JSON.stringify(workloadResourceForm.containers) !== JSON.stringify(workloadResourceForm.originalContainers)
-  const replicasChanged = supportsScale({ type: workloadResourceForm.workloadType }) && Number(workloadResourceForm.replicas) !== Number(workloadResourceForm.originalReplicas)
-  if (!containerSettingsChanged && !replicasChanged) {
-    ElMessage.info('未检测到需要保存的变更')
-    return
-  }
-  workloadResourceSaving.value = true
-  try {
-    if (containerSettingsChanged) {
-      await updateK8sWorkloadResources({
-        clusterId: cluster.value.id,
-        namespace: workloadResourceForm.namespace,
-        workloadType: workloadResourceForm.workloadType,
-        workloadName: workloadResourceForm.workloadName,
-        containers: workloadResourceForm.containers
-      })
-    }
-    if (replicasChanged) {
-      await scaleK8sWorkload({
-        clusterId: cluster.value.id,
-        namespace: workloadResourceForm.namespace,
-        workloadType: workloadResourceForm.workloadType,
-        workloadName: workloadResourceForm.workloadName,
-        replicas: Number(workloadResourceForm.replicas)
-      })
-    }
-    ElMessage.success('工作负载已更新')
-    workloadResourceDialogVisible.value = false
-    await refreshCurrentClusterData()
-    if (workloadDrawerVisible.value && workloadDetail.value?.name === workloadResourceForm.workloadName) {
-      workloadDetail.value = await queryK8sWorkloadDetail(cluster.value.id, workloadResourceForm.namespace, workloadResourceForm.workloadType, workloadResourceForm.workloadName)
-    }
-  } finally {
-    workloadResourceSaving.value = false
-  }
+  const version=++workloadEditorLoadVersion, clusterId=cluster.value.id
+  const detail = await queryK8sWorkloadDetail(clusterId, row.namespace, row.type, row.name)
+  if(version!==workloadEditorLoadVersion || cluster.value?.id!==clusterId || currentTab.value!=='workloads') return
+  if (!detail.resource) { ElMessage.warning(tr('请更新后端以加载完整工作负载配置')); return }
+  workloadEditorResource.value = detail.resource
+  workloadCreateVisible.value = true
 }
 
 function openNamespaceCreate() {
@@ -3404,13 +3191,9 @@ const page = reactive({
   workloadDrawerVisible,
   workloadDrawerLoading,
   workloadDetail,
-	workloadResourceDialogVisible,
-	workloadResourceSaving,
-  workloadResourceForm,
   workloadCreateVisible,
-  workloadCreateSaving,
-  workloadCreateActiveTab,
-  workloadCreateForm,
+  workloadEditorResource,
+  podDeleteTarget,
   selectedWorkloads,
   podDrawerVisible,
   podDrawerLoading,
@@ -3475,7 +3258,6 @@ const page = reactive({
   hasCluster,
   statusType,
   namespaceOptions,
-  workloadCreatePreview,
   podWorkloadOptions,
   configStorageCreateTitle,
   storageAccessModeOptions,
@@ -3556,11 +3338,7 @@ const page = reactive({
   openWorkloadCreate,
   openServiceCreate,
   openIngressCreate,
-  submitWorkloadCreate,
 	openWorkloadResourceSettings,
-	submitWorkloadResourceSettings,
-	addWorkloadEnvironment,
-	removeWorkloadEnvironment,
 	openWorkloadYAML,
   handleWorkloadSelectionChange,
   handleWorkloadBatchCommand,
@@ -3660,6 +3438,8 @@ onMounted(async () => {
 })
 useAccessRefresh(async () => {
   const preferred = cluster.value?.id || Number(route.query.clusterId)
+  podDeleteTarget.value = null
+  workloadCreateVisible.value = false
   ++clusterDataVersion
   clearClusterData()
   monitorLoadSequence++
@@ -3720,10 +3500,11 @@ watch(
 <template>
   <div class="k8s-page" :class="`k8s-page--${page.currentTab}`" v-loading="page.loading">
     <K8sConsoleLayout :page="page">
-      <K8sWorkloadCreate v-if="page.workloadCreateVisible" :page="page" />
+      <K8sWorkloadEditor v-if="page.workloadCreateVisible" :page="page" />
       <K8sSectionContent v-else :page="page" />
     </K8sConsoleLayout>
     <K8sDrawers :page="page" />
     <K8sDialogs :page="page" />
+    <K8sPodDeleteDialog v-if="podDeleteTarget" :key="`${cluster?.id}/${podDeleteTarget.uid}`" :pod="podDeleteTarget" :cluster="cluster" @close="podDeleteTarget=null" @changed="refreshCurrentClusterData" />
   </div>
 </template>

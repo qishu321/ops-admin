@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { emptyDeployment } from '../../src/utils/k8s-deploy.js'
 import { NodeAddMemory } from './k8s-node-add-memory.mjs'
 import { createRedisWorkbenchMemory } from './redis-workbench-memory.mjs'
+import { createK8sWorkloadMemory } from './k8s-workload-memory.mjs'
 
 const root = resolve(fileURLToPath(new URL('../../dist', import.meta.url)))
 const user = { id: 990001, username: 'acceptance-test', nickname: '隔离验收', accountType: 'administrator' }
@@ -22,6 +23,7 @@ const hosts = Array.from({ length: 12 }, (_, i) => ({
 }))
 const nodeAdd = new NodeAddMemory(hosts)
 const redisWorkbench = createRedisWorkbenchMemory()
+const workloadMemory = createK8sWorkloadMemory()
 setInterval(() => { for (const task of nodeAdd.tasks.values()) nodeAdd.advance(task.id) }, 900).unref()
 function respond(res, data, status = 200, message = 'success') { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ code: status, data, message })) }
 function step(run, host, title, status = 'success', summary = '模拟执行通过') {
@@ -32,7 +34,7 @@ function step(run, host, title, status = 'success', summary = '模拟执行通�
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://127.0.0.1:18081')
-    if (url.pathname === '/__test/state') return respond(res, { plans: [...plans.values()], requests, redisWorkbench: redisWorkbench.inspect(), externalRequests: 0 })
+    if (url.pathname === '/__test/state') return respond(res, { plans: [...plans.values()], requests, redisWorkbench: redisWorkbench.inspect(), workloadMemory: workloadMemory.inspect(), externalRequests: 0 })
     if (url.pathname.startsWith('/api/')) {
       let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 1e6) throw new Error('payload too large') }
       const body = raw ? JSON.parse(raw) : {}; requests.push({ method: req.method, path: url.pathname })
@@ -41,6 +43,7 @@ const server = createServer(async (req, res) => {
       if (url.pathname === '/api/v1/ops/environment/list') return respond(res, [{ id: 1, code: 'test', name: '测试环境' }])
       if (url.pathname === '/api/v1/asset/hostGroup/list') return respond(res, { list: [{ id: 1, name: '模拟服务器组' }] })
       if (url.pathname === '/api/v1/auth/refresh') return respond(res, { token: 'isolated-test-token', accessTokenExpiresAt: Date.now() + 3600000, sessionExpiresAt: Date.now() + 3600000 })
+      if (url.pathname === '/api/v1/asset/service/runtime-topology') return respond(res, {service:{id:10,name:'服务拓扑验收',serviceUid:'acceptance-service-10'},cluster:{id:901,name:'测试集群'},namespace:'demo',workloads:['nginx-gm','szfc-mgr','szfc-gate','szfc-notice','szfc-login','szfc-contact','szfc-social','szfc-battle','szfc-home','szfc-world'].map(name=>({name,type:name.includes('home')||name.includes('world')?'StatefulSet':'Deployment',ready:'2/2',available:2}))})
       // Read-only Kafka responses for language-switch acceptance; never contact a broker.
       if (url.pathname === '/api/v1/asset/middleware/list') return respond(res, url.searchParams.get('type') === 'kafka' ? [{ id: 7101, name: '内网kafka', type: 'kafka', endpoints: ['192.0.2.169:9094'], description: '测试消息集群', authType: 'none' }] : [])
       if (url.pathname === '/api/v1/asset/credential/options') return respond(res, [])
@@ -56,6 +59,7 @@ const server = createServer(async (req, res) => {
         return Object.hasOwn(responses, body.operation) ? respond(res, responses[body.operation]) : respond(res, null, 400, 'Unsupported acceptance query')
       }
       if (redisWorkbench.handle(req, url, body, respond, res)) return
+      if (workloadMemory.handle(req, url, body, respond, res)) return
       if (nodeAdd.handle(req, url, body, respond, res)) return
       const action = url.pathname.replace('/api/v1/k8s/deploy/', '')
       const id = Number(url.searchParams.get('id') || body.id), plan = plans.get(id)

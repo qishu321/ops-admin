@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import uiEnglish from '../locales/en-ui.js'
+import k8sEditorEnglish from '../locales/k8s-editor-en.js'
 import { appDefinitions } from './apps.js'
 
 const LOCALE_KEY = 'ops-admin-locale'
@@ -941,7 +942,7 @@ Object.assign(messages['en-US'], {
   monitorMetrics: 'Instant Query'
 })
 
-const uiTranslations = { ...Object.fromEntries(Object.entries(messages['zh-CN']).filter(([key]) => messages['en-US'][key]).map(([key, value]) => [value, messages['en-US'][key]])), ...uiEnglish }
+const uiTranslations = { ...Object.fromEntries(Object.entries(messages['zh-CN']).filter(([key]) => messages['en-US'][key]).map(([key, value]) => [value, messages['en-US'][key]])), ...uiEnglish, ...k8sEditorEnglish }
 const menuLabels = new Map()
 function collectMenuLabels(items) {
   for (const item of items || []) {

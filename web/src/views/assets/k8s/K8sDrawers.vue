@@ -1,4 +1,5 @@
 <script setup>
+import { tr } from '../../../utils/i18n'
 import PodMonitor from './PodMonitor.vue'
 import ServicePodMonitor from '../ServicePodMonitor.vue'
 
@@ -150,6 +151,13 @@ defineProps({
           <el-descriptions-item :label="page.t('k8sAvailable')">{{ page.workloadDetail.available }}</el-descriptions-item>
           <el-descriptions-item :label="page.t('k8sAge')">{{ page.workloadDetail.age }}</el-descriptions-item>
         </el-descriptions>
+        <section v-if="page.workloadDetail.resource" style="margin:20px 0">
+          <div style="display:flex;align-items:center;justify-content:space-between"><h4>{{ tr('发布状态') }}</h4><el-button size="small" @click="page.openWorkloadDetail(page.workloadDetail)">{{ tr('刷新发布状态') }}</el-button></div>
+          <p style="font-size:12px;color:#8794a8">generation: {{ page.workloadDetail.resource.metadata?.generation ?? '—' }} / observedGeneration: {{ page.workloadDetail.resource.status?.observedGeneration ?? '—' }} · currentRevision: {{ page.workloadDetail.resource.status?.currentRevision || '—' }} / updateRevision: {{ page.workloadDetail.resource.status?.updateRevision || '—' }}</p>
+          <el-table :data="page.workloadDetail.resource.status?.conditions || []" size="small"><el-table-column prop="type" :label="tr('状态条件')" min-width="140" /><el-table-column prop="status" :label="tr('状态')" width="85" /><el-table-column prop="reason" :label="tr('原因')" min-width="150" /><el-table-column prop="message" :label="tr('信息')" min-width="240" /></el-table>
+          <small style="color:#8794a8">{{ tr('详情中的发布数据来自最近一次刷新') }}</small>
+        </section>
+
 
         <div class="drawer-section">
           <strong>{{ page.t('k8sSelector') }}</strong>

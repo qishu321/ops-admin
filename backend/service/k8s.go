@@ -146,6 +146,8 @@ type kubeEndpointListResponse struct {
 }
 
 type kubeMetadata struct {
+	DeletionTimestamp string            `json:"deletionTimestamp"`
+	Finalizers        []string          `json:"finalizers"`
 	Name              string            `json:"name"`
 	UID               string            `json:"uid"`
 	Namespace         string            `json:"namespace"`
@@ -203,6 +205,22 @@ type kubeContainer struct {
 	} `json:"resources"`
 }
 
+type kubeContainerStatus struct {
+	Name         string `json:"name"`
+	RestartCount int    `json:"restartCount"`
+	Ready        bool   `json:"ready"`
+	State        struct {
+		Waiting *struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"waiting"`
+		Terminated *struct {
+			Reason   string `json:"reason"`
+			ExitCode int    `json:"exitCode"`
+		} `json:"terminated"`
+	} `json:"state"`
+}
+
 type kubePod struct {
 	Metadata kubeMetadata `json:"metadata"`
 	Spec     struct {
@@ -211,15 +229,14 @@ type kubePod struct {
 		Containers         []kubeContainer `json:"containers"`
 	} `json:"spec"`
 	Status struct {
-		Phase             string `json:"phase"`
-		PodIP             string `json:"podIP"`
-		HostIP            string `json:"hostIP"`
-		QoSClass          string `json:"qosClass"`
-		ContainerStatuses []struct {
-			Name         string `json:"name"`
-			RestartCount int    `json:"restartCount"`
-			Ready        bool   `json:"ready"`
-		} `json:"containerStatuses"`
+		Phase                 string                `json:"phase"`
+		PodIP                 string                `json:"podIP"`
+		HostIP                string                `json:"hostIP"`
+		QoSClass              string                `json:"qosClass"`
+		ContainerStatuses     []kubeContainerStatus `json:"containerStatuses"`
+		InitContainerStatuses []kubeContainerStatus `json:"initContainerStatuses"`
+		Reason                string                `json:"reason"`
+		Message               string                `json:"message"`
 	} `json:"status"`
 }
 
@@ -1080,7 +1097,7 @@ func (s *Service) GetK8sPodDetail(clusterID uint, namespace string, podName stri
 	return model.K8sPodDetail{
 		Name:           pod.Metadata.Name,
 		Namespace:      pod.Metadata.Namespace,
-		Status:         fallbackText(pod.Status.Phase),
+		Status:         podDisplayStatus(pod),
 		Node:           fallbackText(pod.Spec.NodeName),
 		PodIP:          fallbackText(pod.Status.PodIP),
 		HostIP:         fallbackText(pod.Status.HostIP),
@@ -1515,18 +1532,14 @@ func (s *Service) UpdateK8sResourceYAML(payload model.K8sResourceYAMLPayload) (m
 			}
 			break
 		}
-		if metadata, ok := current["metadata"].(map[string]any); ok {
-			if version, ok := metadata["resourceVersion"].(string); ok && version != "" {
-				if submittedMetadata, ok := submitted["metadata"].(map[string]any); ok {
-					submittedMetadata["resourceVersion"] = version
-				}
-			}
+		if err := applyK8sResourceVersion(submitted, current); err != nil {
+			return nil, err
 		}
 		requestBody, marshalErr := json.Marshal(submitted)
 		if marshalErr != nil {
 			return nil, errors.New("invalid yaml content")
 		}
-		updateErr = k8sDoJSON(client, runtime, http.MethodPut, path, nil, requestBody, "application/json", nil)
+		updateErr = k8sDoJSON(client, runtime, http.MethodPut, path, k8sDryRunQuery(payload.DryRun), requestBody, "application/json", nil)
 		if updateErr == nil {
 			break
 		}
@@ -1542,7 +1555,8 @@ func (s *Service) UpdateK8sResourceYAML(payload model.K8sResourceYAMLPayload) (m
 		"namespace":    payload.Namespace,
 		"name":         payload.Name,
 		"workloadType": payload.WorkloadType,
-		"updated":      true,
+		"updated":      !payload.DryRun,
+		"validated":    payload.DryRun,
 	}, nil
 }
 
@@ -1576,20 +1590,20 @@ func (s *Service) CreateK8sResourceYAML(payload model.K8sResourceYAMLPayload) (m
 	if err != nil {
 		return nil, err
 	}
-	if err := k8sDoJSONAnyPath(client, runtime, http.MethodPost, paths, nil, body, "application/json", nil); err != nil {
+	if err := k8sDoJSONAnyPath(client, runtime, http.MethodPost, paths, k8sDryRunQuery(payload.DryRun), body, "application/json", nil); err != nil {
 		return nil, friendlyK8sYAMLError(payload, err)
 	}
 	return map[string]any{
 		"resourceType": payload.ResourceType,
 		"namespace":    payload.Namespace,
 		"name":         firstNonEmpty(payload.Name, manifest.Metadata.Name),
-		"created":      true,
+		"created":      !payload.DryRun,
+		"validated":    payload.DryRun,
 	}, nil
 }
 
 // CreateK8sWorkloadBundle creates the workload first, then its optional Service and
-// Ingress. Kubernetes has no transaction across these APIs, so later failures roll
-// back only the resources created by this request.
+// Ingress. Successful resources are retained and reported so retries can skip them.
 func (s *Service) CreateK8sWorkloadBundle(payload model.K8sWorkloadBundlePayload) (map[string]any, error) {
 	if payload.ClusterID == 0 || Trimmed(payload.Namespace) == "" || Trimmed(payload.WorkloadType) == "" || Trimmed(payload.WorkloadYAML) == "" {
 		return nil, errors.New("invalid workload payload")
@@ -1617,35 +1631,53 @@ func (s *Service) CreateK8sWorkloadBundle(payload model.K8sWorkloadBundlePayload
 		}
 	}
 
-	workloadResult, err := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{
-		ClusterID: payload.ClusterID, ResourceType: "workload", Namespace: payload.Namespace,
-		Name: workload.Metadata.Name, WorkloadType: payload.WorkloadType, YAML: payload.WorkloadYAML,
-	})
-	if err != nil {
-		return nil, err
+	result := map[string]any{}
+	resources := []struct {
+		key, kind, name, content string
+		skip                     bool
+	}{
+		{"workload", "workload", workload.Metadata.Name, payload.WorkloadYAML, payload.SkipWorkload},
+		{"service", "service", service.Metadata.Name, payload.ServiceYAML, payload.SkipService},
+		{"ingress", "ingress", ingress.Metadata.Name, payload.IngressYAML, false},
 	}
-	rollbackWorkload := func() {
-		_, _ = s.DeleteK8sResource(model.K8sResourceDeletePayload{ClusterID: payload.ClusterID, ResourceType: "workload", Namespace: payload.Namespace, Name: workload.Metadata.Name, WorkloadType: payload.WorkloadType})
-	}
-	result := map[string]any{"workload": workloadResult}
-
-	if Trimmed(payload.ServiceYAML) != "" {
-		serviceResult, createErr := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{ClusterID: payload.ClusterID, ResourceType: "service", Namespace: payload.Namespace, Name: service.Metadata.Name, YAML: payload.ServiceYAML})
-		if createErr != nil {
-			rollbackWorkload()
-			return nil, fmt.Errorf("service creation failed; workload was rolled back: %w", createErr)
+	failed := false
+	for _, resource := range resources {
+		if Trimmed(resource.content) == "" {
+			continue
 		}
-		result["service"] = serviceResult
-		if Trimmed(payload.IngressYAML) != "" {
-			ingressResult, createErr := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{ClusterID: payload.ClusterID, ResourceType: "ingress", Namespace: payload.Namespace, Name: ingress.Metadata.Name, YAML: payload.IngressYAML})
-			if createErr != nil {
-				_, _ = s.DeleteK8sResource(model.K8sResourceDeletePayload{ClusterID: payload.ClusterID, ResourceType: "service", Namespace: payload.Namespace, Name: service.Metadata.Name})
-				rollbackWorkload()
-				return nil, fmt.Errorf("ingress creation failed; service and workload were rolled back: %w", createErr)
+		if resource.skip {
+			paths, pathErr := buildK8sYAMLResourcePaths(model.K8sResourceYAMLPayload{ClusterID: payload.ClusterID, ResourceType: resource.kind, Namespace: payload.Namespace, Name: resource.name, WorkloadType: payload.WorkloadType})
+			if pathErr != nil {
+				return nil, pathErr
 			}
-			result["ingress"] = ingressResult
+			_, runtime, client, clientErr := s.k8sClientForCluster(payload.ClusterID)
+			if clientErr != nil {
+				return nil, clientErr
+			}
+			var current map[string]any
+			if getErr := k8sGetJSON(client, runtime, paths[0], &current); getErr != nil {
+				return nil, getErr
+			}
+			result[resource.key] = map[string]any{"status": "reused", "name": resource.name}
+			continue
 		}
+		if failed && !payload.DryRun {
+			result[resource.key] = map[string]any{"status": "skipped", "name": resource.name}
+			continue
+		}
+		_, createErr := s.CreateK8sResourceYAML(model.K8sResourceYAMLPayload{ClusterID: payload.ClusterID, ResourceType: resource.kind, Namespace: payload.Namespace, Name: resource.name, WorkloadType: payload.WorkloadType, YAML: resource.content, DryRun: payload.DryRun})
+		if createErr != nil {
+			failed = true
+			result[resource.key] = map[string]any{"status": "failed", "name": resource.name, "error": createErr.Error()}
+			continue
+		}
+		status := "created"
+		if payload.DryRun {
+			status = "validated"
+		}
+		result[resource.key] = map[string]any{"status": status, "name": resource.name}
 	}
+	result["complete"] = !failed
 	return result, nil
 }
 
@@ -1663,7 +1695,11 @@ func (s *Service) DeleteK8sResource(payload model.K8sResourceDeletePayload) (map
 	if err != nil {
 		return nil, err
 	}
-	if err := k8sDoJSONAnyPath(client, runtime, http.MethodDelete, paths, nil, nil, "application/json", nil); err != nil {
+	deleteBody, err := buildK8sDeleteOptions(payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := k8sDoJSONAnyPath(client, runtime, http.MethodDelete, paths, nil, deleteBody, "application/json", nil); err != nil {
 		if isK8sNotFoundError(err) {
 			return nil, errors.New("resource not found")
 		}
@@ -1674,7 +1710,10 @@ func (s *Service) DeleteK8sResource(payload model.K8sResourceDeletePayload) (map
 		"resourceType": payload.ResourceType,
 		"namespace":    payload.Namespace,
 		"name":         payload.Name,
-		"deleted":      true,
+		"accepted":     true,
+		"deleted":      false,
+		"uid":          payload.UID,
+		"force":        payload.Force,
 	}, nil
 }
 
@@ -1805,6 +1844,7 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 		}
 		detail := buildDeploymentDetail(client, runtime, item)
 		detail.YAML = marshalK8sYAML(resource)
+		detail.Resource = resource
 		return detail, nil
 	case "statefulset":
 		var item kubeStatefulSet
@@ -1815,6 +1855,7 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 		}
 		detail := buildStatefulSetDetail(client, runtime, item)
 		detail.YAML = marshalK8sYAML(resource)
+		detail.Resource = resource
 		return detail, nil
 	case "daemonset":
 		var item kubeDaemonSet
@@ -1825,6 +1866,7 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 		}
 		detail := buildDaemonSetDetail(client, runtime, item)
 		detail.YAML = marshalK8sYAML(resource)
+		detail.Resource = resource
 		return detail, nil
 	case "job":
 		var item kubeJob
@@ -1835,6 +1877,7 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 		}
 		detail := buildJobDetail(client, runtime, item)
 		detail.YAML = marshalK8sYAML(resource)
+		detail.Resource = resource
 		return detail, nil
 	case "cronjob":
 		var item kubeCronJob
@@ -1845,6 +1888,7 @@ func (s *Service) GetK8sWorkloadDetail(clusterID uint, namespace string, workloa
 		}
 		detail := buildCronJobDetail(client, runtime, item)
 		detail.YAML = marshalK8sYAML(resource)
+		detail.Resource = resource
 		return detail, nil
 	default:
 		return model.K8sWorkloadDetail{}, errors.New("unsupported workload type")
@@ -3761,7 +3805,7 @@ func buildPodItemsWithRefs(pods []kubePod, refs map[string]podWorkloadRef) []mod
 		}
 		items = append(items, model.K8sPodItem{
 			Name: pod.Metadata.Name, UID: pod.Metadata.UID, Namespace: pod.Metadata.Namespace, WorkloadName: workload.Name, WorkloadType: workload.Type,
-			Status: fallbackText(pod.Status.Phase), ReadyContainers: readyContainers, TotalContainers: len(pod.Spec.Containers),
+			Status: podDisplayStatus(pod), Phase: pod.Status.Phase, Reason: pod.Status.Reason, DeletionTimestamp: pod.Metadata.DeletionTimestamp, Finalizers: pod.Metadata.Finalizers, ReadyContainers: readyContainers, TotalContainers: len(pod.Spec.Containers),
 			Node: fallbackText(pod.Spec.NodeName), NodeIP: fallbackText(pod.Status.HostIP), Restarts: restarts,
 			Age: humanizeAge(pod.Metadata.CreationTimestamp), IP: fallbackText(pod.Status.PodIP),
 		})

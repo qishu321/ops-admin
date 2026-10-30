@@ -53,6 +53,9 @@ export const queryK8sStorageDetail = (clusterId, kind, namespace, name) =>
 export const queryK8sPodDetail = (clusterId, namespace, podName) =>
   http.get('/api/v1/k8s/pod/detail', { params: { clusterId, namespace, podName } })
 
+export const queryK8sPodDeletionStatus = (clusterId, namespace, podName, uid) =>
+  http.get('/api/v1/k8s/pod/deletion-status', { params: { clusterId, namespace, podName, uid }, timeout:30000 })
+
 export const queryK8sPodMetrics = (clusterId, namespace, podName, range = '1h') =>
   http.get('/api/v1/k8s/pod/metrics', { params: { clusterId, namespace, podName, range } })
 
@@ -92,7 +95,7 @@ export const updateK8sWorkloadImages = (data) => http.post('/api/v1/k8s/workload
 
 export const updateK8sWorkloadResources = (data) => http.put('/api/v1/k8s/workload/resources', data)
 
-export const createK8sWorkloadBundle = (data) => http.post('/api/v1/k8s/workload/create', data)
+export const createK8sWorkloadBundle = (data) => http.post('/api/v1/k8s/workload/create', data, {timeout:60000})
 
 export const updateK8sIstioTraffic = (data) => http.post('/api/v1/k8s/istio/traffic', data)
 
@@ -100,7 +103,7 @@ export const updateK8sHTTPRouteTraffic = (data) => http.post('/api/v1/k8s/httpro
 
 export const createK8sResourceYAML = (data) => http.post('/api/v1/k8s/resource/yaml/create', data)
 
-export const updateK8sResourceYAML = (data) => http.put('/api/v1/k8s/resource/yaml', data)
+export const updateK8sResourceYAML = (data) => http.put('/api/v1/k8s/resource/yaml', data, {timeout:30000})
 
 export const deleteK8sResource = (data) => http.delete('/api/v1/k8s/resource/delete', { data })
 

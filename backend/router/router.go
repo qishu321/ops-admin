@@ -517,6 +517,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.GET("/k8s/secret/detail", ctl.Scoped((*controller.Controller).GetK8sSecretDetail))
 		authGroup.GET("/k8s/storage/detail", ctl.Scoped((*controller.Controller).GetK8sStorageDetail))
 		authGroup.GET("/k8s/pod/detail", ctl.Scoped((*controller.Controller).GetK8sPodDetail))
+		authGroup.GET("/k8s/pod/deletion-status", ctl.Scoped((*controller.Controller).GetK8sPodDeletionStatus))
 		authGroup.GET("/k8s/pod/metrics", ctl.Scoped((*controller.Controller).GetK8sPodMetrics))
 		authGroup.GET("/k8s/workload/metrics", ctl.Scoped((*controller.Controller).GetK8sWorkloadMetrics))
 		authGroup.GET("/k8s/pod/containers", ctl.Scoped((*controller.Controller).GetK8sPodContainers))

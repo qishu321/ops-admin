@@ -129,10 +129,11 @@ type K8sResourceYAMLPayload struct {
 	Name         string `json:"name"`
 	WorkloadType string `json:"workloadType"`
 	YAML         string `json:"yaml"`
+	DryRun       bool   `json:"dryRun"`
 }
 
-// K8sWorkloadBundlePayload creates a workload and its optional access resources atomically.
-// If Service or Ingress creation fails, resources created earlier in this request are removed.
+// K8sWorkloadBundlePayload creates resources sequentially and reports each result.
+// Successful resources are retained when a later resource fails.
 type K8sWorkloadBundlePayload struct {
 	ClusterID    uint   `json:"clusterId"`
 	Namespace    string `json:"namespace"`
@@ -140,14 +141,21 @@ type K8sWorkloadBundlePayload struct {
 	WorkloadYAML string `json:"workloadYaml"`
 	ServiceYAML  string `json:"serviceYaml"`
 	IngressYAML  string `json:"ingressYaml"`
+	DryRun       bool   `json:"dryRun"`
+	SkipWorkload bool   `json:"skipWorkload"`
+	SkipService  bool   `json:"skipService"`
 }
 
 type K8sResourceDeletePayload struct {
-	ClusterID    uint   `json:"clusterId"`
-	ResourceType string `json:"resourceType"`
-	Namespace    string `json:"namespace"`
-	Name         string `json:"name"`
-	WorkloadType string `json:"workloadType"`
+	UID                string `json:"uid"`
+	GracePeriodSeconds *int64 `json:"gracePeriodSeconds"`
+	Force              bool   `json:"force"`
+	Confirmed          bool   `json:"confirmed"`
+	ClusterID          uint   `json:"clusterId"`
+	ResourceType       string `json:"resourceType"`
+	Namespace          string `json:"namespace"`
+	Name               string `json:"name"`
+	WorkloadType       string `json:"workloadType"`
 }
 
 type K8sIstioTrafficRoute struct {
@@ -244,19 +252,23 @@ type K8sNamespaceItem struct {
 }
 
 type K8sPodItem struct {
-	Name            string `json:"name"`
-	UID             string `json:"uid"`
-	Namespace       string `json:"namespace"`
-	WorkloadName    string `json:"workloadName"`
-	WorkloadType    string `json:"workloadType"`
-	Status          string `json:"status"`
-	ReadyContainers int    `json:"readyContainers"`
-	TotalContainers int    `json:"totalContainers"`
-	Node            string `json:"node"`
-	NodeIP          string `json:"nodeIP"`
-	Restarts        int    `json:"restarts"`
-	Age             string `json:"age"`
-	IP              string `json:"ip"`
+	Phase             string   `json:"phase"`
+	Reason            string   `json:"reason"`
+	DeletionTimestamp string   `json:"deletionTimestamp"`
+	Finalizers        []string `json:"finalizers"`
+	Name              string   `json:"name"`
+	UID               string   `json:"uid"`
+	Namespace         string   `json:"namespace"`
+	WorkloadName      string   `json:"workloadName"`
+	WorkloadType      string   `json:"workloadType"`
+	Status            string   `json:"status"`
+	ReadyContainers   int      `json:"readyContainers"`
+	TotalContainers   int      `json:"totalContainers"`
+	Node              string   `json:"node"`
+	NodeIP            string   `json:"nodeIP"`
+	Restarts          int      `json:"restarts"`
+	Age               string   `json:"age"`
+	IP                string   `json:"ip"`
 }
 
 type K8sEnvVarItem struct {
@@ -349,6 +361,7 @@ type K8sWorkloadItem struct {
 }
 
 type K8sWorkloadDetail struct {
+	Resource    map[string]any     `json:"resource"`
 	Name        string             `json:"name"`
 	Type        string             `json:"type"`
 	Namespace   string             `json:"namespace"`

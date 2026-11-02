@@ -88,6 +88,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.OpsAppPipeline{},
 		&model.OpsAppPipelineRun{},
 		&model.OpsAppPipelineRunStage{},
+		&model.OpsAppPipelineTarget{},
 		&model.NotifyTemplate{},
 		&model.NotifyChannel{},
 		&model.NotifyRule{},

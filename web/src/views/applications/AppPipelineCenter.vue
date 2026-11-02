@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  queryOpsAppArtifactList,
   approveOpsAppPipelineRun,
   copyOpsAppPipeline,
   deleteOpsAppPipeline,
@@ -23,6 +24,7 @@ import {
 import { queryK8sClusterList } from '../../api/k8s'
 import { queryAssetHostList } from '../../api/asset'
 
+const artifactOptions = ref([])
 const loading = ref(false)
 const saving = ref(false)
 const rows = ref([])
@@ -34,7 +36,6 @@ const notifyRuleOptions = ref([])
 const imageRegistryOptions = ref([])
 const executorHostOptions = ref([])
 const templates = ref([])
-const templateVisible = ref(false)
 const templateEditorVisible = ref(false)
 const templateSaving = ref(false)
 const templateEditorMode = ref('visual')
@@ -45,14 +46,11 @@ const runVisible = ref(false)
 const runDetailVisible = ref(false)
 const runRows = ref([])
 const runTotal = ref(0)
-const selectedCategory = ref('全部模板')
-const selectedTemplate = ref(null)
 const activeTab = ref('pipelines')
 const activeRunStageId = ref('')
 const logBodyRef = ref()
 const runRefreshTimer = ref()
 
-const categories = ['全部模板', 'Java', 'Node.js', 'Go', 'Python', 'Vue', '空模板']
 
 const query = reactive({
   pageNum: 1,
@@ -98,15 +96,9 @@ const runForm = reactive({
   stages: []
 })
 
-const currentRun = ref({ run: {}, stages: [] })
+const currentRun = ref({ run: {}, stages: [], targets: [] })
 
 const currentApp = computed(() => appOptions.value.find((item) => Number(item.id) === Number(form.appId)))
-const filteredTemplates = computed(() => {
-  if (selectedCategory.value === '全部模板') return templates.value
-  if (selectedCategory.value === '空模板') return []
-  return templates.value.filter((item) => item.category === selectedCategory.value || item.techStack === selectedCategory.value)
-})
-
 const templateForm = reactive({
   name: '',
   category: '自定义',
@@ -179,9 +171,10 @@ function defaultStage(type = 'command') {
     checkout: '代码拉取',
     command: '构建命令',
     test: '单元测试',
+    build: '编译打包',
     dockerBuild: 'Docker 镜像构建',
     dockerPush: '上传镜像仓库',
-    k8sDeploy: 'K8s 发布',
+    k8sDeploy: 'K8s 发布', sshDeploy: 'SSH 主机发布',
     manual: '人工确认',
     notify: '消息通知'
   }
@@ -199,7 +192,7 @@ function defaultStage(type = 'command') {
 }
 
 function templateStage(type = 'checkout') {
-  const names = { checkout: '代码拉取', command: '构建命令', test: '单元测试', build: '编译打包', dockerBuild: 'Docker 镜像构建', dockerPush: '上传镜像仓库', k8sDeploy: 'K8s 发布', manual: '人工确认', notify: '消息通知' }
+  const names = { checkout: '代码拉取', command: '构建命令', test: '单元测试', build: '编译打包', dockerBuild: 'Docker 镜像构建', dockerPush: '上传镜像仓库', k8sDeploy: 'K8s 发布', sshDeploy: 'SSH 主机发布', manual: '人工确认', notify: '消息通知' }
   const stage = { id: `template-${type}-${Date.now()}-${templateForm.stages.length + 1}`, name: names[type] || '自定义阶段', type, timeoutSeconds: 1800, failurePolicy: type === 'notify' ? 'ignore' : 'stop', config: {}, env: {} }
   if (['command', 'test', 'build'].includes(type)) stage.config.script = ''
   return stage
@@ -306,6 +299,7 @@ function stageHint(type) {
     dockerBuild: '定义镜像目标并在执行节点执行 docker build',
     dockerPush: '推送前面构建出的同一镜像与版本',
     k8sDeploy: '通过执行节点的 kubectl 更新目标工作负载',
+    sshDeploy: '分发 tar.gz 到目标主机，切换版本并检查健康状态',
     manual: '暂停流水线，等待人工确认后继续',
     notify: '调用消息通知规则创建投递任务'
   }[type] || '配置当前阶段'
@@ -319,6 +313,12 @@ function normalizeStageConfig(stage) {
   if (!stage.config || typeof stage.config !== 'object') stage.config = {}
   if (['command', 'test', 'build'].includes(stage.type) && stage.config.script === undefined) {
     stage.config.script = ''
+  }
+  if (stage.type === 'sshDeploy') {
+    stage.config.hostIds ||= []
+    stage.config.artifactPath ||= 'dist/release.tar.gz'
+    stage.config.deployRoot ||= '/opt/apps/' + (currentApp.value?.code || 'app')
+    stage.failurePolicy = 'stop'
   }
   if (stage.type === 'dockerBuild') {
     if (!stage.config.registryId) stage.config.registryId = undefined
@@ -411,36 +411,22 @@ async function loadRuns() {
   }
 }
 
-function openTemplateDialog() {
-  selectedCategory.value = '全部模板'
-  selectedTemplate.value = null
-  templateVisible.value = true
-}
-
-function createBlankPipeline() {
+function createSSHPipeline() {
   resetForm()
-  form.stages = []
-  templateVisible.value = false
+  form.name = 'SSH 应用发布'
+  form.stages = [defaultStage('checkout'), defaultStage('build'), defaultStage('manual'), defaultStage('sshDeploy')]
+  form.stages[1].config.script = '# 在 dist/package 中准备应用文件，然后生成制品\nmkdir -p dist/package\n# 在此填写构建命令\ntar -czf dist/release.tar.gz -C dist/package .'
   pipelineEditorSection.value = 'binding'
   editorVisible.value = true
 }
 
 function useTemplate(template) {
-  selectedTemplate.value = template
-}
-
-function confirmTemplate() {
-  if (!selectedTemplate.value) {
-    ElMessage.warning('请选择流水线模板，或使用空白流水线')
-    return
-  }
   resetForm()
-  form.name = selectedTemplate.value.name.replace('通用模板', '流水线')
-  form.techStack = selectedTemplate.value.techStack || 'custom'
-  form.templateId = selectedTemplate.value.id
-  form.description = selectedTemplate.value.description || ''
-  form.stages = parseStages(selectedTemplate.value.definitionJson)
-  templateVisible.value = false
+  form.name = template.name.replace('通用模板', '流水线')
+  form.techStack = template.techStack || 'custom'
+  form.templateId = template.id
+  form.description = template.description || ''
+  form.stages = parseStages(template.definitionJson)
   pipelineEditorSection.value = 'binding'
   editorVisible.value = true
 }
@@ -495,6 +481,7 @@ function validateStages(stages = form.stages, executorHostId = form.executorHost
     ids.add(stage.id)
     if (!String(stage.name || '').trim()) return `请填写第 ${index + 1} 个阶段名称`
     if (['command', 'test', 'build'].includes(stage.type) && !String(stage.config?.script || '').trim()) return `请填写「${stage.name}」的执行命令`
+    if (stage.type === 'sshDeploy' && (!stage.config?.hostIds?.length || !stage.config?.deployRoot || !stage.config?.artifactPath || !stage.config?.activateScript || !stage.config?.healthScript)) return `请补全「${stage.name}」的主机、制品、目录、启动及健康检查命令`
     if (stage.type === 'notify' && !stage.config?.notifyRuleId) return `请选择「${stage.name}」使用的通知规则`
   }
   if (!executorHostId) return '请选择流水线执行节点；代码、构建、镜像和发布不会在 Ops Admin 容器内执行'
@@ -541,9 +528,11 @@ async function openRun(row) {
     branch: row.defaultBranch || 'master',
     env: row.env || 'test',
     imageTag: '',
+    artifactId: undefined,
     paramsText: '',
     stages: detail.stages || []
   })
+  artifactOptions.value = (await queryOpsAppArtifactList({ appId: row.appId, status: 'ready' })).filter(item => item.type === 'ssh-archive')
   runVisible.value = true
 }
 
@@ -562,6 +551,7 @@ async function submitRun() {
     branch: runForm.branch,
     env: runForm.env,
     imageTag: runForm.imageTag,
+    artifactId: runForm.artifactId,
     params
   })
   ElMessage.success(`流水线已开始执行：#${data.runId}`)
@@ -579,7 +569,7 @@ async function approveCurrentRun(decision) {
 }
 
 async function rollbackCurrentRun() {
-  await ElMessageBox.confirm('将使用上一次成功执行的镜像版本重新执行 K8s 发布阶段，是否继续？', '回滚确认', { type: 'warning' })
+  await ElMessageBox.confirm('SSH 发布将逐台恢复本次发布前的版本并重新启动、验证；首次发布无旧版本的主机需人工处理。K8s 发布使用同环境上一成功版本。是否继续？', '回滚确认', { type: 'warning' })
   const data = await rollbackOpsAppPipelineRun(currentRun.value.run.id)
   ElMessage.success(`回滚任务已创建：#${data.runId}`)
   await openRunDetail(data.runId)
@@ -587,7 +577,7 @@ async function rollbackCurrentRun() {
 
 async function openRunDetail(id) {
   const data = await opsAppPipelineRunInfo(id)
-  currentRun.value = { run: data.run || {}, stages: data.stages || [] }
+  currentRun.value = { run: data.run || {}, stages: data.stages || [], targets: data.targets || [] }
   const preferredStage = currentRun.value.stages.find((stage) => ['failed', 'running', 'waiting_approval'].includes(stage.status)) || currentRun.value.stages[0]
   activeRunStageId.value = preferredStage?.id || ''
   runDetailVisible.value = true
@@ -602,7 +592,7 @@ function startRunRefresh() {
   runRefreshTimer.value = window.setInterval(async () => {
     if (!currentRun.value.run?.id) return
     const data = await opsAppPipelineRunInfo(currentRun.value.run.id)
-    currentRun.value = { run: data.run || {}, stages: data.stages || [] }
+    currentRun.value = { run: data.run || {}, stages: data.stages || [], targets: data.targets || [] }
     if (currentRun.value.run.status !== 'running') {
       stopRunRefresh()
       await loadData()
@@ -646,7 +636,7 @@ function statusType(status) {
 }
 
 function statusText(status) {
-  return { success: '成功', running: '执行中', failed: '失败', waiting: '等待中', waiting_approval: '待人工审批', 1: '启用', 2: '禁用' }[status] || status || '-'
+  return { success: '成功', running: '执行中', failed: '失败', preparing: '准备中', activating: '启动验证中', waiting: '等待中', waiting_approval: '待人工审批', 1: '启用', 2: '禁用' }[status] || status || '-'
 }
 
 function durationText(ms) {
@@ -664,7 +654,7 @@ function stageTypeText(type) {
     build: '构建',
     dockerBuild: '镜像构建',
     dockerPush: '上传镜像仓库',
-    k8sDeploy: 'K8s 发布',
+    k8sDeploy: 'K8s 发布', sshDeploy: 'SSH 主机发布',
     manual: '人工确认',
     notify: '消息通知'
   }[type] || type
@@ -717,9 +707,9 @@ onBeforeUnmount(stopRunRefresh)
   <div class="pipeline-page">
     <div class="hero-panel">
       <div>
-        <span class="eyebrow">Cloud Native Delivery</span>
+        <span class="eyebrow">Application Delivery</span>
         <h1>CI/CD 流水线</h1>
-        <p>从代码拉取、构建、测试、制品、发布到通知，统一编排应用交付流程。</p>
+        <p>选择应用版本，通过 SSH 发布到目标主机，验证结果并保留回滚记录。</p>
       </div>
       <div class="hero-stats">
         <div><strong>{{ stats.total || 0 }}</strong><span>流水线总数</span></div>
@@ -761,7 +751,7 @@ onBeforeUnmount(stopRunRefresh)
               <el-button @click="Object.assign(query, { pageNum: 1, keyword: '', appId: undefined, env: '', status: '', techStack: '' }); loadData()">重置</el-button>
             </el-form-item>
           </el-form>
-          <el-button type="primary" @click="openTemplateDialog">新建流水线</el-button>
+          <el-button type="primary" @click="createSSHPipeline">新建流水线</el-button>
         </div>
 
         <el-table v-loading="loading" :data="rows" class="pipeline-table">
@@ -807,7 +797,7 @@ onBeforeUnmount(stopRunRefresh)
 
       <el-tab-pane label="流水线模板" name="templates">
         <div class="template-page-toolbar">
-          <p>将常用阶段沉淀为模板，新建流水线时可一键套用并继续补齐环境、镜像与发布目标。</p>
+          <p>选择模板创建流水线，再补齐运行环境和发布目标。</p>
           <el-button type="primary" @click="openTemplateEditor">新增模板</el-button>
         </div>
         <div class="template-grid static">
@@ -815,6 +805,7 @@ onBeforeUnmount(stopRunRefresh)
             <strong>{{ item.name }}</strong>
             <p>{{ item.description }}</p>
             <span>{{ item.techStack }} / {{ item.stageCount }} 个阶段 <em v-if="!item.builtin">自定义</em></span>
+            <div><el-button link type="primary" @click="useTemplate(item)">使用模板</el-button></div>
           </div>
         </div>
       </el-tab-pane>
@@ -849,7 +840,7 @@ onBeforeUnmount(stopRunRefresh)
           <el-table-column prop="appName" label="应用" min-width="160" />
           <el-table-column prop="env" label="环境" width="90" />
           <el-table-column prop="branch" label="分支" width="130" />
-          <el-table-column prop="imageTag" label="镜像 Tag" min-width="150" />
+          <el-table-column prop="imageTag" label="版本" min-width="150" />
           <el-table-column label="状态" width="100">
             <template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag></template>
           </el-table-column>
@@ -894,7 +885,7 @@ onBeforeUnmount(stopRunRefresh)
             <header><span class="template-stage-index">{{ String(index + 1).padStart(2, '0') }}</span><div><strong>{{ stage.name || '未命名阶段' }}</strong><span>{{ stageHint(stage.type) }}</span></div><div class="template-stage-actions"><el-button link :disabled="index === 0" @click="moveTemplateStage(index, -1)">上移</el-button><el-button link :disabled="index === templateForm.stages.length - 1" @click="moveTemplateStage(index, 1)">下移</el-button><el-button link type="danger" @click="removeTemplateStage(index)">删除</el-button></div></header>
             <div class="template-stage-fields">
               <label><span>阶段名称</span><el-input v-model="stage.name" placeholder="阶段名称" /></label>
-              <label><span>阶段类型</span><el-select v-model="stage.type"><el-option label="代码拉取" value="checkout" /><el-option label="自定义命令" value="command" /><el-option label="单元测试" value="test" /><el-option label="编译构建" value="build" /><el-option label="镜像构建" value="dockerBuild" /><el-option label="镜像推送" value="dockerPush" /><el-option label="K8s 发布" value="k8sDeploy" /><el-option label="人工确认" value="manual" /><el-option label="消息通知" value="notify" /></el-select></label>
+              <label><span>阶段类型</span><el-select v-model="stage.type"><el-option label="代码拉取" value="checkout" /><el-option label="自定义命令" value="command" /><el-option label="单元测试" value="test" /><el-option label="编译构建" value="build" /><el-option label="镜像构建" value="dockerBuild" /><el-option label="镜像推送" value="dockerPush" /><el-option label="SSH 主机发布" value="sshDeploy" /><el-option label="K8s 发布" value="k8sDeploy" /><el-option label="人工确认" value="manual" /><el-option label="消息通知" value="notify" /></el-select></label>
               <label><span>超时时间（秒）</span><el-input-number v-model="stage.timeoutSeconds" :min="60" :max="86400" controls-position="right" /></label>
               <label v-if="['command', 'test', 'build'].includes(stage.type)" class="template-stage-command"><span>执行命令</span><el-input v-model="stage.config.script" placeholder="例如：npm run build；可在创建流水线时继续编辑" /></label>
               <div v-else class="template-stage-note">{{ stageHint(stage.type) }}。具体的镜像仓库、发布集群和通知规则会在创建流水线时配置。</div>
@@ -906,38 +897,10 @@ onBeforeUnmount(stopRunRefresh)
       <template #footer><el-button @click="templateEditorVisible = false">取消</el-button><el-button type="primary" :loading="templateSaving" @click="submitTemplate">保存模板</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="templateVisible" title="选择流水线模板" width="980px" class="template-dialog">
-      <div class="template-picker">
-        <aside>
-          <button v-for="item in categories" :key="item" :class="{ active: selectedCategory === item }" @click="selectedCategory = item">
-            {{ item }}
-          </button>
-        </aside>
-        <main>
-          <div v-if="selectedCategory === '空模板'" class="blank-template" @click="createBlankPipeline">
-            <strong>空白流水线</strong>
-            <p>从空白画布开始，自定义所有阶段。</p>
-          </div>
-          <div v-else class="template-grid">
-            <div v-for="item in filteredTemplates" :key="item.id" class="template-card" :class="{ selected: selectedTemplate?.id === item.id }" @click="useTemplate(item)">
-              <strong>{{ item.name }}</strong>
-              <p>{{ item.description }}</p>
-              <span>{{ item.techStack }} / {{ item.stageCount }} 个阶段</span>
-            </div>
-          </div>
-        </main>
-      </div>
-      <template #footer>
-        <el-button @click="templateVisible = false">取消</el-button>
-        <el-button @click="createBlankPipeline">空白流水线</el-button>
-        <el-button type="primary" @click="confirmTemplate">使用选中模板</el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog v-model="editorVisible" :title="form.id ? '编辑流水线' : '新建流水线'" width="1180px" class="pipeline-editor">
       <div class="pipeline-editor-steps"><button type="button" :class="{ active: pipelineEditorSection === 'binding' }" @click="pipelineEditorSection = 'binding'"><b>1</b><span>绑定运行环境</span></button><i></i><button type="button" :class="{ active: pipelineEditorSection === 'stages' }" @click="pipelineEditorSection = 'stages'"><b>2</b><span>确认交付路径</span></button><i></i><button type="button" :class="{ active: pipelineEditorSection === 'advanced' }" @click="pipelineEditorSection = 'advanced'"><b>3</b><span>高级设置</span></button></div>
       <el-form label-width="100px">
-        <div v-show="pipelineEditorSection !== 'advanced'" class="form-grid">
+        <div v-show="pipelineEditorSection === 'binding'" class="form-grid">
           <el-form-item label="流水线名称" required><el-input v-model="form.name" placeholder="请输入流水线名称" /></el-form-item>
           <el-form-item label="所属应用" required>
             <el-select v-model="form.appId" filterable placeholder="请选择应用" @change="fillFromApp">
@@ -962,7 +925,7 @@ onBeforeUnmount(stopRunRefresh)
             </el-select>
           </el-form-item>
           <el-form-item label="执行节点" required>
-            <el-select v-model="form.executorHostId" filterable placeholder="请选择执行代码、构建、镜像与发布的主机">
+            <el-select v-model="form.executorHostId" filterable placeholder="选择拉取代码、执行构建的 SSH 主机">
               <el-option v-for="host in executorHostOptions" :key="host.id" :label="executorHostLabel(host)" :value="host.id" />
             </el-select>
           </el-form-item>
@@ -973,11 +936,11 @@ onBeforeUnmount(stopRunRefresh)
             </el-radio-group>
           </el-form-item>
         </div>
-        <el-alert v-show="pipelineEditorSection !== 'advanced'" type="warning" :closable="false" show-icon title="流水线阶段会通过 SSH 在所选资产主机上执行；请确保该主机已配置认证凭据，并安装 Git/SVN、Docker、kubectl 等所需工具。" />
-        <el-form-item v-show="pipelineEditorSection !== 'advanced'" label="描述"><el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明流水线用途、环境和风险提示" /></el-form-item>
+        <el-alert v-show="pipelineEditorSection === 'binding'" type="warning" :closable="false" show-icon title="代码和构建在执行节点通过 SSH 运行；SSH 发布阶段单独选择目标主机。仅需安装所用阶段依赖的工具。" />
+        <el-form-item v-show="pipelineEditorSection === 'binding'" label="描述"><el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明流水线用途、环境和风险提示" /></el-form-item>
       </el-form>
 
-      <div v-if="pipelineEditorSection !== 'advanced'" class="pipeline-stage-summary"><strong>交付路径</strong><div><span v-for="(stage, index) in form.stages" :key="stage.id">{{ index ? '→' : '' }} {{ stage.name }}</span><span v-if="!form.stages.length">还没有阶段，请返回选择交付配方。</span></div><el-button link type="primary" @click="pipelineEditorSection = 'advanced'">调整流程</el-button></div>
+      <div v-if="pipelineEditorSection === 'binding'" class="pipeline-stage-summary"><strong>交付路径</strong><div><span v-for="(stage, index) in form.stages" :key="stage.id">{{ index ? '→' : '' }} {{ stage.name }}</span><span v-if="!form.stages.length">还没有阶段，请返回选择交付配方。</span></div><el-button link type="primary" @click="pipelineEditorSection = 'stages'">配置阶段</el-button></div>
       <div v-if="pipelineEditorSection === 'advanced'" class="stage-toolbar">
         <strong>阶段编排</strong>
         <div>
@@ -987,12 +950,13 @@ onBeforeUnmount(stopRunRefresh)
           <el-button size="small" @click="addStage('build')">构建</el-button>
           <el-button size="small" @click="addStage('dockerBuild')">镜像构建</el-button>
           <el-button size="small" @click="addStage('dockerPush')">上传镜像仓库</el-button>
+          <el-button size="small" type="primary" @click="addStage('sshDeploy')">SSH 主机发布</el-button>
           <el-button size="small" @click="addStage('k8sDeploy')">K8s 发布</el-button>
           <el-button size="small" @click="addStage('manual')">人工确认</el-button>
           <el-button size="small" @click="addStage('notify')">消息通知</el-button>
         </div>
       </div>
-      <div v-if="pipelineEditorSection === 'advanced'" class="stage-editor">
+      <div v-if="pipelineEditorSection !== 'binding'" class="stage-editor">
         <el-empty v-if="!form.stages.length" description="当前为空白流水线，请添加阶段" />
         <div v-for="(stage, index) in form.stages" :key="stage.id" class="stage-config-card">
           <div class="stage-card-heading">
@@ -1006,7 +970,7 @@ onBeforeUnmount(stopRunRefresh)
             <el-tooltip content="上移阶段"><el-button circle size="small" :disabled="index === 0" @click="moveStage(index, -1)">↑</el-button></el-tooltip>
             <el-tooltip content="下移阶段"><el-button circle size="small" :disabled="index === form.stages.length - 1" @click="moveStage(index, 1)">↓</el-button></el-tooltip>
           </div>
-          <div class="stage-fields stage-main-fields">
+          <div v-show="pipelineEditorSection === 'advanced'" class="stage-fields stage-main-fields">
             <label><span>阶段名称</span><el-input v-model="stage.name" placeholder="例如：构建应用镜像" /></label>
             <label><span>阶段类型</span><el-select v-model="stage.type" @change="normalizeStageConfig(stage)">
               <el-option label="代码拉取" value="checkout" />
@@ -1015,12 +979,12 @@ onBeforeUnmount(stopRunRefresh)
               <el-option label="构建" value="build" />
               <el-option label="镜像构建" value="dockerBuild" />
               <el-option label="上传镜像仓库" value="dockerPush" />
-              <el-option label="K8s 发布" value="k8sDeploy" />
+              <el-option label="SSH 主机发布" value="sshDeploy" /><el-option label="K8s 发布" value="k8sDeploy" />
               <el-option label="人工确认" value="manual" />
               <el-option label="消息通知" value="notify" />
             </el-select></label>
             <label><span>超时时间</span><div class="stage-timeout"><el-input-number v-model="stage.timeoutSeconds" :min="10" :max="7200" controls-position="right" /><em>秒</em></div></label>
-            <label><span>失败策略</span><el-select v-model="stage.failurePolicy">
+            <label><span>失败策略</span><el-select v-model="stage.failurePolicy" :disabled="stage.type === 'sshDeploy'">
               <el-option label="失败终止" value="stop" />
               <el-option label="忽略继续" value="ignore" />
             </el-select></label>
@@ -1045,6 +1009,17 @@ onBeforeUnmount(stopRunRefresh)
               <label><span>登录方式</span><el-radio-group v-model="stage.config.loginMode" class="login-mode-group"><el-radio-button value="registry">镜像仓库凭据</el-radio-button><el-radio-button value="executor">执行节点已登录</el-radio-button></el-radio-group></label>
             </div>
             <div class="image-stage-tip"><span>✓</span><p><b>推荐使用镜像仓库凭据</b>：从“镜像仓库”页面读取账号和密码；选择“执行节点已登录”时，平台不会执行 docker login。</p></div>
+          </div>
+          <div v-else-if="stage.type === 'sshDeploy'" class="delivery-stage-config">
+            <div class="delivery-stage-title"><b>SSH 版本发布</b><span>目标主机按顺序发布，失败即停止；制品留存供再次发布，版本目录保留供回滚。</span></div>
+            <div class="stage-config-grid">
+              <label class="wide"><span>部署目标主机（与构建节点独立）</span><el-select v-model="stage.config.hostIds" multiple filterable placeholder="选择实际运行应用的主机"><el-option v-for="host in executorHostOptions" :key="host.id" :label="executorHostLabel(host)" :value="host.id" /></el-select></label>
+              <label><span>制品路径（执行节点）</span><el-input v-model="stage.config.artifactPath" placeholder="dist/release.tar.gz，相对于本次构建目录" /></label>
+              <label><span>部署根目录</span><el-input v-model="stage.config.deployRoot" placeholder="/opt/apps/my-app" /></label>
+              <label class="wide"><span>启动／重启命令（同时用于回滚）</span><el-input v-model="stage.config.activateScript" type="textarea" :rows="3" placeholder="例如 systemctl restart my-app；工作目录为当前版本，可使用 $RELEASE_DIR 和 $DEPLOY_ROOT" /></label>
+              <label class="wide"><span>健康检查命令（成功退出码为 0）</span><el-input v-model="stage.config.healthScript" type="textarea" :rows="3" placeholder="例如 curl --fail --retry 10 --retry-connrefused --retry-delay 2 --max-time 5 http://127.0.0.1:8080/health" /></label>
+            </div>
+            <p>Linux 主机需有 tar、sha256sum 等工具。部署根目录下 current 必须是软链接或不存在；首次发布没有旧版本可回滚。制品仅支持普通文件和目录。</p>
           </div>
           <div v-else-if="stage.type === 'k8sDeploy'" class="delivery-stage-config">
             <div class="delivery-stage-title"><b>发布目标</b><span>使用执行节点上的 kubectl 完成工作负载镜像更新与健康检查</span></div>
@@ -1085,7 +1060,7 @@ onBeforeUnmount(stopRunRefresh)
       </div>
       <template #footer>
         <el-button @click="editorVisible = false">取消</el-button>
-        <el-button v-if="pipelineEditorSection !== 'advanced'" @click="pipelineEditorSection = 'advanced'">高级设置</el-button>
+        <el-button v-if="pipelineEditorSection === 'binding'" type="primary" @click="pipelineEditorSection = 'stages'">下一步：配置阶段</el-button><el-button v-else-if="pipelineEditorSection === 'stages'" @click="pipelineEditorSection = 'advanced'">高级设置</el-button>
         <el-button v-if="pipelineEditorSection === 'advanced'" @click="pipelineEditorSection = 'binding'">完成高级设置</el-button>
         <el-button type="primary" :loading="saving" @click="submitPipeline">保存</el-button>
       </template>
@@ -1096,15 +1071,17 @@ onBeforeUnmount(stopRunRefresh)
       <el-form label-width="100px">
         <el-form-item label="流水线"><el-input v-model="runForm.pipelineName" disabled /></el-form-item>
         <el-form-item label="执行环境">
-          <el-select v-model="runForm.env">
+          <el-select v-model="runForm.env" :disabled="runForm.stages.some(stage => stage.type === 'sshDeploy')">
             <el-option label="dev" value="dev" />
             <el-option label="test" value="test" />
             <el-option label="staging" value="staging" />
             <el-option label="prod" value="prod" />
           </el-select>
         </el-form-item>
-        <el-form-item label="分支/Tag"><el-input v-model="runForm.branch" /></el-form-item>
-        <el-form-item label="镜像版本"><el-input :model-value="'自动生成：' + (runForm.branch || 'main').replace(/[^a-zA-Z0-9_.-]+/g, '-') + '-YYYYMMDDHHmmss'" disabled /></el-form-item>
+        <el-form-item v-if="runForm.stages.some(stage => stage.type === 'sshDeploy')" label="版本来源"><el-select v-model="runForm.artifactId" clearable placeholder="从代码构建新版本"><el-option v-for="artifact in artifactOptions" :key="artifact.id" :label="`${artifact.version} · #${artifact.id} · ${artifact.env}`" :value="artifact.id" /></el-select></el-form-item>
+        <el-alert v-if="runForm.artifactId" title="使用留存制品，跳过代码拉取和构建；审批及部署仍会执行。" type="info" :closable="false" />
+        <el-form-item label="分支/Tag"><el-input v-model="runForm.branch" :disabled="!!runForm.artifactId" /></el-form-item>
+        <el-form-item label="版本"><el-input :model-value="runForm.artifactId ? artifactOptions.find(item => item.id === runForm.artifactId)?.version : '自动生成：' + (runForm.branch || 'main').replace(/[^a-zA-Z0-9_.-]+/g, '-') + '-YYYYMMDDHHmmss'" disabled /></el-form-item>
         <el-form-item label="本次变量"><el-input v-model="runForm.paramsText" type="textarea" :rows="3" placeholder='可选，例如：{"version":"1.0.0"}' /></el-form-item>
       </el-form>
       <template #footer>
@@ -1125,8 +1102,15 @@ onBeforeUnmount(stopRunRefresh)
         <el-button type="primary" link @click="downloadRunLog">下载日志</el-button>
         <el-button v-if="currentRun.run.status === 'waiting_approval'" type="success" @click="approveCurrentRun('approve')">审批通过</el-button>
         <el-button v-if="currentRun.run.status === 'waiting_approval'" type="danger" @click="approveCurrentRun('reject')">审批拒绝</el-button>
-        <el-button v-if="currentRun.run.status === 'success'" type="warning" @click="rollbackCurrentRun">回滚上一版本</el-button>
+        <el-button v-if="['success', 'failed'].includes(currentRun.run.status) && currentRun.run.triggerType !== 'rollback' && (currentRun.targets.length || currentRun.stages.some(stage => stage.stageType === 'k8sDeploy'))" type="warning" @click="rollbackCurrentRun">回滚上一版本</el-button>
       </div>
+      <el-table v-if="currentRun.targets.length" :data="currentRun.targets" style="margin-bottom: 18px" row-key="id">
+        <el-table-column type="expand"><template #default="{ row }"><pre class="run-log">{{ row.log || '等待执行结果' }}</pre></template></el-table-column>
+        <el-table-column prop="hostName" label="部署主机" min-width="140" />
+        <el-table-column prop="previousPath" label="发布前版本目录" min-width="220" />
+        <el-table-column prop="releasePath" label="本次版本目录" min-width="220" />
+        <el-table-column label="结果" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag></template></el-table-column>
+      </el-table>
       <div class="run-timeline" aria-label="流水线阶段时间线">
         <button
           v-for="(stage, index) in currentRun.stages"

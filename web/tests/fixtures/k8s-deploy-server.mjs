@@ -11,6 +11,7 @@ import { createK8sWorkloadMemory } from './k8s-workload-memory.mjs'
 
 const root = resolve(fileURLToPath(new URL('../../dist', import.meta.url)))
 const user = { id: 990001, username: 'acceptance-test', nickname: '隔离验收', accountType: 'administrator' }
+const pipelinePlans = new Map()
 const plans = new Map(), runs = new Map(), steps = new Map(), logs = new Map()
 const requests = []
 let planId = 100, runId = 200, stepId = 300, logId = 400
@@ -38,6 +39,14 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) {
       let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 1e6) throw new Error('payload too large') }
       const body = raw ? JSON.parse(raw) : {}; requests.push({ method: req.method, path: url.pathname })
+      if (url.pathname === '/api/v1/k8s/cluster/list') return respond(res, [])
+      if (url.pathname === '/api/v1/asset/host/list') return respond(res, { list: hosts, total: hosts.length })
+      // Pipeline configuration acceptance only. Never execute a release or SSH command.
+      if (url.pathname === '/api/v1/ops/application/options') return respond(res, [{ id: 8801, name: 'SSH 发布验收应用', code: 'demo', branch: 'main', env: 'test' }])
+      if (['/api/v1/ops/application/pipeline/template/list', '/api/v1/ops/application/artifact/list', '/api/v1/ops/application/image-registry/list', '/api/v1/notify/rule/options'].includes(url.pathname)) return respond(res, [])
+      if (url.pathname === '/api/v1/ops/application/pipeline/list') return respond(res, { list: [...pipelinePlans.values()], total: pipelinePlans.size })
+      if (url.pathname === '/api/v1/ops/application/pipeline/save') { const item = { ...body, id: body.id || 8801 }; pipelinePlans.set(item.id, item); return respond(res, true) }
+      if (url.pathname === '/api/v1/ops/application/pipeline/info') { const pipeline = pipelinePlans.get(Number(url.searchParams.get('id'))); return respond(res, { pipeline, stages: JSON.parse(pipeline.definitionJson).stages }) }
       if (url.pathname === '/api/v1/profile') return respond(res, { user, permissionList: ['*:*:*'], leftMenuList: [], accessRevision: 'isolated', systemConfig: { siteName: 'Ops Admin · 隔离验收', primaryColor: '#3677ff' } })
       if (url.pathname === '/api/v1/systemConfig/public') return respond(res, { siteName: 'Ops Admin · 隔离验收' })
       if (url.pathname === '/api/v1/ops/environment/list') return respond(res, [{ id: 1, code: 'test', name: '测试环境' }])

@@ -47,6 +47,18 @@ const server = createServer(async (req, res) => {
       if (url.pathname === '/api/v1/ops/application/pipeline/list') return respond(res, { list: [...pipelinePlans.values()], total: pipelinePlans.size })
       if (url.pathname === '/api/v1/ops/application/pipeline/save') { const item = { ...body, id: body.id || 8801 }; pipelinePlans.set(item.id, item); return respond(res, true) }
       if (url.pathname === '/api/v1/ops/application/pipeline/info') { const pipeline = pipelinePlans.get(Number(url.searchParams.get('id'))); return respond(res, { pipeline, stages: JSON.parse(pipeline.definitionJson).stages }) }
+      // SLS acceptance data is local only; no Alibaba Cloud requests or credentials.
+      const slsSource = {id: 8901, name: 'SLS 隔离验收', type:'sls', url:'https://cn-hangzhou.log.aliyuncs.com', status:1, sls:{region:'cn-hangzhou', project:'demo-project', cloudAccountId:1, defaultLogstore:'app', logstores:[]}}
+      if (url.pathname === '/api/v1/asset/cloudAccount/options') return respond(res,[{id:1,name:'阿里云测试账号',provider:'aliyun'}])
+      if (url.pathname === '/api/v1/monitor/datasource/options') return respond(res,[slsSource])
+      if (url.pathname === '/api/v1/monitor/datasource/list') return respond(res,{list:[slsSource],total:1})
+      if (url.pathname === '/api/v1/monitor/datasource/info') return respond(res,slsSource)
+      if (url.pathname === '/api/v1/monitor/logs/indices') return respond(res,[{name:'app'},{name:'audit-op-log'},{name:'restricted-index'}])
+      if (url.pathname === '/api/v1/monitor/logs/shortcuts') return respond(res,[])
+      if (url.pathname === '/api/v1/monitor/logs/fields' && url.searchParams.get('index') === 'restricted-index') return respond(res,null,403,'读取索引失败：需要 log:GetIndex 权限；日志查询权限不受影响')
+      if (url.pathname === '/api/v1/monitor/logs/fields') return respond(res,[{name:'*',kind:'fulltext',type:'text'}, ...(url.searchParams.get('index') === 'audit-op-log' ? [{name:'actionType',type:'long',indexed:true,statistics:true,kind:'field'}] : [{name:'level',type:'text',indexed:true,statistics:false,kind:'field'},{name:'details.code',type:'long',indexed:true,statistics:true,kind:'field'}])])
+      if (url.pathname === '/api/v1/monitor/logs/field-values') return respond(res,[{value:'ERROR',hits:3,field:'level'},{value:'INFO',hits:5,field:'level'}])
+      if (url.pathname === '/api/v1/monitor/logs/query') { if (body.query === 'slow-test') await new Promise(resolve => setTimeout(resolve, 3000)); if (body.query === 'error-test') return respond(res,null,400,'SLS 查询日志失败：访问被拒绝，请检查云账号 RAM 权限 [Unauthorized] Request ID: test-request'); const sql = (body.query || '').includes('|'); return respond(res,{items:sql?[{count:'42'}]:[{timestamp:new Date().toISOString(),level:'ERROR',message:'SLS 验收日志',source:{level:'ERROR',content:'SLS 验收日志'}}],columns:sql?['count']:[],isSQL:sql,complete:true,totalExact:true,histogramSkipped:!!body.skipHistogram,total:sql?1:1,histogram:sql?[]:[{key:Date.now(),doc_count:1}],hasMore:false,took:12}) }
       if (url.pathname === '/api/v1/profile') return respond(res, { user, permissionList: ['*:*:*'], leftMenuList: [], accessRevision: 'isolated', systemConfig: { siteName: 'Ops Admin · 隔离验收', primaryColor: '#3677ff' } })
       if (url.pathname === '/api/v1/systemConfig/public') return respond(res, { siteName: 'Ops Admin · 隔离验收' })
       if (url.pathname === '/api/v1/ops/environment/list') return respond(res, [{ id: 1, code: 'test', name: '测试环境' }])

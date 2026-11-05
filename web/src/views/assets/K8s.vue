@@ -347,7 +347,6 @@ const podContainerOptions = computed(() => {
   if (!podDetail.value?.containers) return []
   return podDetail.value.containers.map((item) => item.name)
 })
-const podLogLines = computed(() => String(podLogs.value || '').split('\n').filter((line, index, list) => line || index < list.length - 1))
 
 const namespaceOptions = computed(() => {
   const options = [{ label: t('k8sAllNamespaces'), value: '__all__' }]
@@ -3295,7 +3294,6 @@ const page = reactive({
   yamlCurrentLineOffset,
   trafficTotalWeight,
   podContainerOptions,
-  podLogLines,
   sectionTabs,
   clusterStatusText,
   certificateStatusType,

@@ -1,4 +1,5 @@
 <script setup>
+import { tr } from '../../../utils/i18n'
 import K8sNamespaceBoard from './K8sNamespaceBoard.vue'
 import K8sWorkloadBoard from './K8sWorkloadBoard.vue'
 import NodeAddDrawer from './node-add/NodeAddDrawer.vue'
@@ -171,9 +172,9 @@ defineProps({
           <span v-else class="pod-workload-empty">独立 Pod</span>
         </template>
       </el-table-column>
-      <el-table-column label="运行阶段" width="110">
+      <el-table-column label="运行阶段" min-width="165">
         <template #default="{ row }">
-          <el-tag :type="page.podStatusTagType(row.status)" effect="light" round>{{ row.status || '-' }}</el-tag>
+          <el-tag :type="page.podStatusTagType(row.status)" effect="light" round>{{ row.status || '-' }}</el-tag><small v-if="row.deletionTimestamp" style="display:block;color:#a37d33;margin-top:5px">{{ tr('终止开始') }}: {{ new Date(row.deletionTimestamp).toLocaleString() }}</small>
         </template>
       </el-table-column>
       <el-table-column label="容器就绪" width="110">
@@ -208,7 +209,7 @@ defineProps({
             <el-button link type="primary" @click="page.openPodLogs(row)">日志</el-button>
             <el-button link type="primary" @click="page.openPodYAML(row)">{{ page.t('k8sYaml') }}</el-button>
             <el-button link type="primary" @click="page.openPodTerminal(row)">{{ page.t('k8sTerminal') }}</el-button>
-            <el-button link type="danger" @click="page.handleDeletePod(row)">{{ page.t('k8sDelete') }}</el-button>
+            <el-button link type="danger" @click="page.handleDeletePod(row)">{{ row.deletionTimestamp ? tr('删除诊断') : page.t('k8sDelete') }}</el-button>
           </div>
         </template>
       </el-table-column>

@@ -8,11 +8,7 @@ func TestBuildPodItemsReportsContainerReadinessSeparatelyFromPhase(t *testing.T)
 	pod.Metadata.Namespace = "default"
 	pod.Status.Phase = "Running"
 	pod.Spec.Containers = []kubeContainer{{Name: "home"}}
-	pod.Status.ContainerStatuses = []struct {
-		Name         string `json:"name"`
-		RestartCount int    `json:"restartCount"`
-		Ready        bool   `json:"ready"`
-	}{{Name: "home", Ready: false}}
+	pod.Status.ContainerStatuses = []kubeContainerStatus{{Name: "home", Ready: false}}
 
 	items := buildPodItems([]kubePod{pod})
 	if len(items) != 1 {

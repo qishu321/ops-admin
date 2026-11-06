@@ -1,6 +1,8 @@
 <script setup>
+import { tr } from '../../../utils/i18n'
 import PodMonitor from './PodMonitor.vue'
 import ServicePodMonitor from '../ServicePodMonitor.vue'
+import { usePodLogSearch } from './usePodLogSearch'
 
 function resolvedWorkloadFieldRefValues(env, detail) {
   const fieldPath = env?.valueFrom?.fieldRef?.fieldPath
@@ -22,12 +24,14 @@ function resolvedWorkloadFieldRefValues(env, detail) {
     .map((pod) => ({ pod: pod.name, value: pod[podField] }))
 }
 
-defineProps({
+const props = defineProps({
   page: {
     type: Object,
     required: true
   }
 })
+
+const { keyword, searching, matchingLines } = usePodLogSearch(() => props.page.podLogs)
 </script>
 
 <template>
@@ -150,6 +154,13 @@ defineProps({
           <el-descriptions-item :label="page.t('k8sAvailable')">{{ page.workloadDetail.available }}</el-descriptions-item>
           <el-descriptions-item :label="page.t('k8sAge')">{{ page.workloadDetail.age }}</el-descriptions-item>
         </el-descriptions>
+        <section v-if="page.workloadDetail.resource" style="margin:20px 0">
+          <div style="display:flex;align-items:center;justify-content:space-between"><h4>{{ tr('发布状态') }}</h4><el-button size="small" @click="page.openWorkloadDetail(page.workloadDetail)">{{ tr('刷新发布状态') }}</el-button></div>
+          <p style="font-size:12px;color:#8794a8">generation: {{ page.workloadDetail.resource.metadata?.generation ?? '—' }} / observedGeneration: {{ page.workloadDetail.resource.status?.observedGeneration ?? '—' }} · currentRevision: {{ page.workloadDetail.resource.status?.currentRevision || '—' }} / updateRevision: {{ page.workloadDetail.resource.status?.updateRevision || '—' }}</p>
+          <el-table :data="page.workloadDetail.resource.status?.conditions || []" size="small"><el-table-column prop="type" :label="tr('状态条件')" min-width="140" /><el-table-column prop="status" :label="tr('状态')" width="85" /><el-table-column prop="reason" :label="tr('原因')" min-width="150" /><el-table-column prop="message" :label="tr('信息')" min-width="240" /></el-table>
+          <small style="color:#8794a8">{{ tr('详情中的发布数据来自最近一次刷新') }}</small>
+        </section>
+
 
         <div class="drawer-section">
           <strong>{{ page.t('k8sSelector') }}</strong>
@@ -473,7 +484,7 @@ defineProps({
     </div>
   </el-drawer>
 
-  <el-drawer v-model="page.podLogDrawerVisible" title="Pod 日志" size="70%" class="pod-log-drawer">
+  <el-drawer v-model="page.podLogDrawerVisible" title="Pod 日志" size="70%" class="pod-log-drawer" @open="keyword = ''">
     <div v-loading="page.podLogLoading" class="drawer-content pod-log-drawer-content">
       <div class="pod-log-overview">
         <div>
@@ -496,16 +507,20 @@ defineProps({
           <el-option :value="1000" label="最近 1000 条" />
         </el-select>
         <el-button :loading="page.podLogLoading" @click="page.refreshPodLogs">刷新日志</el-button>
+        <el-input v-model="keyword" clearable aria-label="搜索已加载日志" placeholder="搜索已加载日志" style="max-width: 280px" />
       </div>
-      <div class="pod-log-meta">显示容器标准输出 / 错误输出，默认最近 200 条。</div>
+      <div class="pod-log-meta">
+        显示容器标准输出 / 错误输出，默认最近 200 条。
+        <span v-if="searching" role="status">命中 {{ matchingLines.length }} 行</span>
+      </div>
       <div class="pod-log-console">
-        <template v-if="page.podLogLines.length">
-          <div v-for="(line, index) in page.podLogLines" :key="`${index}-${line}`" class="pod-log-line">
-            <span class="pod-log-line-number">{{ String(index + 1).padStart(3, '0') }}</span>
-            <span class="pod-log-line-content">{{ line }}</span>
+        <template v-if="matchingLines.length">
+          <div v-for="line in matchingLines" :key="line.number" class="pod-log-line">
+            <span class="pod-log-line-number">{{ String(line.number).padStart(3, '0') }}</span>
+            <span class="pod-log-line-content">{{ line.text }}</span>
           </div>
         </template>
-        <div v-else class="pod-log-empty">{{ page.t('k8sNoLogsAvailable') }}</div>
+        <div v-else class="pod-log-empty">{{ searching ? '没有匹配的日志' : page.t('k8sNoLogsAvailable') }}</div>
       </div>
     </div>
   </el-drawer>

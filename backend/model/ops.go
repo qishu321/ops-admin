@@ -573,6 +573,7 @@ type OpsAppPipelineRun struct {
 	AppName        string     `json:"appName" gorm:"size:128;index"`
 	AppCode        string     `json:"appCode" gorm:"size:128;index"`
 	Env            string     `json:"env" gorm:"size:64;index"`
+	CommitID       string     `json:"commitId" gorm:"size:128"`
 	Branch         string     `json:"branch" gorm:"size:128"`
 	ImageTag       string     `json:"imageTag" gorm:"size:128;index"`
 	ArtifactID     uint       `json:"artifactId" gorm:"index"`
@@ -611,6 +612,22 @@ type OpsAppPipelineRunStage struct {
 	DurationMs int64      `json:"durationMs" gorm:"default:0"`
 	CreatedAt  time.Time  `json:"createTime"`
 }
+
+// OpsAppPipelineTarget records the exact host and paths touched by a release.
+type OpsAppPipelineTarget struct {
+	ID           uint   `json:"id" gorm:"primaryKey"`
+	RunID        uint   `json:"runId" gorm:"index"`
+	StageID      string `json:"stageId" gorm:"size:128"`
+	HostID       uint   `json:"hostId"`
+	HostName     string `json:"hostName" gorm:"size:128"`
+	Root         string `json:"root" gorm:"size:512"`
+	PreviousPath string `json:"previousPath" gorm:"size:1024"`
+	ReleasePath  string `json:"releasePath" gorm:"size:1024"`
+	Status       string `json:"status" gorm:"size:32"`
+	Log          string `json:"log" gorm:"type:longtext"`
+}
+
+func (OpsAppPipelineTarget) TableName() string { return "ops_app_pipeline_target" }
 
 func (OpsAppPipelineRunStage) TableName() string {
 	return "ops_app_pipeline_run_stage"

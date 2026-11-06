@@ -25,18 +25,19 @@ import (
 )
 
 type MonitorDatasourcePayload struct {
-	ID          uint   `json:"id"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	URL         string `json:"url"`
-	AuthType    string `json:"authType"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	Token       string `json:"token"`
-	IsDefault   bool   `json:"isDefault"`
-	Env         string `json:"env"`
-	Status      int    `json:"status"`
-	Description string `json:"description"`
+	SLS         model.MonitorSLSConfig `json:"sls"`
+	ID          uint                   `json:"id"`
+	Name        string                 `json:"name"`
+	Type        string                 `json:"type"`
+	URL         string                 `json:"url"`
+	AuthType    string                 `json:"authType"`
+	Username    string                 `json:"username"`
+	Password    string                 `json:"password"`
+	Token       string                 `json:"token"`
+	IsDefault   bool                   `json:"isDefault"`
+	Env         string                 `json:"env"`
+	Status      int                    `json:"status"`
+	Description string                 `json:"description"`
 }
 
 const (
@@ -278,6 +279,7 @@ type MonitorLogQueryPayload struct {
 	PageNum        int    `json:"pageNum"`
 	PageSize       int    `json:"pageSize"`
 	TrackTotalHits bool   `json:"trackTotalHits"`
+	SkipHistogram  bool   `json:"skipHistogram"`
 }
 
 type MonitorTraceQueryPayload struct {
@@ -341,6 +343,8 @@ func normalizeMonitorDatasourceType(value string) string {
 		return "victorialogs"
 	case "elasticsearch", "elastic", "es":
 		return "elasticsearch"
+	case "sls", "aliyun-sls":
+		return "sls"
 	case "jaeger", "jaeger-query", "tracing":
 		return "jaeger"
 	default:
@@ -350,7 +354,7 @@ func normalizeMonitorDatasourceType(value string) string {
 
 func isMonitorLogDatasource(value string) bool {
 	datasourceType := normalizeMonitorDatasourceType(value)
-	return datasourceType == "elasticsearch" || datasourceType == "victorialogs"
+	return datasourceType == "sls" || datasourceType == "elasticsearch" || datasourceType == "victorialogs"
 }
 
 func isMonitorMetricDatasource(value string) bool {
@@ -710,7 +714,23 @@ func (s *Service) SaveMonitorDatasource(payload MonitorDatasourcePayload) error 
 	if strings.TrimSpace(payload.URL) == "" {
 		return errors.New("数据源地址不能为空")
 	}
+	if normalizeMonitorDatasourceType(payload.Type) == "sls" {
+		if err := validateMonitorSLS(payload.URL, payload.SLS); err != nil {
+			return err
+		}
+		if client, err := s.monitorSLSClient(model.MonitorDatasource{URL: payload.URL, SLS: payload.SLS}); err != nil {
+			return err
+		} else {
+			_ = client.Close()
+		}
+		payload.AuthType = "none"
+		payload.Username = ""
+		payload.Password = ""
+		payload.Token = ""
+	}
+	stores, _ := json.Marshal(payload.SLS.Logstores)
 	updates := map[string]any{
+		"sls_region": payload.SLS.Region, "sls_project": payload.SLS.Project, "sls_cloud_account_id": payload.SLS.CloudAccountID, "sls_default_logstore": payload.SLS.DefaultLogstore, "sls_logstores": string(stores),
 		"name":        Trimmed(payload.Name),
 		"type":        normalizeMonitorDatasourceType(payload.Type),
 		"url":         strings.TrimRight(strings.TrimSpace(payload.URL), "/"),
@@ -761,7 +781,7 @@ func (s *Service) DeleteMonitorDatasource(id uint) error {
 
 func (s *Service) TestMonitorDatasource(id uint, payload MonitorDatasourcePayload) error {
 	var ds model.MonitorDatasource
-	if id > 0 {
+	if id > 0 && payload.Type != "sls" {
 		item, err := s.GetMonitorDatasource(id)
 		if err != nil {
 			return err
@@ -769,7 +789,7 @@ func (s *Service) TestMonitorDatasource(id uint, payload MonitorDatasourcePayloa
 		ds = *item
 	} else {
 		ds = model.MonitorDatasource{
-			Name: payload.Name, Type: normalizeMonitorDatasourceType(payload.Type), URL: strings.TrimRight(strings.TrimSpace(payload.URL), "/"),
+			SLS: payload.SLS, Name: payload.Name, Type: normalizeMonitorDatasourceType(payload.Type), URL: strings.TrimRight(strings.TrimSpace(payload.URL), "/"),
 			AuthType: normalizeMonitorAuthType(payload.AuthType), Username: payload.Username, Password: payload.Password, Token: payload.Token,
 		}
 	}
@@ -783,6 +803,8 @@ func (s *Service) TestMonitorDatasource(id uint, payload MonitorDatasourcePayloa
 
 func (s *Service) checkMonitorDatasourceHealth(ds model.MonitorDatasource) error {
 	switch normalizeMonitorDatasourceType(ds.Type) {
+	case "sls":
+		return s.monitorSLSHealth(ds)
 	case "elasticsearch":
 		return s.elasticsearchHealth(ds)
 	case "victorialogs":
@@ -1312,6 +1334,8 @@ func (s *Service) QueryMonitorLogs(payload MonitorLogQueryPayload) (map[string]a
 	switch normalizeMonitorDatasourceType(ds.Type) {
 	case "elasticsearch":
 		return s.queryElasticsearchMonitorLogs(payload)
+	case "sls":
+		return s.queryMonitorSLS(*ds, payload)
 	case "victorialogs":
 		return s.queryVictoriaLogs(*ds, payload)
 	default:
@@ -1723,6 +1747,8 @@ func (s *Service) ListMonitorLogFields(datasourceID uint, index, query string, s
 		return nil, err
 	}
 	switch normalizeMonitorDatasourceType(ds.Type) {
+	case "sls":
+		return s.monitorSLSIndexFields(*ds, index)
 	case "elasticsearch":
 		return s.elasticsearchLogFields(*ds, index)
 	case "victorialogs":
@@ -1737,6 +1763,11 @@ func (s *Service) ListMonitorLogFieldValues(datasourceID uint, index, field, que
 		return nil, errors.New("请选择日志数据源")
 	}
 	field = strings.TrimSpace(field)
+	if ds, err := s.GetMonitorDatasource(datasourceID); err != nil {
+		return nil, err
+	} else if ds.Type == "sls" {
+		return s.monitorSLSFieldValues(*ds, index, field, query, startAt, endAt, limit)
+	}
 	if !isCommonMonitorLogField(field) {
 		ds, err := s.GetMonitorDatasource(datasourceID)
 		if err != nil {
@@ -2037,6 +2068,9 @@ func (s *Service) ListMonitorElasticsearchIndices(datasourceID uint) ([]map[stri
 	if err != nil {
 		return nil, err
 	}
+	if ds.Type == "sls" {
+		return s.monitorSLSStores(*ds)
+	}
 	if normalizeMonitorDatasourceType(ds.Type) != "elasticsearch" {
 		return nil, errors.New("当前数据源不是 Elasticsearch")
 	}
@@ -2144,7 +2178,7 @@ func (s *Service) ListMonitorLogShortcutsByType(owner, datasourceType string) ([
 	owner = firstNonEmpty(strings.TrimSpace(owner), "admin")
 	datasourceType = normalizeLogShortcutDatasourceType(datasourceType)
 	query := s.db.Where("owner = ?", owner)
-	if datasourceType == "victorialogs" {
+	if datasourceType != "elasticsearch" {
 		query = query.Where("datasource_type = ?", datasourceType)
 	} else {
 		query = query.Where("datasource_type = ? OR datasource_type = ''", datasourceType)
@@ -2166,7 +2200,7 @@ func (s *Service) ListMonitorLogShortcutsByType(owner, datasourceType string) ([
 		}
 	}
 	query = s.db.Where("owner = ?", owner)
-	if datasourceType == "victorialogs" {
+	if datasourceType != "elasticsearch" {
 		query = query.Where("datasource_type = ?", datasourceType)
 	} else {
 		query = query.Where("datasource_type = ? OR datasource_type = ''", datasourceType)
@@ -2203,6 +2237,9 @@ type monitorLogShortcutDefault struct {
 }
 
 func normalizeLogShortcutDatasourceType(value string) string {
+	if normalizeMonitorDatasourceType(value) == "sls" {
+		return "sls"
+	}
 	if normalizeMonitorDatasourceType(value) == "victorialogs" {
 		return "victorialogs"
 	}
@@ -2210,6 +2247,9 @@ func normalizeLogShortcutDatasourceType(value string) string {
 }
 
 func monitorLogShortcutDefaults(datasourceType string) []monitorLogShortcutDefault {
+	if datasourceType == "sls" {
+		return []monitorLogShortcutDefault{{"全部日志", "*", "", "1h"}, {"错误日志", "ERROR", "", "1h"}, {"条数统计", "* | select count(*) as count", "", "1h"}}
+	}
 	if datasourceType == "victorialogs" {
 		return []monitorLogShortcutDefault{
 			{"全部日志", "*", "_all", "1h"},

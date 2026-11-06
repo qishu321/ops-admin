@@ -1,3 +1,4 @@
+import { tr, getLocale } from '../src/utils/i18n.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -16,7 +17,7 @@ function createPage(kind = 'etcd', confirm = () => Promise.resolve()) {
   let administrator = true
   const request = (type, details) => { const result = deferred(); requests.push({ type, ...details, ...result }); return result.promise }
   const context = vm.createContext({
-    computed, nextTick, reactive, ref, defineProps: () => props,
+    tr, getLocale, computed, nextTick, reactive, ref, defineProps: () => props,
     watch: (...args) => { const stop = watch(...args); stops.push(stop); return stop },
     onMounted: callback => { hooks.mounted = callback }, onUnmounted: callback => { hooks.unmounted = callback },
     useRouter: () => ({ push: () => {} }), useRoute: () => ({ query: {} }), window: new EventTarget(),
@@ -112,7 +113,7 @@ test('filled connection address satisfies both the custom and required form-item
   const input = source.indexOf('v-model="endpointText"')
   const formItem = source.slice(source.lastIndexOf('<el-form-item',input),input)
   const prop = formItem.match(/prop="([^"]+)"/)[1]
-  const rules = [...page.sourceRules[prop]]
+  const rules = [...page.sourceRules.value[prop]]
   if (!rules.some(rule => rule.required !== undefined)) rules.push({required:true})
   await new Schema({[prop]:rules}).validate(page.form)
   page.endpointText.value='   '

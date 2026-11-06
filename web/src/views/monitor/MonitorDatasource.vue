@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   deleteMonitorDatasource,
@@ -8,8 +8,11 @@ import {
   saveMonitorDatasource,
   testMonitorDatasource
 } from '../../api/monitor'
+import { queryAssetCloudAccountOptions } from '../../api/asset'
 import { useEnvironmentOptions } from '../../composables/useEnvironmentOptions'
 
+const cloudAccounts = ref([])
+const slsDefaults = () => ({region:'cn-hangzhou', project:'', cloudAccountId:undefined, defaultLogstore:'', logstores:[]})
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -23,6 +26,7 @@ const form = reactive({
   id: undefined,
   name: '',
   type: 'prometheus',
+  sls: slsDefaults(),
   env: 'test',
   url: '',
   authType: 'none',
@@ -39,6 +43,7 @@ function resetForm() {
     id: undefined,
     name: '',
     type: 'prometheus',
+    sls: slsDefaults(),
     env: 'test',
     url: '',
     authType: 'none',
@@ -122,6 +127,18 @@ async function handleDelete(row) {
   await loadData()
 }
 
+watch(() => form.type, async type => {
+ if (type !== 'sls') return
+ form.sls ||= slsDefaults()
+ if (!form.url) form.url = `https://${form.sls.region}.log.aliyuncs.com`
+ try { cloudAccounts.value = (await queryAssetCloudAccountOptions()).filter(account => ['aliyun', 'alicloud'].includes(account.provider)) } catch { cloudAccounts.value = [] }
+})
+watch(() => form.sls?.region, (region, previous) => {
+ if (form.type !== 'sls' || !previous || !region) return
+ for (const suffix of ['.log.aliyuncs.com', '-intranet.log.aliyuncs.com']) {
+  if (form.url === `https://${previous}${suffix}`) form.url = `https://${region}${suffix}`
+ }
+})
 onMounted(loadData)
 </script>
 
@@ -130,7 +147,7 @@ onMounted(loadData)
     <div class="page-header">
       <div>
         <h2>数据源管理</h2>
-        <p>接入 Prometheus、VictoriaMetrics、Elasticsearch、VictoriaLogs 或 Jaeger，统一管理指标、日志与链路追踪入口。</p>
+        <p>接入 Prometheus、VictoriaMetrics、Elasticsearch、VictoriaLogs、阿里云 SLS 或 Jaeger，统一管理指标、日志与链路追踪入口。</p>
       </div>
       <el-button type="primary" @click="openCreate">新增数据源</el-button>
     </div>
@@ -142,7 +159,7 @@ onMounted(loadData)
         <el-option label="VictoriaMetrics" value="victoriametrics" />
         <el-option label="VictoriaLogs" value="victorialogs" />
         <el-option label="Elasticsearch" value="elasticsearch" />
-        <el-option label="Jaeger" value="jaeger" />
+        <el-option label="阿里云 SLS" value="sls" /><el-option label="Jaeger" value="jaeger" />
       </el-select>
       <el-select v-model="query.status" clearable placeholder="状态" style="width: 130px">
         <el-option label="启用" value="1" />
@@ -197,7 +214,7 @@ onMounted(loadData)
             <el-radio-button label="victoriametrics">VictoriaMetrics</el-radio-button>
             <el-radio-button label="victorialogs">VictoriaLogs</el-radio-button>
             <el-radio-button label="elasticsearch">Elasticsearch</el-radio-button>
-            <el-radio-button label="jaeger">Jaeger</el-radio-button>
+            <el-radio-button label="sls">阿里云 SLS</el-radio-button><el-radio-button label="jaeger">Jaeger</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="所属环境" required>
@@ -209,7 +226,18 @@ onMounted(loadData)
         <el-alert v-if="form.type === 'elasticsearch'" title="Elasticsearch 数据源用于日志查询与日志告警；PromQL 即时查询、监控大屏和巡检大屏仍需选择 Prometheus 或 VictoriaMetrics。" type="info" :closable="false" style="margin-bottom: 18px" />
         <el-alert v-else-if="form.type === 'victorialogs'" title="VictoriaLogs 数据源用于 LogsQL 日志查询；PromQL 即时查询、监控大屏和巡检大屏仍需选择 Prometheus 或 VictoriaMetrics。" type="info" :closable="false" style="margin-bottom: 18px" />
         <el-alert v-else-if="form.type === 'jaeger'" title="Jaeger 数据源用于链路追踪连接管理和健康检查；当前 PromQL、日志查询与监控大屏不使用此数据源。请填写 Jaeger Query 服务地址，例如 http://jaeger-query:16686。" type="info" :closable="false" style="margin-bottom: 18px" />
-        <el-form-item label="认证方式">
+        <template v-if="form.type === 'sls'">
+          <el-form-item label="地域" required><el-input v-model="form.sls.region" placeholder="cn-hangzhou" /></el-form-item>
+          <el-form-item label="Project" required><el-input v-model="form.sls.project" placeholder="SLS 项目名称" /></el-form-item>
+          <el-form-item label="阿里云账号" required><el-select v-model="form.sls.cloudAccountId" filterable placeholder="选择云账号管理中已配置 AK/SK 的账号"><el-option v-for="account in cloudAccounts" :key="account.id" :label="account.name" :value="account.id" /></el-select></el-form-item>
+          <el-alert title="此数据源绑定一个 Project。保存后，在日志查询页浏览和选择该 Project 下的 Logstore。" type="info" :closable="false" />
+          <el-collapse><el-collapse-item title="高级：Logstore 访问范围与默认项" name="logstore-scope">
+          <el-form-item label="Logstore 范围"><el-select v-model="form.sls.logstores" multiple filterable allow-create default-first-option placeholder="输入名称后回车；留空允许 Project 下全部 Logstore" /></el-form-item>
+          <el-form-item label="默认 Logstore"><el-input v-model="form.sls.defaultLogstore" placeholder="可选，必须在允许范围内" /></el-form-item>
+          </el-collapse-item></el-collapse>
+          <el-alert title="使用地域级 HTTPS Endpoint，支持同地域内网地址。账号需具备日志库读取、日志检索和分布统计权限。仅查询现有日志，不创建采集配置。" type="info" :closable="false" />
+        </template>
+        <el-form-item v-if="form.type !== 'sls'" label="认证方式">
           <el-select v-model="form.authType" style="width: 100%">
             <el-option label="无认证" value="none" />
             <el-option label="Basic" value="basic" />
@@ -217,11 +245,11 @@ onMounted(loadData)
             <el-option label="Elasticsearch API Key" value="apikey" />
           </el-select>
         </el-form-item>
-        <template v-if="form.authType === 'basic'">
+        <template v-if="form.type !== 'sls' && form.authType === 'basic'">
           <el-form-item label="用户名"><el-input v-model="form.username" /></el-form-item>
           <el-form-item label="密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
         </template>
-        <el-form-item v-if="form.authType === 'bearer' || form.authType === 'apikey'" :label="form.authType === 'apikey' ? 'API Key' : 'Token'">
+        <el-form-item v-if="form.type !== 'sls' && (form.authType === 'bearer' || form.authType === 'apikey')" :label="form.authType === 'apikey' ? 'API Key' : 'Token'">
           <el-input v-model="form.token" type="textarea" :rows="3" />
         </el-form-item>
         <el-form-item label="状态">

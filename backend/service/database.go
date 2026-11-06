@@ -529,6 +529,7 @@ func (s *Service) GetDatabaseWorkbench(databaseID uint) (map[string]any, error) 
 		"version":       item.Version,
 		"connectStatus": item.ConnectStatus,
 		"accessMode":    item.AccessMode,
+		"environment":   item.Env,
 		"mode":          databaseMode(item.DBType),
 		"capabilities":  databaseCapabilities(item.DBType),
 	}, nil

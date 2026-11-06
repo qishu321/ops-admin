@@ -370,6 +370,7 @@ func (ctl *Controller) RunOpsAppPipeline(c *gin.Context) {
 		httpx.Failed(c, 400, "invalid pipeline run payload")
 		return
 	}
+	payload.Operator = c.GetString("username")
 	data, err := ctl.service.RunOpsAppPipeline(payload)
 	if err != nil {
 		httpx.Failed(c, 400, err.Error())

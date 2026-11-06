@@ -23,7 +23,7 @@ const iconMap = {
 <template>
   <div class="kuboard-shell">
     <section class="kuboard-main">
-      <header class="kuboard-main-head">
+      <header v-if="!page.workloadCreateVisible" class="kuboard-main-head">
         <div class="kuboard-head-main">
           <div class="kuboard-head-title">
             <h2>{{ page.currentSection.title }}</h2>

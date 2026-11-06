@@ -17,3 +17,6 @@ deploy/config.yaml
 .tmp/
 .workbuddy/
 .go-cache/
+
+backend/data/pipeline-artifacts/
+data/pipeline-artifacts/

@@ -9,6 +9,7 @@ export const queryDBMSResourceData = (params) => http.get('/api/v1/dbms/resource
 export const executeDBMSSQL = (data) => http.post('/api/v1/dbms/sql/execute', data)
 export const analyzeDBMSSQL = (data) => http.post('/api/v1/dbms/sql/analyze', data)
 export const analyzeRedisCommand = (data) => http.post('/api/v1/dbms/redis/analyze', data)
+export const queryRedisKeys = (params) => http.get('/api/v1/dbms/redis/keys', { params })
 export const executeRedisCommand = (data) => http.post('/api/v1/dbms/redis/execute', data)
 export const queryDBMSSQLHistory = (params) => http.get('/api/v1/dbms/sql/history', { params })
 export const insertDBMSTableRow = (data) => http.post('/api/v1/dbms/table/row/insert', data)

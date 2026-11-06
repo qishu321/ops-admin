@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -425,29 +426,7 @@ func (s *Service) getNonMySQLSchemaTree(item *model.AssetDatabase) (map[string]a
 		}
 		return map[string]any{"schemas": schemas, "defaultSchema": defaultSchema(item, "")}, nil
 	case "redis":
-		target, cleanup, err := s.resolveAssetDatabaseTarget(*item)
-		if err != nil {
-			return nil, err
-		}
-		defer cleanup()
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		dbIndex, _ := strconv.Atoi(strings.TrimSpace(target.DBName))
-		client := redis.NewClient(&redis.Options{Addr: net.JoinHostPort(target.Host, strconv.Itoa(databasePortByType("redis", target.Port))), Username: target.Username, Password: target.Password, DB: dbIndex})
-		defer client.Close()
-		if err := client.Ping(ctx).Err(); err != nil {
-			return nil, err
-		}
-		keys, _, err := client.Scan(ctx, 0, "*", 100).Result()
-		if err != nil {
-			return nil, err
-		}
-		tables := make([]map[string]any, 0, len(keys))
-		for _, key := range keys {
-			keyType, _ := client.Type(ctx, key).Result()
-			tables = append(tables, map[string]any{"name": key, "type": keyType, "rows": 0, "schema": fmt.Sprintf("db%d", dbIndex), "fullName": key})
-		}
-		return map[string]any{"schemas": []map[string]any{{"name": fmt.Sprintf("db%d", dbIndex), "tableCount": len(tables), "tables": tables, "isCurrent": true}}, "defaultSchema": fmt.Sprintf("db%d", dbIndex)}, nil
+		return s.getRedisSchemaTree(item)
 	default:
 		return nil, fmt.Errorf("unsupported database type")
 	}
@@ -999,67 +978,95 @@ func (s *Service) getMongoResourceData(item *model.AssetDatabase, payload DBMSTa
 }
 
 func (s *Service) getRedisResourceData(item *model.AssetDatabase, payload DBMSTableDataQueryPayload) (map[string]any, error) {
-	target, cleanup, err := s.resolveAssetDatabaseTarget(*item)
+	client, cleanup, index, err := s.openAssetRedis(*item, payload.Schema)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	dbIndex, _ := strconv.Atoi(strings.TrimSpace(target.DBName))
-	client := redis.NewClient(&redis.Options{Addr: net.JoinHostPort(target.Host, strconv.Itoa(databasePortByType("redis", target.Port))), Username: target.Username, Password: target.Password, DB: dbIndex})
-	defer client.Close()
 	key := payload.Table
 	keyType, err := client.Type(ctx, key).Result()
 	if err != nil {
 		return nil, err
+	}
+	if keyType == "none" {
+		return map[string]any{"schema": fmt.Sprintf("db%d", index), "rows": []any{}, "total": 0, "resourceType": "key"}, nil
 	}
 	ttl, err := client.TTL(ctx, key).Result()
 	if err != nil {
 		return nil, err
 	}
 	value := ""
+	truncated := false
 	switch keyType {
 	case "string":
-		value, _ = client.Get(ctx, key).Result()
+		value, err = client.Get(ctx, key).Result()
 	case "list":
-		items, _ := client.LRange(ctx, key, 0, 199).Result()
+		var length int64
+		length, err = client.LLen(ctx, key).Result()
+		if err != nil {
+			return nil, err
+		}
+		truncated = length > 200
+		var items []string
+		items, err = client.LRange(ctx, key, 0, 199).Result()
 		encoded, _ := json.Marshal(items)
 		value = string(encoded)
 	case "set":
-		items, _ := client.SMembers(ctx, key).Result()
+		var items []string
+		var cursor uint64
+		items, cursor, err = client.SScan(ctx, key, 0, "*", 200).Result()
+		truncated = cursor != 0
 		encoded, _ := json.Marshal(items)
 		value = string(encoded)
 	case "zset":
-		items, _ := client.ZRangeWithScores(ctx, key, 0, 199).Result()
-		encoded, _ := json.Marshal(items)
+		var length int64
+		length, err = client.ZCard(ctx, key).Result()
+		if err != nil {
+			return nil, err
+		}
+		truncated = length > 200
+		var items []redis.Z
+		items, err = client.ZRangeWithScores(ctx, key, 0, 199).Result()
+		values := []map[string]any{}
+		for _, item := range items {
+			values = append(values, map[string]any{"member": item.Member, "score": item.Score})
+		}
+		encoded, _ := json.Marshal(values)
 		value = string(encoded)
 	case "hash":
-		items, _ := client.HGetAll(ctx, key).Result()
+		var fields []string
+		var cursor uint64
+		fields, cursor, err = client.HScan(ctx, key, 0, "*", 200).Result()
+		truncated = cursor != 0
+		items := map[string]string{}
+		for i := 0; i+1 < len(fields); i += 2 {
+			items[fields[i]] = fields[i+1]
+		}
 		encoded, _ := json.Marshal(items)
 		value = string(encoded)
 	case "stream":
-		count, _ := client.XLen(ctx, key).Result()
+		var count int64
+		count, err = client.XLen(ctx, key).Result()
 		value = fmt.Sprintf("stream (%d entries)", count)
 	default:
 		value = keyType
 	}
-	ttlSeconds := int64(ttl / time.Second)
-	ttlText := fmt.Sprintf("%d 秒", ttlSeconds)
-	if ttl == -1*time.Nanosecond {
-		ttlSeconds, ttlText = -1, "永不过期"
-	} else if ttl == -2*time.Nanosecond {
-		ttlSeconds, ttlText = -2, "已过期"
+	if err != nil {
+		return nil, err
 	}
+	ttlSeconds, ttlText := redisTTLDisplay(ttl)
 	return map[string]any{
-		"schema": payload.Schema, "table": key, "columns": []databaseTableColumn{{Name: "key"}, {Name: "type"}, {Name: "ttl"}, {Name: "value"}},
-		"rows": []map[string]any{{"key": key, "type": keyType, "ttl": ttlText, "ttlSeconds": ttlSeconds, "value": value}}, "total": 1, "pageNum": 1, "pageSize": 1,
+		"schema": fmt.Sprintf("db%d", index), "table": key, "columns": []databaseTableColumn{{Name: "key"}, {Name: "type"}, {Name: "ttl"}, {Name: "value"}},
+		"rows": []map[string]any{{"key": key, "type": keyType, "ttl": ttlText, "ttlSeconds": ttlSeconds, "value": value, "truncated": truncated}}, "total": 1, "pageNum": 1, "pageSize": 1,
 		"readOnly": normalizeDatabaseAccessMode(item.AccessMode) == "readonly", "resourceType": "key",
 	}, nil
 }
 
 type RedisCommandPayload struct {
 	DatabaseID  uint   `json:"databaseId"`
+	Schema      string `json:"schema"`
 	CommandText string `json:"commandText"`
 	Confirmed   bool   `json:"confirmed"`
 	Operator    string `json:"-"`
@@ -1067,6 +1074,7 @@ type RedisCommandPayload struct {
 }
 
 type RedisCommandAnalysis struct {
+	Schema         string `json:"schema"`
 	Command        string `json:"command"`
 	Arguments      int    `json:"arguments"`
 	WriteOperation bool   `json:"writeOperation"`
@@ -1158,6 +1166,13 @@ func (s *Service) AnalyzeRedisCommand(payload RedisCommandPayload) (*RedisComman
 		return nil, err
 	}
 	command := strings.ToUpper(args[0])
+	index, err := redisDatabaseIndex(item.DBName, payload.Schema)
+	if err != nil {
+		return nil, err
+	}
+	if command == "SELECT" {
+		return nil, fmt.Errorf("请使用逻辑库选择器切换数据库，命令将始终在所选 DB 执行")
+	}
 	if isBlockedRedisCommand(command) {
 		return nil, fmt.Errorf("Redis 命令控制台不允许执行 %s", command)
 	}
@@ -1172,7 +1187,7 @@ func (s *Service) AnalyzeRedisCommand(payload RedisCommandPayload) (*RedisComman
 		reason = "当前 Redis 连接为只读模式"
 		riskLevel = "high"
 	}
-	return &RedisCommandAnalysis{Command: command, Arguments: len(args) - 1, WriteOperation: writeOperation, RiskLevel: riskLevel, Reason: reason, AccessMode: normalizeDatabaseAccessMode(item.AccessMode)}, nil
+	return &RedisCommandAnalysis{Schema: fmt.Sprintf("db%d", index), Command: command, Arguments: len(args) - 1, WriteOperation: writeOperation, RiskLevel: riskLevel, Reason: reason, AccessMode: normalizeDatabaseAccessMode(item.AccessMode)}, nil
 }
 
 func redisReplyText(value any) string {
@@ -1216,22 +1231,23 @@ func (s *Service) ExecuteRedisCommand(payload RedisCommandPayload) (map[string]a
 	if err != nil {
 		return nil, err
 	}
-	target, cleanup, err := s.resolveAssetDatabaseTarget(*item)
+	client, cleanup, dbIndex, err := s.openAssetRedis(*item, analysis.Schema)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	dbIndex, _ := strconv.Atoi(strings.TrimSpace(target.DBName))
-	client := redis.NewClient(&redis.Options{Addr: net.JoinHostPort(target.Host, strconv.Itoa(databasePortByType("redis", target.Port))), Username: target.Username, Password: target.Password, DB: dbIndex})
-	defer client.Close()
 	start := time.Now()
 	commandArgs := make([]interface{}, 0, len(args))
 	for _, arg := range args {
 		commandArgs = append(commandArgs, arg)
 	}
 	reply, execErr := client.Do(ctx, commandArgs...).Result()
+	if errors.Is(execErr, redis.Nil) {
+		reply = nil
+		execErr = nil
+	}
 	durationMs := time.Since(start).Milliseconds()
 	history := model.DatabaseSQLHistory{DatabaseID: item.ID, DatabaseName: item.Name, SchemaName: fmt.Sprintf("db%d", dbIndex), SQLType: "REDIS " + analysis.Command, SQLText: strings.TrimSpace(payload.CommandText), ExecutionID: newDBMSExecutionID(), Operator: strings.TrimSpace(payload.Operator), ClientIP: strings.TrimSpace(payload.ClientIP), Environment: item.Env, AccessMode: normalizeDatabaseAccessMode(item.AccessMode), DurationMs: durationMs}
 	if execErr != nil {
@@ -1243,5 +1259,5 @@ func (s *Service) ExecuteRedisCommand(payload RedisCommandPayload) (map[string]a
 	history.Status = 1
 	history.RowsAffected = 1
 	s.db.Create(&history)
-	return map[string]any{"command": analysis.Command, "columns": []string{"command", "result"}, "rows": []map[string]any{{"command": strings.TrimSpace(payload.CommandText), "result": redisReplyText(reply)}}, "rowsAffected": 1, "durationMs": durationMs, "executionId": history.ExecutionID, "analysis": analysis}, nil
+	return map[string]any{"schema": analysis.Schema, "command": analysis.Command, "columns": []string{"command", "result"}, "rows": []map[string]any{{"command": strings.TrimSpace(payload.CommandText), "result": redisReplyText(reply)}}, "rowsAffected": 1, "durationMs": durationMs, "executionId": history.ExecutionID, "analysis": analysis}, nil
 }

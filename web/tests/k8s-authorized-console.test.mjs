@@ -10,7 +10,7 @@ function setup({ list = async () => [{ id: 3 }, { id: 4 }], overview = async id 
   const storage = new Map([['cluster', '999']]), requests = []
   const refs = Object.fromEntries(['loading', 'clusterOptions', 'cluster', 'overview', 'nodes', 'namespaces', 'pods', 'workloads', 'services', 'ingresses', 'ingressClasses', 'gatewayApiGateways', 'httpRoutes', 'configMaps', 'secrets', 'storages', 'selectedWorkloads', 'namespaceFilter'].map(key => [key, { value: key === 'loading' ? false : [] }]))
   const context = vm.createContext({
-    ...refs, workloadImageMap: {}, CLUSTER_KEY: 'cluster', NAMESPACE_FILTER_KEY: 'namespace',
+    ...refs, podDeleteTarget:{value:null}, workloadCreateVisible:{value:false}, workloadImageMap: {}, CLUSTER_KEY: 'cluster', NAMESPACE_FILTER_KEY: 'namespace',
     localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     queryK8sClusterList: list,
     queryK8sClusterOverview: async id => { requests.push(id); return overview(id) },

@@ -134,6 +134,7 @@ type OpsAppPipelineStatusPayload struct {
 }
 
 type OpsAppPipelineRunPayload struct {
+	Operator   string            `json:"-"`
 	PipelineID uint              `json:"pipelineId"`
 	Branch     string            `json:"branch"`
 	Env        string            `json:"env"`
@@ -236,6 +237,7 @@ func (writer *opsBuildLogWriter) persistLocked() {
 
 type opsPipelineExecution struct {
 	RunID        uint
+	ArtifactID   uint
 	PipelineID   uint
 	App          model.OpsApplication
 	Branch       string
@@ -1231,7 +1233,7 @@ func opsPipelineStageDisplayName(stageType string) string {
 	return map[string]string{
 		"checkout": "代码拉取", "command": "执行命令", "test": "自动化测试", "build": "编译构建",
 		"dockerBuild": "构建镜像", "dockerPush": "推送镜像", "k8sDeploy": "K8s 发布",
-		"manual": "人工确认", "notify": "消息通知",
+		"manual": "人工确认", "notify": "消息通知", "sshDeploy": "SSH 主机发布",
 	}[stageType]
 }
 
@@ -1241,10 +1243,12 @@ func validateOpsPipelineStages(stages []OpsAppPipelineStageDefinition, validateD
 	}
 	allowedTypes := map[string]bool{
 		"checkout": true, "command": true, "test": true, "build": true,
-		"dockerBuild": true, "dockerPush": true, "k8sDeploy": true,
+		"dockerBuild": true, "dockerPush": true, "k8sDeploy": true, "sshDeploy": true,
 		"manual": true, "notify": true,
 	}
 	stageIDs := map[string]bool{}
+	sshCount := 0
+	k8sCount := 0
 	buildRegistryByStageID := map[string]uint{}
 	buildStageByRegistryID := map[uint]string{}
 	for index, stage := range stages {
@@ -1260,6 +1264,23 @@ func validateOpsPipelineStages(stages []OpsAppPipelineStageDefinition, validateD
 		}
 		if (stage.Type == "command" || stage.Type == "test" || stage.Type == "build") && strings.TrimSpace(opsPipelineConfigString(stage.Config, "script")) == "" {
 			return fmt.Errorf("阶段「%s」缺少执行命令", stage.Name)
+		}
+		if stage.Type == "sshDeploy" {
+			sshCount++
+			if sshCount > 1 {
+				return errors.New("一条流水线只配置一个 SSH 发布阶段，在阶段中选择多台目标主机")
+			}
+			if stage.FailurePolicy != "stop" {
+				return errors.New("SSH 发布阶段必须使用失败终止策略")
+			}
+		}
+		if stage.Type == "k8sDeploy" {
+			k8sCount++
+		}
+		if stage.Type == "sshDeploy" && validateDeployTarget {
+			if err := validateSSHPipelineConfig(stage.Config); err != nil {
+				return fmt.Errorf("阶段「%s」：%w", stage.Name, err)
+			}
 		}
 		if stage.Type == "notify" && opsPipelineConfigUint(stage.Config, "notifyRuleId") == 0 {
 			return fmt.Errorf("消息通知阶段「%s」需要选择通知规则", stage.Name)
@@ -1279,6 +1300,9 @@ func validateOpsPipelineStages(stages []OpsAppPipelineStageDefinition, validateD
 				return fmt.Errorf("K8s 发布阶段「%s」缺少集群、命名空间、工作负载或容器配置", stage.Name)
 			}
 		}
+	}
+	if sshCount > 0 && k8sCount > 0 {
+		return errors.New("请为 SSH 和 K8s 分别配置发布流水线")
 	}
 	for index := range stages {
 		stage := &stages[index]
@@ -1378,6 +1402,16 @@ func (s *Service) SaveOpsAppPipeline(payload OpsAppPipelinePayload) error {
 	}
 	definition, _ := json.Marshal(map[string]any{"stages": stages})
 	normalizedDefinition = string(definition)
+	for _, stage := range stages {
+		if stage.Type == "sshDeploy" {
+			if err := validateSSHPipelineConfig(stage.Config); err != nil {
+				return err
+			}
+			if _, err := s.sshPipelineHosts(stage.Config); err != nil {
+				return err
+			}
+		}
+	}
 	if payload.ExecutorHostID == 0 {
 		return errors.New("请选择流水线执行节点，流水线命令不会在 Ops Admin 容器内执行")
 	}
@@ -1446,6 +1480,9 @@ func (s *Service) DeleteOpsAppPipeline(id uint) error {
 			return err
 		}
 		if len(runIDs) > 0 {
+			if err := tx.Where("run_id IN ?", runIDs).Delete(&model.OpsAppPipelineTarget{}).Error; err != nil {
+				return err
+			}
 			if err := tx.Where("run_id IN ?", runIDs).Delete(&model.OpsAppPipelineRunStage{}).Error; err != nil {
 				return err
 			}
@@ -1491,6 +1528,8 @@ func (s *Service) getOpsPipelineExecutorHost(id uint) (model.AssetHost, error) {
 }
 
 func (s *Service) RunOpsAppPipeline(payload OpsAppPipelineRunPayload) (map[string]any, error) {
+	pipelineAdmission.Lock()
+	defer pipelineAdmission.Unlock()
 	var pipeline model.OpsAppPipeline
 	if err := s.db.First(&pipeline, payload.PipelineID).Error; err != nil {
 		return nil, err
@@ -1517,6 +1556,11 @@ func (s *Service) RunOpsAppPipeline(payload OpsAppPipelineRunPayload) (map[strin
 	env := Trimmed(payload.Env)
 	if env == "" {
 		env = pipeline.Env
+	}
+	for _, stage := range stages {
+		if stage.Type == "sshDeploy" && env != pipeline.Env {
+			return nil, errors.New("SSH 发布目标绑定流水线环境，请为其他环境创建独立流水线")
+		}
 	}
 	var bindingCount int64
 	_ = s.db.Model(&model.OpsApplicationEnvironmentBinding{}).Where("app_id = ?", pipeline.AppID).Count(&bindingCount).Error
@@ -1564,6 +1608,15 @@ func (s *Service) RunOpsAppPipeline(payload OpsAppPipelineRunPayload) (map[strin
 		if !hasApproval {
 			return nil, errors.New("生产环境流水线必须包含人工确认阶段")
 		}
+		approved := false
+		for _, stage := range stages {
+			if stage.Type == "manual" {
+				approved = true
+			}
+			if (stage.Type == "sshDeploy" || stage.Type == "k8sDeploy") && !approved {
+				return nil, errors.New("生产环境人工确认阶段必须位于发布之前")
+			}
+		}
 	}
 	if pipeline.BuildTaskID > 0 && payload.ArtifactID == 0 {
 		return nil, errors.New("该流水线已绑定构建任务，请选择已成功生成的制品")
@@ -1576,17 +1629,45 @@ func (s *Service) RunOpsAppPipeline(payload OpsAppPipelineRunPayload) (map[strin
 			artifactQuery = artifactQuery.Where("build_task_id = ?", pipeline.BuildTaskID)
 		}
 		if normalizedEnv := normalizeEnvCode(env); normalizedEnv != "" {
-			artifactQuery = artifactQuery.Where("env = ?", normalizedEnv)
+			artifactQuery = artifactQuery.Where("env = ? OR type = ?", normalizedEnv, "ssh-archive")
 		}
 		if err := artifactQuery.First(&artifact).Error; err != nil {
 			return nil, errors.New("所选制品不存在、不可用或不属于当前应用")
 		}
-		if imageTag == "" {
-			imageTag = artifact.Version
+		imageTag = artifact.Version
+		if artifact.Type == "ssh-archive" {
+			filtered := make([]OpsAppPipelineStageDefinition, 0)
+			for _, stage := range stages {
+				if stage.Type == "sshDeploy" || stage.Type == "manual" || stage.Type == "notify" {
+					filtered = append(filtered, stage)
+				}
+			}
+			hasSSH := false
+			for _, stage := range filtered {
+				if stage.Type == "sshDeploy" {
+					hasSSH = true
+				}
+			}
+			if !hasSSH {
+				return nil, errors.New("该制品需要 SSH 发布阶段")
+			}
+			stages = filtered
+			definition, _ := json.Marshal(map[string]any{"stages": stages})
+			normalizedDefinition = string(definition)
 		}
 	}
 	if imageTag == "" {
 		imageTag = opsPipelineImageTag(branch, time.Now())
+	}
+	if err := s.ensurePipelineIdle(pipeline.AppID, env); err != nil {
+		return nil, err
+	}
+	for _, stage := range stages {
+		if stage.Type == "sshDeploy" {
+			if _, err := s.sshPipelineHosts(stage.Config); err != nil {
+				return nil, err
+			}
+		}
 	}
 	workspace := s.resolveOpsAppWorkspace(*app)
 	paramsJSON, _ := json.Marshal(payload.Params)
@@ -1594,7 +1675,7 @@ func (s *Service) RunOpsAppPipeline(payload OpsAppPipelineRunPayload) (map[strin
 	run := model.OpsAppPipelineRun{
 		PipelineID: pipeline.ID, PipelineName: pipeline.Name, AppID: pipeline.AppID, AppName: pipeline.AppName,
 		AppCode: pipeline.AppCode, Env: env, Branch: branch, ImageTag: imageTag, ArtifactID: payload.ArtifactID, TriggerType: "manual",
-		ExecutorHostID: pipeline.ExecutorHostID, TriggerUser: "系统管理员", Status: "running", Summary: "流水线已创建，等待阶段执行",
+		ExecutorHostID: pipeline.ExecutorHostID, TriggerUser: firstNonEmpty(payload.Operator, "系统管理员"), CommitID: artifact.CommitID, Status: "running", Summary: "流水线已创建，等待阶段执行",
 		ParamsJSON: string(paramsJSON), DefinitionJSON: normalizedDefinition, StartedAt: &now,
 	}
 	if err := s.db.Create(&run).Error; err != nil {
@@ -1610,7 +1691,7 @@ func (s *Service) RunOpsAppPipeline(payload OpsAppPipelineRunPayload) (map[strin
 		"last_run_id": run.ID, "last_status": "running", "last_run_at": &now,
 	})
 	go s.runOpsAppPipeline(opsPipelineExecution{
-		RunID: run.ID, PipelineID: pipeline.ID, App: *app, Branch: branch, Env: env,
+		RunID: run.ID, ArtifactID: payload.ArtifactID, PipelineID: pipeline.ID, App: *app, Branch: branch, Env: env,
 		ImageTag: imageTag, Workspace: workspace, ExecutorHost: executorHost, Params: payload.Params, Stages: stages, StartedAt: now,
 	})
 	return map[string]any{"runId": run.ID, "status": run.Status, "summary": run.Summary}, nil
@@ -1660,10 +1741,15 @@ func (s *Service) GetOpsAppPipelineRun(id uint) (map[string]any, error) {
 	if err := s.db.Where("run_id = ?", id).Order("id ASC").Find(&stages).Error; err != nil {
 		return nil, err
 	}
-	return map[string]any{"run": run, "stages": stages}, nil
+	var targets []model.OpsAppPipelineTarget
+	if err := s.db.Where("run_id = ?", id).Order("id ASC").Find(&targets).Error; err != nil {
+		return nil, err
+	}
+	return map[string]any{"run": run, "stages": stages, "targets": targets}, nil
 }
 
 func (s *Service) runOpsAppPipeline(execInfo opsPipelineExecution) {
+	execInfo.Workspace = pathpkg.Join(filepath.ToSlash(execInfo.Workspace), fmt.Sprintf("pipeline-%d", execInfo.RunID))
 	status, summary := "success", "流水线执行完成"
 	for _, stage := range execInfo.Stages {
 		var persisted model.OpsAppPipelineRunStage
@@ -1720,6 +1806,8 @@ func (s *Service) runOpsAppPipeline(execInfo opsPipelineExecution) {
 }
 
 func (s *Service) ApproveOpsAppPipelineRun(payload OpsAppPipelineApprovalPayload) error {
+	pipelineAdmission.Lock()
+	defer pipelineAdmission.Unlock()
 	if payload.RunID == 0 {
 		return errors.New("流水线执行 ID 不能为空")
 	}
@@ -1773,23 +1861,38 @@ func (s *Service) ApproveOpsAppPipelineRun(payload OpsAppPipelineApprovalPayload
 		started = *run.StartedAt
 	}
 	go s.runOpsAppPipeline(opsPipelineExecution{
-		RunID: run.ID, PipelineID: run.PipelineID, App: app, Branch: run.Branch, Env: run.Env,
+		RunID: run.ID, ArtifactID: run.ArtifactID, PipelineID: run.PipelineID, App: app, Branch: run.Branch, Env: run.Env,
 		ImageTag: run.ImageTag, Workspace: s.resolveOpsAppWorkspace(app), ExecutorHost: executorHost, Params: params, Stages: stages, StartedAt: started,
 	})
 	return nil
 }
 
 func (s *Service) RollbackOpsAppPipelineRun(runID uint, operator string) (map[string]any, error) {
+	pipelineAdmission.Lock()
+	defer pipelineAdmission.Unlock()
 	var current model.OpsAppPipelineRun
 	if err := s.db.First(&current, runID).Error; err != nil {
 		return nil, err
+	}
+	if current.Status != "success" && current.Status != "failed" {
+		return nil, errors.New("请等待发布结束后再回滚")
+	}
+	if err := s.ensurePipelineIdle(current.AppID, current.Env); err != nil {
+		return nil, err
+	}
+	var sshTargets int64
+	if err := s.db.Model(&model.OpsAppPipelineTarget{}).Where("run_id = ?", current.ID).Count(&sshTargets).Error; err != nil {
+		return nil, err
+	}
+	if sshTargets > 0 {
+		return s.rollbackSSHPipeline(current, operator)
 	}
 	executorHost, err := s.getOpsPipelineExecutorHost(current.ExecutorHostID)
 	if err != nil {
 		return nil, err
 	}
 	var previous model.OpsAppPipelineRun
-	if err := s.db.Where("pipeline_id = ? AND status = ? AND id < ? AND image_tag <> ''", current.PipelineID, "success", current.ID).Order("id DESC").First(&previous).Error; err != nil {
+	if err := s.db.Where("pipeline_id = ? AND env = ? AND status = ? AND id < ? AND image_tag <> ''", current.PipelineID, current.Env, "success", current.ID).Order("id DESC").First(&previous).Error; err != nil {
 		return nil, errors.New("没有找到可回滚的历史成功版本")
 	}
 	definitions, _, err := normalizeOpsPipelineStages(current.DefinitionJSON)
@@ -1824,11 +1927,14 @@ func (s *Service) RollbackOpsAppPipelineRun(runID uint, operator string) (map[st
 	if err := s.db.First(&app, run.AppID).Error; err != nil {
 		return nil, err
 	}
-	go s.runOpsAppPipeline(opsPipelineExecution{RunID: run.ID, PipelineID: run.PipelineID, App: app, Branch: run.Branch, Env: run.Env, ImageTag: run.ImageTag, Workspace: s.resolveOpsAppWorkspace(app), ExecutorHost: executorHost, Stages: stages, StartedAt: now})
+	go s.runOpsAppPipeline(opsPipelineExecution{RunID: run.ID, ArtifactID: run.ArtifactID, PipelineID: run.PipelineID, App: app, Branch: run.Branch, Env: run.Env, ImageTag: run.ImageTag, Workspace: s.resolveOpsAppWorkspace(app), ExecutorHost: executorHost, Stages: stages, StartedAt: now})
 	return map[string]any{"runId": run.ID, "rollbackFromRunId": current.ID, "rollbackToRunId": previous.ID, "imageTag": previous.ImageTag}, nil
 }
 
 func (s *Service) executeOpsAppPipelineStage(execInfo opsPipelineExecution, stage OpsAppPipelineStageDefinition) (string, error) {
+	if stage.Type == "sshDeploy" {
+		return s.executeSSHPipelineDeploy(execInfo, stage)
+	}
 	header := fmt.Sprintf("[%s] 阶段开始：%s\n阶段类型：%s\n执行策略：%s\n执行节点：%s (%s)\n工作目录：%s\n\n",
 		time.Now().Format("2006-01-02 15:04:05"), stage.Name, stage.Type, stage.FailurePolicy, execInfo.ExecutorHost.HostName, execInfo.ExecutorHost.SSHIP, execInfo.Workspace)
 	timeout := time.Duration(normalizeOpsBuildTimeout(stage.TimeoutSeconds)) * time.Second
@@ -1986,6 +2092,15 @@ func (s *Service) executeOpsAppPipelineRemoteStage(execInfo opsPipelineExecution
 	switch stage.Type {
 	case "checkout":
 		output, err := run("远程代码拉取", s.remoteOpsAppCheckoutCommand(execInfo.App, workspace, execInfo.Branch))
+		if err == nil {
+			revision := s.execCommandOnHost(execInfo.ExecutorHost, "cd "+shellQuote(workspace)+" && "+map[bool]string{true: "svn info --show-item revision", false: "git rev-parse HEAD"}[execInfo.App.RepoType == "svn"], 30)
+			if revision.Status != "success" {
+				return header + output, errors.New("读取代码提交版本失败")
+			}
+			if err := s.db.Model(&model.OpsAppPipelineRun{}).Where("id = ?", execInfo.RunID).Update("commit_id", strings.TrimSpace(revision.Stdout)).Error; err != nil {
+				return header + output, err
+			}
+		}
 		return header + output, err
 	case "command", "test", "build":
 		script := opsPipelineConfigString(stage.Config, "script")

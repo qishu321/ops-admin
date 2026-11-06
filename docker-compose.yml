@@ -41,6 +41,7 @@ services:
     volumes:
       - ./deploy/config.yaml:/app/config.yaml:ro
       - ops-admin-uploads:/app/uploads
+      - ops-admin-data:/app/data
     networks:
       - ops-admin
     depends_on:
@@ -82,6 +83,7 @@ networks:
     name: ops-admin-network
 
 volumes:
+  ops-admin-data:
   ops-admin-mysql-data:
     name: ops-admin-mysql-data
   ops-admin-uploads:

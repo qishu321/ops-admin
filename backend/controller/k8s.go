@@ -152,6 +152,25 @@ func (ctl *Controller) UpdateK8sNodeLabels(c *gin.Context) {
 	httpx.Success(c, true)
 }
 
+func (ctl *Controller) GetK8sPodDeletionStatus(c *gin.Context) {
+	var query struct {
+		ClusterID uint   `form:"clusterId"`
+		Namespace string `form:"namespace"`
+		PodName   string `form:"podName"`
+		UID       string `form:"uid"`
+	}
+	if err := c.ShouldBindQuery(&query); err != nil || query.ClusterID == 0 || query.Namespace == "" || query.PodName == "" {
+		httpx.Failed(c, http.StatusBadRequest, "invalid pod query")
+		return
+	}
+	data, err := ctl.service.GetK8sPodDeletionStatus(query.ClusterID, query.Namespace, query.PodName, query.UID)
+	if err != nil {
+		httpx.Failed(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetK8sPodDetail(c *gin.Context) {
 	var query struct {
 		ClusterID uint   `form:"clusterId"`

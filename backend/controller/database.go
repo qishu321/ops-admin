@@ -218,6 +218,15 @@ func (ctl *Controller) AnalyzeRedisCommand(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+func (ctl *Controller) GetRedisKeys(c *gin.Context) {
+	data, err := ctl.service.GetRedisKeys(service.RedisKeysQuery{DatabaseID: uint(mustAtoi(c.Query("databaseId"))), Schema: c.Query("schema"), Cursor: c.Query("cursor"), Pattern: c.Query("pattern")})
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) ExecuteRedisCommand(c *gin.Context) {
 	var payload service.RedisCommandPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {

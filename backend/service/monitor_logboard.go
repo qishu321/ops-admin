@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ops-admin/backend/model"
 )
@@ -30,15 +31,22 @@ type MonitorLogBoardPayload struct {
 // 因为值班排查真正关心的是 ERROR/FATAL，INFO 会稀释信号。
 const logBoardRecentLimit = 50
 
+// 单条正文上限。客户端错误日志实测中位数 3.2KB、最长 11.7KB（一条里塞了
+// 完整 stackTrace），20K 字符足以覆盖，同时挡住异常巨大的单条把响应撑爆。
+const logBoardMessageMaxLen = 20000
+
 type logBoardRecord struct {
 	at        time.Time
 	level     string
 	pod       string
 	namespace string
 	container string
-	message   string
-	raw       string
-	fields    map[string]string
+	// message 是剥掉 ANSI 与 Spring 前缀后的完整正文，供详情弹窗使用；
+	// messageTruncated 表示正文超过 logBoardMessageMaxLen 被截断过。
+	message          string
+	messageTruncated bool
+	raw              string
+	fields           map[string]string
 }
 
 // 日志正文里带 Spring Boot 的彩色控制台转义（\x1b[31;1mERROR\x1b[m），
@@ -273,20 +281,175 @@ func logBoardRecentEntries(records []logBoardRecord) ([]map[string]any, int) {
 			}
 		}
 		recent = append(recent, map[string]any{
-			"time":          record.at.Local().Format("2006-01-02 15:04:05.000"),
-			"summary":       summary,
-			"level":         level,
-			"namespace":     record.namespace,
-			"pod":           record.pod,
-			"container":     record.container,
-			"message":       record.message,
-			"exceptionType": record.fields["exceptionType"],
-			"platform":      record.fields["platform"],
-			"appVersion":    record.fields["appVersion"],
-			"deviceModel":   record.fields["deviceModel"],
+			"time":      record.at.Local().Format("2006-01-02 15:04:05.000"),
+			"summary":   summary,
+			"level":     level,
+			"namespace": record.namespace,
+			"pod":       record.pod,
+			"container": record.container,
+			"message":   record.message,
+			// 正文超上限时前端要提示「已截断」，避免误以为是完整堆栈。
+			"messageTruncated": record.messageTruncated,
+			"exceptionType":    record.fields["exceptionType"],
+			"platform":         record.fields["platform"],
+			"appVersion":       record.fields["appVersion"],
+			"deviceModel":      record.fields["deviceModel"],
 		})
 	}
 	return recent, errorTotal
+}
+
+// 「最近错误日志」的关键字搜索。窗口跟随页面顶部选的时间范围（15 分钟 / 1 小时 /
+// 6 小时就扫对应区间），只有选了 24 小时或 7 天时才收口到 12 小时——交互式搜索要低延迟，
+// 扫全周会把 VictoriaLogs 拖慢，12 小时也够覆盖一个值班班次的现场排查。
+type MonitorLogRecentPayload struct {
+	DatasourceID uint     `json:"datasourceId"`
+	Query        string   `json:"query"`
+	Keywords     []string `json:"keywords"`
+	EndAt        int64    `json:"endAt"`
+	// RangeSeconds 是页面当前选中的时间范围，只用来「收窄」窗口，不能突破上限。
+	RangeSeconds int `json:"rangeSeconds"`
+}
+
+const (
+	logBoardRecentSearchWindow     = 12 * time.Hour
+	logBoardRecentSearchMinWindow  = time.Minute
+	logBoardRecentSearchMaxKeyword = 6
+	logBoardRecentKeywordMaxLen    = 60
+	// 关键字过滤在 VictoriaLogs 侧完成，但「只留 ERROR」要解析正文后才知道，
+	// 所以多取一些样本再在本地筛，避免最新几条是 INFO 时列表凑不满。
+	logBoardRecentSearchScanLimit = 800
+)
+
+// logBoardRecentWindow 决定这次搜索实际扫多久：取「页面范围」与「12 小时上限」的较小值。
+// 页面选 15 分钟就只扫 15 分钟，选 7 天也最多 12 小时。
+func logBoardRecentWindow(rangeSeconds int) time.Duration {
+	window := logBoardRecentSearchWindow
+	if rangeSeconds > 0 {
+		if requested := time.Duration(rangeSeconds) * time.Second; requested < window {
+			window = requested
+		}
+	}
+	if window < logBoardRecentSearchMinWindow {
+		window = logBoardRecentSearchMinWindow
+	}
+	return window
+}
+
+var logBoardKeywordField = `_msg`
+
+// SearchMonitorLogBoardRecent 按关键字返回当前时间范围内的错误日志，超过 12 小时按 12 小时算。
+// 多个关键字是「且」的关系：每个关键字都要出现在同一条日志里。
+func (s *Service) SearchMonitorLogBoardRecent(payload MonitorLogRecentPayload) (map[string]any, error) {
+	keywords := normalizeLogBoardKeywords(payload.Keywords)
+	if len(keywords) == 0 {
+		return nil, errors.New("请输入要搜索的关键字")
+	}
+	if payload.DatasourceID == 0 {
+		return nil, errors.New("请选择日志数据源")
+	}
+	if err := s.requireResource("datasource", payload.DatasourceID, "", "query"); err != nil {
+		return nil, err
+	}
+	ds, err := s.GetMonitorDatasource(payload.DatasourceID)
+	if err != nil {
+		return nil, err
+	}
+	if normalizeMonitorDatasourceType(ds.Type) != "victorialogs" {
+		return nil, errors.New("日志大屏当前仅支持 VictoriaLogs 数据源")
+	}
+
+	endAt := payload.EndAt
+	if endAt <= 0 {
+		endAt = time.Now().UnixMilli()
+	}
+	window := logBoardRecentWindow(payload.RangeSeconds)
+	startAt := endAt - window.Milliseconds()
+	logsQL := buildLogBoardKeywordQuery(payload.Query, keywords)
+	startedAt := time.Now()
+
+	_, matched := s.victoriaLogsHistogram(*ds, logsQL, startAt, endAt)
+	rows, err := s.victoriaLogsRawRows(*ds, logsQL, startAt, endAt, logBoardRecentSearchScanLimit)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]logBoardRecord, 0, len(rows))
+	for _, row := range rows {
+		records = append(records, parseLogBoardRecord(row))
+	}
+	recent, errorTotal := logBoardRecentEntries(records)
+	if matched == 0 && len(records) > 0 {
+		matched = int64(len(records))
+	}
+	return map[string]any{
+		"keywords":      keywords,
+		"query":         logsQL,
+		"startAt":       startAt,
+		"endAt":         endAt,
+		"windowSeconds": int(window.Seconds()),
+		// matched 是关键字命中的日志总数（可能含 INFO），recentTotal 是其中错误条数。
+		"matched":     matched,
+		"sampled":     len(records),
+		"recent":      recent,
+		"recentTotal": errorTotal,
+		"recentLimit": logBoardRecentLimit,
+		"tookMs":      time.Since(startedAt).Milliseconds(),
+	}, nil
+}
+
+// normalizeLogBoardKeywords 拆词、去重、截断，单个输入框里用空格分隔多个关键字。
+func normalizeLogBoardKeywords(input []string) []string {
+	out := make([]string, 0, len(input))
+	seen := make(map[string]struct{}, len(input))
+	for _, raw := range input {
+		for _, part := range strings.Fields(raw) {
+			keyword := strings.TrimSpace(strings.ReplaceAll(part, `"`, ""))
+			if keyword == "" {
+				continue
+			}
+			if utf8.RuneCountInString(keyword) > logBoardRecentKeywordMaxLen {
+				keyword = string([]rune(keyword)[:logBoardRecentKeywordMaxLen])
+			}
+			key := strings.ToLower(keyword)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, keyword)
+			if len(out) >= logBoardRecentSearchMaxKeyword {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// buildLogBoardKeywordQuery 把关键字拼成 LogsQL：基础过滤条件仍然生效，
+// 每个关键字都是一个独立的 AND 条件。
+func buildLogBoardKeywordQuery(base string, keywords []string) string {
+	parts := make([]string, 0, len(keywords)+1)
+	if trimmed := strings.TrimSpace(base); trimmed != "" && trimmed != "*" {
+		// 用户写的条件里可能有 OR，加括号避免和关键字的 AND 优先级打架。
+		parts = append(parts, "("+trimmed+")")
+	}
+	for _, keyword := range keywords {
+		parts = append(parts, fmt.Sprintf(`%s:~"%s"`, logBoardKeywordField, logBoardKeywordRegex(keyword)))
+	}
+	if len(parts) == 0 {
+		return "*"
+	}
+	return strings.Join(parts, " AND ")
+}
+
+// logBoardKeywordRegex 把用户输入变成「大小写不敏感的字面子串」正则。
+// 中文日志在 VictoriaLogs 里没有分词，实测 _msg:"请求礼包" 命中 0 条，
+// 只能用 _msg:~"..."；而正则元字符会放大命中面（[ConfirmPanelContext]
+// 会被当字符类，命中从 42 条变成全部），所以先 QuoteMeta，
+// 再按 LogsQL 字符串规则把反斜杠双写。
+func logBoardKeywordRegex(keyword string) string {
+	escaped := regexp.QuoteMeta(keyword)
+	escaped = strings.ReplaceAll(escaped, `\`, `\\`)
+	return "(?i)" + escaped
 }
 
 // victoriaLogsRawRows 直接取 VictoriaLogs 的原始记录，保留 _msg / _time 和全部
@@ -396,9 +559,12 @@ func parseLogBoardRecord(source map[string]any) logBoardRecord {
 			}
 		}
 	}
-	record.message = logBoardSpacePattern.ReplaceAllString(content, " ")
-	if len(record.message) > 600 {
-		record.message = record.message[:600] + "…"
+	// 详情弹窗要看到完整堆栈，所以正文不做折行压缩：只把行尾 \r 去掉、保留换行。
+	// 面板上的单行摘要统一走 firstLine(record.message)，不受这里影响。
+	record.message = strings.TrimSpace(strings.ReplaceAll(content, "\r\n", "\n"))
+	if utf8.RuneCountInString(record.message) > logBoardMessageMaxLen {
+		record.message = string([]rune(record.message)[:logBoardMessageMaxLen]) + "…"
+		record.messageTruncated = true
 	}
 	return record
 }

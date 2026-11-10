@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { FullScreen, Refresh, Search } from '@element-plus/icons-vue'
-import { queryPublicLogBoardData, queryPublicLogBoardMeta } from '../../api/logBoardShare'
+import { queryPublicLogBoardData, queryPublicLogBoardMeta, searchPublicLogBoardRecent } from '../../api/logBoardShare'
 import LogBoardPanels from './log-board/LogBoardPanels.vue'
 import { LOG_BOARD_TIME_RANGES, logBoardRangeLabel } from './log-board/logBoardShared'
 
@@ -19,6 +19,9 @@ const updatedAt = ref(0)
 const nowAt = ref(Date.now())
 const autoRefresh = ref(true)
 const form = reactive({ datasourceId: 0, query: '', rangeSeconds: 86400 })
+// 最近错误日志的关键字搜索：非空时面板用搜索结果替换默认列表。
+const recentSearch = ref(null)
+const searchingRecent = ref(false)
 let refreshTimer
 let clockTimer
 
@@ -85,6 +88,8 @@ async function analyze(options = {}) {
     return
   }
   loading.value = true
+  // 手动改条件后旧的关键字搜索结果就过期了，自动刷新不清。
+  if (!options.silent) recentSearch.value = null
   try {
     const payload = await queryPublicLogBoardData(token, {
       datasourceId: form.datasourceId,
@@ -113,8 +118,35 @@ async function analyze(options = {}) {
 
 function changeRange(seconds) {
   if (form.rangeSeconds === seconds) return
+  // 与内部大屏一致：切范围保留搜索关键字，按新窗口重跑。
+  const keywords = recentSearch.value?.keywords || []
   form.rangeSeconds = seconds
   analyze()
+  if (keywords.length) searchRecent(keywords)
+}
+
+// 公开页也能按关键字筛错误日志，窗口同样跟随页面时间范围，最多 12 小时。
+async function searchRecent(keywords) {
+  if (!meta.value || !form.datasourceId) return
+  searchingRecent.value = true
+  try {
+    recentSearch.value = await searchPublicLogBoardRecent(token, {
+      datasourceId: form.datasourceId,
+      query: form.query.trim() || '*',
+      keywords,
+      endAt: Date.now(),
+      rangeSeconds: form.rangeSeconds
+    })
+    errorMessage.value = ''
+  } catch (error) {
+    errorMessage.value = error?.message || '关键字搜索失败'
+  } finally {
+    searchingRecent.value = false
+  }
+}
+
+function clearRecentSearch() {
+  recentSearch.value = null
 }
 
 function resetQuery() {
@@ -128,7 +160,7 @@ function schedule() {
   window.clearInterval(refreshTimer)
   if (!autoRefresh.value || state.value !== 'ready') return
   refreshTimer = window.setInterval(() => {
-    if (!loading.value && state.value === 'ready') analyze()
+    if (!loading.value && state.value === 'ready') analyze({ silent: true })
   }, refreshSeconds.value * 1000)
 }
 
@@ -240,6 +272,11 @@ watch([state, refreshSeconds], () => schedule())
           :interactive="false"
           :allow-detail="Boolean(meta?.allowDetail)"
           :empty-hint="emptyHint"
+          searchable
+          :searching="searchingRecent"
+          :search-result="recentSearch"
+          @search="searchRecent"
+          @clear-search="clearRecentSearch"
         />
       </section>
 

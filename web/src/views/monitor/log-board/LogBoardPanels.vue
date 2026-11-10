@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { Search } from '@element-plus/icons-vue'
 import {
   LOG_BOARD_LEVEL_TONES,
   formatLogBoardNumber,
@@ -12,6 +13,7 @@ import {
   logBoardLevelClass,
   logBoardLevelCount,
   logBoardLevels,
+  logBoardLogTime,
   logBoardShortMessage
 } from './logBoardShared'
 
@@ -23,14 +25,20 @@ const props = defineProps({
   rangeLabel: { type: String, default: '' },
   interactive: { type: Boolean, default: true },
   allowDetail: { type: Boolean, default: true },
-  emptyHint: { type: String, default: '当前过滤条件下没有日志' }
+  emptyHint: { type: String, default: '当前过滤条件下没有日志' },
+  // 关键字搜索：searchable 为 false 时面板保持纯展示，
+  // searchResult 有值时用搜索结果替换默认的最近 50 条。
+  searchable: { type: Boolean, default: false },
+  searching: { type: Boolean, default: false },
+  searchResult: { type: Object, default: null }
 })
 
-const emit = defineEmits(['drill'])
+const emit = defineEmits(['drill', 'search', 'clear-search'])
 
 const hoverIndex = ref(-1)
 const detail = ref(null)
 const detailVisible = ref(false)
+const copied = ref(false)
 
 const buckets = computed(() => props.data?.buckets || [])
 const maxTotal = computed(() => Math.max(1, ...buckets.value.map(item => item.total || 0)))
@@ -40,12 +48,42 @@ const warnCount = computed(() => logBoardLevelCount(props.data, ['WARN']))
 const facets = computed(() => props.data?.facets || [])
 const errorTypes = computed(() => props.data?.errorTypes || [])
 const patterns = computed(() => props.data?.patterns || [])
-const recent = computed(() => props.data?.recent || [])
-const recentLimit = computed(() => Number(props.data?.recentLimit || 50))
-const recentTotal = computed(() => Number(props.data?.recentTotal || recent.value.length))
+const keywordInput = ref('')
+
+const searchActive = computed(() => Boolean(props.searchResult))
+const searchKeywords = computed(() => props.searchResult?.keywords || [])
+const recent = computed(() => {
+  if (searchActive.value) return props.searchResult?.recent || []
+  return props.data?.recent || []
+})
+const recentLimit = computed(() => {
+  const source = searchActive.value ? props.searchResult : props.data
+  return Number(source?.recentLimit || 50)
+})
+const recentTotal = computed(() => {
+  const source = searchActive.value ? props.searchResult : props.data
+  return Number(source?.recentTotal || recent.value.length)
+})
+// 搜索窗口由服务端下发（windowSeconds），前端不再写死小时数。
+const searchWindowLabel = computed(() => {
+  const seconds = Number(props.searchResult?.windowSeconds || 0)
+  if (seconds <= 0) return '最近 12 小时'
+  if (seconds % 3600 === 0) return `最近 ${seconds / 3600} 小时`
+  return `最近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
+})
 // 最近日志只展示 ERROR/FATAL：值班排查时 INFO 会稀释信号，
 // 条数上限由后端 recentLimit 决定（默认 50）。
 const recentHint = computed(() => {
+  if (searchActive.value) {
+    const matched = Number(props.searchResult?.matched || 0)
+    const keywordText = searchKeywords.value.join(' + ')
+    if (!recent.value.length) {
+      return matched > 0
+        ? `关键字「${keywordText}」匹配 ${formatLogBoardNumber(matched)} 条，但其中没有 ERROR 日志`
+        : `${searchWindowLabel.value}内没有匹配「${keywordText}」的日志`
+    }
+    return `搜索「${keywordText}」· ${searchWindowLabel.value} · 匹配 ${formatLogBoardNumber(matched)} 条，其中错误 ${formatLogBoardNumber(recentTotal.value)} 条`
+  }
   if (!recent.value.length) return '所选时间范围内没有 ERROR 日志'
   const base = `最新 ${recent.value.length} 条 ERROR`
   if (recentTotal.value > recent.value.length) {
@@ -53,6 +91,22 @@ const recentHint = computed(() => {
   }
   return base
 })
+
+// 搜索框里用空格分隔多个关键字，服务端按「都命中」处理。
+function submitSearch() {
+  const keywords = keywordInput.value.split(/\s+/).map(item => item.trim()).filter(Boolean)
+  if (!keywords.length) {
+    emit('clear-search')
+    return
+  }
+  emit('search', keywords)
+}
+
+function clearSearch() {
+  keywordInput.value = ''
+  emit('clear-search')
+}
+
 const donutGradient = computed(() => logBoardDonutGradient(levels.value))
 const stepLabel = computed(() => formatLogBoardStep(props.data?.step))
 const truncated = computed(() => Boolean(props.data?.truncated))
@@ -71,7 +125,31 @@ function drill(key, value) {
 function openDetail(item) {
   if (!props.allowDetail) return
   detail.value = item
+  copied.value = false
   detailVisible.value = true
+}
+
+// 详情正文完整保留（后端单条上限 20K 字符），这里只负责让用户能一次拿走全文。
+const detailText = computed(() => String(detail.value?.message || detail.value?.summary || ''))
+const detailLength = computed(() => detailText.value.length)
+
+async function copyDetail() {
+  const text = detailText.value
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // 非安全上下文（http 内网地址）拿不到 clipboard API，退回到隐藏 textarea。
+    const holder = document.createElement('textarea')
+    holder.value = text
+    holder.style.position = 'fixed'
+    holder.style.opacity = '0'
+    document.body.appendChild(holder)
+    holder.select()
+    document.execCommand('copy')
+    document.body.removeChild(holder)
+  }
+  copied.value = true
 }
 </script>
 
@@ -246,21 +324,36 @@ function openDetail(item) {
       </section>
 
       <section class="board-card recent-card">
-        <header class="card-head">
-          <div>
+        <header class="card-head recent-head">
+          <div class="recent-head-text">
             <h3>最近错误日志</h3>
             <p>{{ recentHint }} {{ allowDetail ? '· 点击查看完整正文与字段' : '' }}</p>
           </div>
-          <span class="card-meta">{{ data.datasource?.name }}</span>
+          <div class="recent-head-tools">
+            <div v-if="searchable" class="recent-search">
+              <el-input
+                v-model="keywordInput"
+                size="small"
+                clearable
+                placeholder="搜索关键字，空格分隔多个（需同时匹配）"
+                @keyup.enter="submitSearch"
+              >
+                <template #prefix><el-icon><Search /></el-icon></template>
+              </el-input>
+              <el-button size="small" :loading="searching" @click="submitSearch">搜索</el-button>
+              <el-button v-if="searchActive" size="small" text @click="clearSearch">清除</el-button>
+            </div>
+            <span class="card-meta">{{ data.datasource?.name }}</span>
+          </div>
         </header>
         <div class="log-lines">
           <button v-for="(item, index) in recent" :key="index" type="button" :class="['log-line', { 'is-static': !allowDetail }]" @click="openDetail(item)">
-            <span class="log-time">{{ String(item.time || '').slice(11) }}</span>
+            <span class="log-time">{{ logBoardLogTime(item.time) }}</span>
             <span :class="['log-level', logBoardLevelClass(item.level)]">{{ item.level || '-' }}</span>
             <span class="log-ns" :title="item.pod">{{ item.namespace || item.container || '-' }}</span>
             <code class="log-msg">{{ logBoardShortMessage(item) }}</code>
           </button>
-          <p v-if="!recent.length" class="log-empty">{{ loading ? '正在加载错误日志…' : '所选时间范围内没有 ERROR 日志' }}</p>
+          <p v-if="!recent.length" class="log-empty">{{ searching || loading ? '正在检索错误日志…' : (searchActive ? '换个关键字试试' : '所选时间范围内没有 ERROR 日志') }}</p>
         </div>
       </section>
     </template>
@@ -270,13 +363,22 @@ function openDetail(item) {
     </section>
     <section v-if="loading && !data" class="board-empty" v-loading="true" />
 
-    <el-dialog v-model="detailVisible" title="日志详情" width="720px" class="log-detail-dialog" append-to-body>
+    <el-dialog
+      v-model="detailVisible"
+      title="日志详情"
+      width="920px"
+      top="5vh"
+      class="log-detail-dialog"
+      append-to-body
+      destroy-on-close
+    >
       <template v-if="detail">
         <div class="detail-meta">
           <span>{{ detail.time }}</span>
           <span :class="['log-level', logBoardLevelClass(detail.level)]">{{ detail.level }}</span>
-          <span>{{ detail.namespace }}</span>
-          <span>{{ detail.pod }}</span>
+          <span v-if="detail.namespace">{{ detail.namespace }}</span>
+          <span v-if="detail.pod">{{ detail.pod }}</span>
+          <span v-if="detail.container">{{ detail.container }}</span>
         </div>
         <div class="detail-tags">
           <span v-if="detail.exceptionType">异常类型：{{ detail.exceptionType }}</span>
@@ -284,7 +386,14 @@ function openDetail(item) {
           <span v-if="detail.appVersion">版本：{{ detail.appVersion }}</span>
           <span v-if="detail.deviceModel">设备：{{ detail.deviceModel }}</span>
         </div>
-        <pre class="detail-message">{{ detail.message || detail.summary }}</pre>
+        <pre class="detail-message">{{ detailText }}</pre>
+        <div class="detail-foot">
+          <span class="detail-size">
+            {{ formatLogBoardNumber(detailLength) }} 字符
+            <template v-if="detail.messageTruncated"> · 单条超过 20K，已截断</template>
+          </span>
+          <el-button size="small" type="primary" plain @click="copyDetail">{{ copied ? '已复制' : '复制全文' }}</el-button>
+        </div>
       </template>
     </el-dialog>
   </div>
@@ -373,6 +482,34 @@ function openDetail(item) {
 .card-meta {
   flex: 0 0 auto;
   color: #8b9ab0;
+  font-size: 12px;
+}
+/* 最近错误日志：左侧标题 + 右侧搜索框，窄屏时整体换行而不是压扁输入框。 */
+.recent-head {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.recent-head-text {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+.recent-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.recent-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 340px;
+}
+.recent-search :deep(.el-input) {
+  flex: 1 1 auto;
+}
+.recent-search :deep(.el-input__inner) {
   font-size: 12px;
 }
 .trend-body {
@@ -650,7 +787,7 @@ function openDetail(item) {
 }
 .log-line {
   display: grid;
-  grid-template-columns: 78px 58px 118px minmax(0, 1fr);
+  grid-template-columns: 116px 58px 118px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -740,16 +877,31 @@ function openDetail(item) {
   font-size: 12px;
 }
 .detail-message {
-  max-height: 420px;
+  /* 完整正文（含 stackTrace）优先铺满可视高度，只有超过一屏才在框内滚动，
+     不再靠外面那层 dialog 高度硬切。 */
+  min-height: 260px;
+  max-height: calc(100vh - 330px);
   overflow: auto;
   margin: 0;
-  padding: 12px;
+  padding: 14px 16px;
   border-radius: 8px;
   background: #101b2d;
   color: #d6e2f3;
-  font: 12px/1.65 Consolas, Monaco, monospace;
+  font: 12.5px/1.7 Consolas, Monaco, monospace;
   white-space: pre-wrap;
   word-break: break-word;
+  tab-size: 4;
+}
+.detail-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.detail-size {
+  color: #93a2b7;
+  font-size: 12px;
 }
 @media (max-width: 1400px) {
   .kpi-row {
@@ -764,5 +916,18 @@ function openDetail(item) {
   .board-row.is-insight {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+</style>
+
+<style>
+/* 详情弹窗走 append-to-body，scoped 选择器够不到，只能在这里约束外层尺寸，
+   让「完整正文」优先占用视口高度而不是被 dialog 的默认 padding 挤掉。 */
+.log-detail-dialog .el-dialog {
+  max-width: 94vw;
+}
+.log-detail-dialog .el-dialog__body {
+  max-height: 78vh;
+  overflow: auto;
+  padding-top: 4px;
 }
 </style>

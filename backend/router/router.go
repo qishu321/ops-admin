@@ -49,6 +49,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		// /data 用分享里保存的固定 LogsQL 执行聚合，客户端无法改写查询条件。
 		api.GET("/public/log-board/:token", ctl.Scoped((*controller.Controller).GetPublicLogBoardMeta))
 		api.POST("/public/log-board/:token/data", ctl.Scoped((*controller.Controller).GetPublicLogBoardData))
+		api.POST("/public/log-board/:token/recent", ctl.Scoped((*controller.Controller).SearchPublicLogBoardRecent))
 		api.GET("/asset/terminal/ws", middleware.WebSocketAuth(db), middleware.GlobalReadOnly(db), middleware.ResourceAuthorization(db), ctl.Scoped((*controller.Controller).AssetTerminalWS))
 		api.GET("/k8s/pod/terminal/ws", middleware.WebSocketAuth(db), middleware.GlobalReadOnly(db), middleware.ResourceAuthorization(db), ctl.Scoped((*controller.Controller).K8sPodTerminalWS))
 	}
@@ -433,6 +434,7 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.POST("/monitor/query/range", ctl.Scoped((*controller.Controller).QueryMonitorPrometheusRange))
 		authGroup.POST("/monitor/logs/query", ctl.Scoped((*controller.Controller).QueryMonitorLogs))
 		authGroup.POST("/monitor/logboard/analysis", ctl.Scoped((*controller.Controller).AnalyzeMonitorLogBoard))
+		authGroup.POST("/monitor/logboard/recent", ctl.Scoped((*controller.Controller).SearchMonitorLogBoardRecent))
 		authGroup.GET("/monitor/log-board/shares", ctl.Scoped((*controller.Controller).GetLogBoardShareList))
 		authGroup.POST("/monitor/log-board/shares/save", ctl.Scoped((*controller.Controller).SaveLogBoardShare))
 		authGroup.DELETE("/monitor/log-board/shares/delete", ctl.Scoped((*controller.Controller).DeleteLogBoardShare))

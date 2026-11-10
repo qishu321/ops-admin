@@ -94,6 +94,39 @@ test('share dialog exposes expiry, refresh and detail switches without a passwor
   }
 })
 
+test('recent panel search splits keywords and labels the window from the server', () => {
+  const panels = source('../src/views/monitor/log-board/LogBoardPanels.vue')
+  assert.match(panels, /searchable/)
+  assert.match(panels, /搜索关键字，空格分隔多个（需同时匹配）/)
+  assert.match(panels, /emit\('search', keywords\)/)
+  // 窗口小时数由后端 windowSeconds 决定，前端不再写死，改窗口不用改前端。
+  assert.match(panels, /searchWindowLabel/)
+  assert.match(panels, /searchResult\?\.windowSeconds/)
+  assert.doesNotMatch(panels, /最近 24 小时/)
+  // 窗口跟随页面时间范围：搜索请求要带上当前 rangeSeconds。
+  assert.match(source('../src/views/monitor/MonitorLogBoard.vue'), /rangeSeconds: rangeSeconds\.value/)
+  assert.match(source('../src/views/monitor/PublicLogBoard.vue'), /rangeSeconds: form\.rangeSeconds/)
+  assert.match(source('../src/api/logBoardShare.js'), /rangeSeconds: Number\(params\.rangeSeconds/)
+  assert.match(panels, /searchResult/)
+  assert.match(panels, /logBoardLogTime/)
+})
+
+test('both boards wire the keyword search to their own api client', () => {
+  const inner = source('../src/views/monitor/MonitorLogBoard.vue')
+  assert.match(inner, /searchMonitorLogBoardRecent/)
+  assert.match(inner, /@search="searchRecent"/)
+  assert.match(inner, /analyze\(\{ silent: true \}\)/)
+
+  const pub = source('../src/views/monitor/PublicLogBoard.vue')
+  assert.match(pub, /searchPublicLogBoardRecent/)
+  assert.match(pub, /@search="searchRecent"/)
+
+  const shareApi = source('../src/api/logBoardShare.js')
+  assert.match(shareApi, /keywords: Array\.isArray\(params\.keywords\)/)
+  const monitorApi = source('../src/api/monitor.js')
+  assert.match(monitorApi, /\/api\/v1\/monitor\/logboard\/recent/)
+})
+
 test('recent panel renders error logs only and explains the 50-row cap', () => {
   const panels = source('../src/views/monitor/log-board/LogBoardPanels.vue')
   assert.match(panels, /最近错误日志/)
@@ -103,4 +136,16 @@ test('recent panel renders error logs only and explains the 50-row cap', () => {
   assert.match(panels, /所选时间范围内没有 ERROR 日志/)
   // 条数上限由服务端下发，前端不要写死 20。
   assert.doesNotMatch(panels, /最新 \{\{ recent\.length \}\} 条/)
+})
+
+test('detail dialog renders the whole message instead of the list summary', () => {
+  const panels = source('../src/views/monitor/log-board/LogBoardPanels.vue')
+  // 详情正文必须来自 message 全文；退回 summary 会把列表用的单行摘要当正文。
+  assert.match(panels, /detail\.value\?\.message \|\| detail\.value\?\.summary/)
+  assert.doesNotMatch(panels, /\{\{ detail\.message \|\| detail\.summary \}\}/)
+  // 全文视图要能滚动、能复制，并说明字数与截断。
+  assert.match(panels, /max-height: calc\(100vh - 330px\)/)
+  assert.match(panels, /复制全文/)
+  assert.match(panels, /messageTruncated/)
+  assert.match(panels, /width="920px"/)
 })

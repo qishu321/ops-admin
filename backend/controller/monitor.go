@@ -317,6 +317,22 @@ func (ctl *Controller) AnalyzeMonitorLogBoard(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+// SearchMonitorLogBoardRecent 在「最近错误日志」面板里按关键字过滤，
+// 服务端固定只查最近 24 小时。
+func (ctl *Controller) SearchMonitorLogBoardRecent(c *gin.Context) {
+	var payload service.MonitorLogRecentPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid log board recent payload")
+		return
+	}
+	data, err := ctl.service.SearchMonitorLogBoardRecent(payload)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetMonitorQueryHistoryList(c *gin.Context) {
 	pageNum, _ := strconv.Atoi(c.DefaultQuery("pageNum", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))

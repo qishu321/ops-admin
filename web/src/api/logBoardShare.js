@@ -39,6 +39,22 @@ export async function queryPublicLogBoardMeta(token) {
   }
 }
 
+// 公开页的「最近错误日志」关键字搜索：窗口跟随页面时间范围，最多 12 小时。
+export async function searchPublicLogBoardRecent(token, params = {}) {
+  const payload = {
+    datasourceId: Number(params.datasourceId || 0),
+    query: String(params.query || ''),
+    keywords: Array.isArray(params.keywords) ? params.keywords : [],
+    endAt: Number(params.endAt || 0),
+    rangeSeconds: Number(params.rangeSeconds || 0)
+  }
+  try {
+    return unwrapPublic(await publicHttp.post(`/api/v1/public/log-board/${encodeURIComponent(token)}/recent`, payload))
+  } catch (error) {
+    throw normalizePublicError(error)
+  }
+}
+
 // 公开页可以自己切换数据源、改 LogsQL、换时间范围，所以参数由页面传入。
 export async function queryPublicLogBoardData(token, params = {}) {
   const payload = {

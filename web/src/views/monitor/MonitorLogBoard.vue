@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Refresh, Search, Share } from '@element-plus/icons-vue'
-import { analyzeMonitorLogBoard, queryMonitorDatasourceList } from '../../api/monitor'
+import { analyzeMonitorLogBoard, queryMonitorDatasourceList, searchMonitorLogBoardRecent } from '../../api/monitor'
 import LogBoardPanels from './log-board/LogBoardPanels.vue'
 import LogBoardShareDialog from './log-board/LogBoardShareDialog.vue'
 import { LOG_BOARD_DEFAULT_QUERY, LOG_BOARD_TIME_RANGES, logBoardRangeLabel } from './log-board/logBoardShared'
@@ -18,6 +18,9 @@ const errorMessage = ref('')
 const data = ref(null)
 const updatedAt = ref(0)
 const shareVisible = ref(false)
+// 「最近错误日志」的关键字搜索结果。非空时面板用搜索结果替换默认列表。
+const recentSearch = ref(null)
+const searchingRecent = ref(false)
 let refreshTimer
 
 const rangeLabel = computed(() => logBoardRangeLabel(rangeSeconds.value))
@@ -48,11 +51,14 @@ async function loadDatasources() {
   }
 }
 
-async function analyze() {
+// 手动分析（换数据源 / 改 LogsQL / 换时间）会重置关键字搜索，
+// 自动刷新沿用同一组条件，不清掉用户的搜索结果。
+async function analyze(options = {}) {
   if (!datasourceId.value) {
     errorMessage.value = '暂无 VictoriaLogs 数据源，请先在数据源管理中接入'
     return
   }
+  if (!options.silent) recentSearch.value = null
   loading.value = true
   errorMessage.value = ''
   try {
@@ -77,8 +83,11 @@ async function analyze() {
 
 function changeRange(seconds) {
   if (rangeSeconds.value === seconds) return
+  // 搜索窗口跟随时间范围，切范围时保留关键字并按新窗口重跑，而不是把搜索结果清掉。
+  const keywords = recentSearch.value?.keywords || []
   rangeSeconds.value = seconds
   analyze()
+  if (keywords.length) searchRecent(keywords)
 }
 
 // 面板里的维度（异常类型 / 平台 / 版本…）是从日志正文里解析出来的，不是
@@ -96,6 +105,34 @@ function resetFilters() {
   analyze()
 }
 
+// 关键字搜索跟随顶部时间范围：选 15 分钟就扫 15 分钟；只有选 24 小时 / 7 天时，
+  // 服务端才把窗口收口到 12 小时（交互式搜索要低延迟，扫全周会拖慢 VictoriaLogs）。
+async function searchRecent(keywords) {
+  if (!datasourceId.value) {
+    errorMessage.value = '暂无 VictoriaLogs 数据源，请先在数据源管理中接入'
+    return
+  }
+  searchingRecent.value = true
+  errorMessage.value = ''
+  try {
+    recentSearch.value = await searchMonitorLogBoardRecent({
+      datasourceId: datasourceId.value,
+      query: query.value.trim() || '*',
+      keywords,
+      endAt: Date.now(),
+      rangeSeconds: rangeSeconds.value
+    })
+  } catch (error) {
+    errorMessage.value = error?.message || '关键字搜索失败'
+  } finally {
+    searchingRecent.value = false
+  }
+}
+
+function clearRecentSearch() {
+  recentSearch.value = null
+}
+
 function toggleAutoRefresh(value) {
   autoRefresh.value = value
   schedule()
@@ -105,7 +142,7 @@ function schedule() {
   window.clearInterval(refreshTimer)
   if (!autoRefresh.value) return
   refreshTimer = window.setInterval(() => {
-    if (!loading.value && !shareVisible.value) analyze()
+    if (!loading.value && !shareVisible.value) analyze({ silent: true })
   }, REFRESH_INTERVAL)
 }
 
@@ -130,7 +167,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer))
   <div class="log-board">
     <section class="board-toolbar">
       <div class="toolbar-main">
-        <el-select v-model="datasourceId" class="ds-select" placeholder="VictoriaLogs 数据源" @change="analyze">
+        <el-select v-model="datasourceId" class="ds-select" placeholder="VictoriaLogs 数据源" @change="() => analyze()">
           <el-option v-for="item in datasources" :key="item.id" :label="item.name" :value="item.id" />
         </el-select>
         <el-input v-model="query" class="query-input" clearable placeholder='LogsQL 过滤条件，例如 kubernetes.container_name:"notice"' @keyup.enter="analyze">
@@ -159,7 +196,12 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer))
       :loading="loading"
       :range-label="rangeLabel"
       :empty-hint="emptyHint"
+      searchable
+      :searching="searchingRecent"
+      :search-result="recentSearch"
       @drill="handleDrill"
+      @search="searchRecent"
+      @clear-search="clearRecentSearch"
     />
 
     <LogBoardShareDialog v-model="shareVisible" :config="shareConfig" />

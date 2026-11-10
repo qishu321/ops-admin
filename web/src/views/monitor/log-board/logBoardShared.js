@@ -77,6 +77,12 @@ export function logBoardShortMessage(item) {
   return message.length > 200 ? `${message.slice(0, 200)}…` : message
 }
 
+// 搜索窗口是 12 小时，凌晨搜到前一天下午很常见；只显示时刻会让人误以为顺序乱了。
+export function logBoardLogTime(value) {
+  const text = String(value || '')
+  return text.length >= 19 ? text.slice(5, 19) : text
+}
+
 export function logBoardLevels(data) {
   const list = data?.levels || []
   const total = list.reduce((sum, item) => sum + (item.count || 0), 0) || 1

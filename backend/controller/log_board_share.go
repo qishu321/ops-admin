@@ -108,6 +108,28 @@ func (ctl *Controller) GetPublicLogBoardData(c *gin.Context) {
 	httpx.Success(c, data)
 }
 
+// SearchPublicLogBoardRecent 是免登录的「最近错误日志」关键字搜索，
+// 供分享出去的公开大屏使用，窗口同样跟随页面时间范围、12 小时封顶。
+func (ctl *Controller) SearchPublicLogBoardRecent(c *gin.Context) {
+	var payload service.MonitorLogRecentPayload
+	if err := c.ShouldBindJSON(&payload); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Failed(c, 400, "参数格式无效")
+		return
+	}
+	data, err := ctl.service.SearchPublicLogBoardRecent(c.Param("token"), payload, c.ClientIP())
+	if err != nil {
+		// 链接状态（404/410/429）按原语义返回；其余是「关键字为空」这类参数问题。
+		if errors.Is(err, service.ErrLogBoardShareNotFound) || errors.Is(err, service.ErrLogBoardShareDisabled) ||
+			errors.Is(err, service.ErrLogBoardShareExpired) || errors.Is(err, service.ErrLogBoardShareTooBusy) {
+			writeLogBoardShareError(c, err)
+			return
+		}
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func writeLogBoardShareError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrLogBoardShareNotFound):

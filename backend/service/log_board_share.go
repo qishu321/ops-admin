@@ -227,6 +227,37 @@ func (s *Service) DeleteLogBoardShare(id uint) error {
 	return nil
 }
 
+// SearchPublicLogBoardRecent 让免登录的查看者也能按关键字筛错误日志。
+// 关键字的拼装和窗口计算（跟随范围、12 小时封顶）都由 SearchMonitorLogBoardRecent 统一负责，
+// 这里只补上分享的默认数据源、查询条件与详情开关。
+func (s *Service) SearchPublicLogBoardRecent(token string, payload MonitorLogRecentPayload, clientIP string) (map[string]any, error) {
+	share, err := s.findPublicLogBoardShare(token)
+	if err != nil {
+		return nil, err
+	}
+	if !logBoardShareRateLimiter.allow(logBoardShareRateKey(share.Token, clientIP)) {
+		return nil, ErrLogBoardShareTooBusy
+	}
+	if payload.DatasourceID == 0 {
+		payload.DatasourceID = share.DatasourceID
+	}
+	if strings.TrimSpace(payload.Query) == "" {
+		payload.Query = share.Query
+	}
+	if utf8.RuneCountInString(payload.Query) > logBoardShareMaxQueryLen {
+		return nil, errors.New("过滤条件过长，请精简后再查询")
+	}
+	result, err := s.SearchMonitorLogBoardRecent(payload)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.db.Model(&model.LogBoardShare{}).Where("id = ?", share.ID).Update("last_viewed_at", time.Now()).Error
+	if !share.AllowDetail {
+		stripLogBoardShareDetail(result)
+	}
+	return result, nil
+}
+
 // GetPublicLogBoardMeta 只返回展示与交互需要的元信息，不触发日志查询。
 // 页面打开时计数一次，自动刷新不会重复累加。
 func (s *Service) GetPublicLogBoardMeta(token string) (map[string]any, error) {

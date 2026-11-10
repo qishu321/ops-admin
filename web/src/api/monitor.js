@@ -14,6 +14,8 @@ export const queryMonitorPrometheus = (data) => http.post('/api/v1/monitor/query
 export const queryMonitorPrometheusRange = (data, config) => http.post('/api/v1/monitor/query/range', data, config)
 export const queryMonitorLogs = (data, config = {}) => http.post('/api/v1/monitor/logs/query', data, config)
 export const analyzeMonitorLogBoard = (data) => http.post('/api/v1/monitor/logboard/analysis', data)
+// 「最近错误日志」的关键字搜索：服务端固定只查最近 24 小时，关键字之间是 AND。
+export const searchMonitorLogBoardRecent = (data) => http.post('/api/v1/monitor/logboard/recent', data)
 export const queryMonitorElasticsearchIndices = (params) => http.get('/api/v1/monitor/logs/indices', { params })
 export const queryMonitorVictoriaLogsStreams = (params) => http.get('/api/v1/monitor/logs/streams', { params })
 export const queryMonitorLogFields = (params, config = {}) => http.get('/api/v1/monitor/logs/fields', { ...config, params })

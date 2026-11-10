@@ -79,6 +79,8 @@ import MonitorAlertEvent from '../views/monitor/MonitorAlertEvent.vue'
 import MonitorSilenceRule from '../views/monitor/MonitorSilenceRule.vue'
 import MonitorAggregationRule from '../views/monitor/MonitorAggregationRule.vue'
 import MonitorDashboard from '../views/monitor/dashboard/MonitorDashboard.vue'
+import MonitorLogBoard from '../views/monitor/MonitorLogBoard.vue'
+import PublicLogBoard from '../views/monitor/PublicLogBoard.vue'
 import ModuleWorkspace from '../views/modules/ModuleWorkspace.vue'
 import IntegrationNavigation from '../views/integration/IntegrationNavigation.vue'
 import PublicNavigation from '../views/integration/PublicNavigation.vue'
@@ -117,6 +119,7 @@ const moduleCards = {
 const routes = [
   { path: '/login', component: Login, meta: { title: '登录' } },
   { path: '/public/navigation/:token', component: PublicNavigation, meta: { title: '公开导航', public: true } },
+  { path: '/public/log-board/:token', component: PublicLogBoard, meta: { title: '日志大屏', public: true } },
   {
     path: '/',
     component: MainLayout,
@@ -584,6 +587,11 @@ const routes = [
         path: '/monitor/inspections',
         component: MonitorDashboard,
         meta: { title: '巡检大屏', app: 'monitor', summary: '以列表方式巡检监控面板并导出报告。' }
+      },
+      {
+        path: '/monitor/log-board',
+        component: MonitorLogBoard,
+        meta: { title: '日志大屏', app: 'monitor', summary: '基于 VictoriaLogs 的日志聚合大屏。' }
       },
       { path: '/monitor/alerts', redirect: '/monitor/alert-events' },
       { path: '/monitor/metrics', redirect: '/monitor/query' }

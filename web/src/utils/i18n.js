@@ -167,6 +167,7 @@ const messages = {
     monitorAggregations: '聚合收敛',
     monitorDashboards: '监控大屏',
     monitorInspections: '巡检大屏',
+    monitorLogBoard: '日志大屏',
     moduleReady: '模块入口已准备完成，可以继续接入真实业务能力。',
     k8sManagement: 'K8s 管理',
     k8sClusters: '集群管理',
@@ -922,6 +923,7 @@ Object.assign(messages['zh-CN'], {
   monitorAggregations: '聚合收敛',
   monitorDashboards: '监控大屏',
   monitorInspections: '巡检大屏',
+  monitorLogBoard: '日志大屏',
   monitorAlerts: '告警事件',
   monitorMetrics: '即时查询'
 })
@@ -938,6 +940,7 @@ Object.assign(messages['en-US'], {
   monitorAggregations: 'Aggregations',
   monitorDashboards: 'Monitoring Screens',
   monitorInspections: 'Inspection Screens',
+  monitorLogBoard: 'Log Screens',
   monitorAlerts: 'Alert Events',
   monitorMetrics: 'Instant Query'
 })
@@ -1067,6 +1070,7 @@ const routeTitleMap = {
   '/monitor/aggregations': 'monitorAggregations',
   '/monitor/dashboards': 'monitorDashboards',
   '/monitor/inspections': 'monitorInspections',
+  '/monitor/log-board': 'monitorLogBoard',
   '/monitor/alerts': 'monitorAlerts',
   '/monitor/metrics': 'monitorMetrics'
 }

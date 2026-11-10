@@ -109,6 +109,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.MonitorDashboardPanel{},
 		&model.MonitorInspectionRun{},
 		&model.MonitorInspectionResult{},
+		&model.LogBoardShare{},
 		&model.IntegrationNavigationGroup{},
 		&model.IntegrationNavigation{},
 		&model.IntegrationAIModel{},

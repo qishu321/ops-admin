@@ -303,6 +303,20 @@ func (ctl *Controller) DeleteMonitorLogShortcut(c *gin.Context) {
 	httpx.Success(c, true)
 }
 
+func (ctl *Controller) AnalyzeMonitorLogBoard(c *gin.Context) {
+	var payload service.MonitorLogBoardPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Failed(c, 400, "invalid log board payload")
+		return
+	}
+	data, err := ctl.service.AnalyzeMonitorLogBoard(payload)
+	if err != nil {
+		httpx.Failed(c, 400, err.Error())
+		return
+	}
+	httpx.Success(c, data)
+}
+
 func (ctl *Controller) GetMonitorQueryHistoryList(c *gin.Context) {
 	pageNum, _ := strconv.Atoi(c.DefaultQuery("pageNum", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))

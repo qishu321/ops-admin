@@ -497,6 +497,13 @@ export const appDefinitions = [
         path: '/monitor/inspections',
         icon: 'Tickets',
         children: []
+      },
+      {
+        title: '日志大屏',
+        titleKey: 'monitorLogBoard',
+        path: '/monitor/log-board',
+        icon: 'Document',
+        children: []
       }
     ]
   },

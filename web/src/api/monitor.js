@@ -13,6 +13,7 @@ export const testMonitorDatasource = (data) => http.post('/api/v1/monitor/dataso
 export const queryMonitorPrometheus = (data) => http.post('/api/v1/monitor/query/instant', data)
 export const queryMonitorPrometheusRange = (data, config) => http.post('/api/v1/monitor/query/range', data, config)
 export const queryMonitorLogs = (data, config = {}) => http.post('/api/v1/monitor/logs/query', data, config)
+export const analyzeMonitorLogBoard = (data) => http.post('/api/v1/monitor/logboard/analysis', data)
 export const queryMonitorElasticsearchIndices = (params) => http.get('/api/v1/monitor/logs/indices', { params })
 export const queryMonitorVictoriaLogsStreams = (params) => http.get('/api/v1/monitor/logs/streams', { params })
 export const queryMonitorLogFields = (params, config = {}) => http.get('/api/v1/monitor/logs/fields', { ...config, params })

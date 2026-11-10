@@ -45,6 +45,10 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		api.POST("/auth/logout", ctl.Scoped((*controller.Controller).Logout))
 		api.GET("/systemConfig/public", ctl.Scoped((*controller.Controller).GetSystemConfig))
 		api.GET("/integration/public/:token", ctl.Scoped((*controller.Controller).GetPublicIntegrationNavigation))
+		// 日志大屏的免登录分享：/public/log-board/:token 在页面加载时取标题与访问策略，
+		// /data 用分享里保存的固定 LogsQL 执行聚合，客户端无法改写查询条件。
+		api.GET("/public/log-board/:token", ctl.Scoped((*controller.Controller).GetPublicLogBoardMeta))
+		api.POST("/public/log-board/:token/data", ctl.Scoped((*controller.Controller).GetPublicLogBoardData))
 		api.GET("/asset/terminal/ws", middleware.WebSocketAuth(db), middleware.GlobalReadOnly(db), middleware.ResourceAuthorization(db), ctl.Scoped((*controller.Controller).AssetTerminalWS))
 		api.GET("/k8s/pod/terminal/ws", middleware.WebSocketAuth(db), middleware.GlobalReadOnly(db), middleware.ResourceAuthorization(db), ctl.Scoped((*controller.Controller).K8sPodTerminalWS))
 	}
@@ -428,6 +432,12 @@ func New(cfg *config.Config, db *gorm.DB) (*gin.Engine, *service.Service) {
 		authGroup.POST("/monitor/query/instant", ctl.Scoped((*controller.Controller).QueryMonitorPrometheus))
 		authGroup.POST("/monitor/query/range", ctl.Scoped((*controller.Controller).QueryMonitorPrometheusRange))
 		authGroup.POST("/monitor/logs/query", ctl.Scoped((*controller.Controller).QueryMonitorLogs))
+		authGroup.POST("/monitor/logboard/analysis", ctl.Scoped((*controller.Controller).AnalyzeMonitorLogBoard))
+		authGroup.GET("/monitor/log-board/shares", ctl.Scoped((*controller.Controller).GetLogBoardShareList))
+		authGroup.POST("/monitor/log-board/shares/save", ctl.Scoped((*controller.Controller).SaveLogBoardShare))
+		authGroup.DELETE("/monitor/log-board/shares/delete", ctl.Scoped((*controller.Controller).DeleteLogBoardShare))
+		authGroup.PUT("/monitor/log-board/shares/status", ctl.Scoped((*controller.Controller).UpdateLogBoardShareStatus))
+		authGroup.POST("/monitor/log-board/shares/token", ctl.Scoped((*controller.Controller).RegenerateLogBoardShareToken))
 		authGroup.GET("/monitor/logs/indices", ctl.Scoped((*controller.Controller).GetMonitorElasticsearchIndices))
 		authGroup.GET("/monitor/logs/streams", ctl.Scoped((*controller.Controller).GetMonitorVictoriaLogsStreams))
 		authGroup.GET("/monitor/logs/fields", ctl.Scoped((*controller.Controller).GetMonitorLogFields))
